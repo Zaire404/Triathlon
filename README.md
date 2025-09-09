@@ -78,10 +78,10 @@ cd $NPC_HOME
 make clean
 make all
 
-cd $KERNELS_HOME
+cd $CPU_TEST_HOME
 make clean
-make all
 ```
+
 进入 CPU 测试目录并运行：
 ``` bash
 cd $CPU_TEST_HOME
