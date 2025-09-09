@@ -14,6 +14,7 @@
 .*
 _*
 *~
-build/
+
+!*/build/**
 !.gitignore
 .vscode
