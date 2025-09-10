@@ -1,19 +1,42 @@
-name: Verible Format Check
+name: Format Check
 
 on:
-  pull_request:   # 触发条件：有人提 PR 时
-  workflow_dispatch:   # 手动触发
+  pull_request:
+  workflow_dispatch:
 
 jobs:
-  format:
+  clang-format:
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v3
 
-      - name: Run Verible formatter
+      - name: Install clang-format
+        run: sudo apt-get install -y clang-format
+
+      - name: Run clang-format check
+        uses: reviewdog/action-clang-format@v2
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          reporter: github-pr-review
+          level: error
+          # 如果是 PR → 只检查改动行；如果是手动触发 → 全量检查
+          # filter_mode: ${{ github.event_name == 'pull_request' && 'diff_context' || 'nofilter' }}
+          filter_mode: nofilter
+          clang_format_version: 16
+          pattern: "npc/**/*.{c,cpp,h,hpp}"
+
+  verible:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Run Verible formatter check
         uses: chipsalliance/verible-formatter-action@main
         with:
-          # 只检查 npc 目录下所有 Verilog/SystemVerilog 文件
-          files: "npc/**/*.{v,sv}"
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          reporter: github-pr-review
+          level: error
+          files: "npc/**/*.{v,sv}"
+          # 如果是 PR → 只检查改动行；如果是手动触发 → 全量检查
+          # filter_mode: ${{ github.event_name == 'pull_request' && 'diff_context' || 'nofilter' }}
+          filter_mode: nofilter
