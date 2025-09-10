@@ -1,50 +1,27 @@
 name: Code Format Check
 
 on:
-  pull_request:
+  pull_request_target:
   workflow_dispatch:
 
 jobs:
-  # --- C/C++ clang-format 检查 ---
-  clang-format:
+  formatting-check:
+    name: Formatting Check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-
-      - name: Install clang-format
-        run: sudo apt-get install -y clang-format
-
-      - name: Setup reviewdog
-        uses: reviewdog/action-setup@d8edfce3dd5e1ec6978745e801f9c50b5ef80252
-        with:
-          reviewdog_version: latest
-
-      - name: Run clang-format with reviewdog
-        run: |
-          FILES=$(find npc -type f \( -name "*.c" -o -name "*.h" -o -name "*.cpp" -o -name "*.cc" -o -name "*.cxx" -o -name "*.hpp" \))
-          if [ -z "$FILES" ]; then
-            echo "No C/C++ files found in npc/"
-            exit 0
-          fi
-          
-          # 如果是 PR → 只检查改动行；如果是手动触发 → 全量检查
-          # filter_mode: ${{ github.event_name == 'pull_request' && 'diff_context' || 'nofilter' }}
-          filter_mode: nofilter
-
-          clang-format --style=Google $FILES | reviewdog -f=diff -name="clang-format" -reporter=github-pr-review -level=error
-
-  verible:
+    - uses: actions/checkout@v4
+    - name: Run clang-format style check for C/C++/Protobuf programs.
+      uses: jidicula/clang-format-action@v4.15.0
+      with:
+        clang-format-version: '16'
+        check-path: 'npc'
+        fallback-style: 'Google' # optional
+  format:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-
-      - name: Run Verible formatter check
-        uses: chipsalliance/verible-formatter-action@main
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          reporter: github-pr-review
-          level: error
-          files: "npc/**/*.{v,sv}"
-          # 如果是 PR → 只检查改动行；如果是手动触发 → 全量检查
-          # filter_mode: ${{ github.event_name == 'pull_request' && 'diff_context' || 'nofilter' }}
-          filter_mode: nofilter
+    - uses: actions/checkout@master
+    - uses: chipsalliance/verible-formatter-action@main
+      with:
+        files: 
+          ./npc/**/*.{v,sv}
+        github_token: ${{ secrets.GITHUB_TOKEN }}
