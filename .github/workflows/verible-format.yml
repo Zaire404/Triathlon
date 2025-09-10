@@ -2,6 +2,7 @@ name: Verible Format Check
 
 on:
   pull_request:   # 触发条件：有人提 PR 时
+  workflow_dispatch:   # 手动触发
 
 jobs:
   format:
