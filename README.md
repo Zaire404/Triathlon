@@ -88,5 +88,21 @@ cd $CPU_TEST_HOME
 make ARCH=riscv32e-npc ALL=dummy run
 ```
 如果项目运行后出现一个绿色的HIT GOOD TRAP，说明程序运行成功，一切正常。
+
 如果项目运行后出现编译报错，请自行修复，或联系我并提供报错截图，帮助修复错误。
+
 如果项目运行后出现一个红色的HIG BAD TRAP, 说明处理器执行指令时出错，一般是处理器实现问题。
+
+## 四、编写代码
+
+### 格式化
+Vscode可以设置保存时自动格式化。
+#### C/C++
+在npc下的所有C/C++文件应使用`Clang`进行格式化，以Google开源项目规范为Style。
+``` bash
+# 手动格式化
+find npc -type f -regex ".*\.\(c\|cpp\|h\|hpp\)" -print0 | xargs -0 clang-format -i -style=Google
+```
+#### Verilog/SystemVerilog
+在npc下的所有Verilog/SystemVerilog文件应使用`Verible`的默认进行格式化。
+Vscode可以直接`SystemVerilog and Verilog Formatter`插件，该插件就是使用Verible进行格式化。
