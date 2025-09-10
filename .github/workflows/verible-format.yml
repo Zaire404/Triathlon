@@ -1,0 +1,18 @@
+name: Verible Format Check
+
+on:
+  pull_request:   # 触发条件：有人提 PR 时
+
+jobs:
+  format:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Run Verible formatter
+        uses: chipsalliance/verible-formatter-action@main
+        with:
+          # 只检查 npc 目录下所有 Verilog/SystemVerilog 文件
+          files: "npc/**/*.{v,sv}"
+          github_token: ${{ secrets.GITHUB_TOKEN }}
