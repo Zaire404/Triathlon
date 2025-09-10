@@ -44,7 +44,8 @@ void init_disasm(const char *triple) {
   llvm::MCRegisterInfo *gMRI = nullptr;
   auto target = llvm::TargetRegistry::lookupTarget(gTriple, errstr);
   if (!target) {
-    llvm::errs() << "Can't find target for " << gTriple << ": " << errstr << "\n";
+    llvm::errs() << "Can't find target for " << gTriple << ": " << errstr
+                 << "\n";
     assert(0);
   }
 
@@ -62,15 +63,16 @@ void init_disasm(const char *triple) {
   gMRI = target->createMCRegInfo(gTriple);
   auto AsmInfo = target->createMCAsmInfo(*gMRI, gTriple, MCOptions);
 #if LLVM_VERSION_MAJOR >= 13
-   auto llvmTripleTwine = Twine(triple);
-   auto llvmtriple = llvm::Triple(llvmTripleTwine);
-   auto Ctx = new llvm::MCContext(llvmtriple,AsmInfo, gMRI, nullptr);
+  auto llvmTripleTwine = Twine(triple);
+  auto llvmtriple = llvm::Triple(llvmTripleTwine);
+  auto Ctx = new llvm::MCContext(llvmtriple, AsmInfo, gMRI, nullptr);
 #else
-   auto Ctx = new llvm::MCContext(AsmInfo, gMRI, nullptr);
+  auto Ctx = new llvm::MCContext(AsmInfo, gMRI, nullptr);
 #endif
   gDisassembler = target->createMCDisassembler(*gSTI, *Ctx);
   gIP = target->createMCInstPrinter(llvm::Triple(gTriple),
-      AsmInfo->getAssemblerDialect(), *AsmInfo, *gMII, *gMRI);
+                                    AsmInfo->getAssemblerDialect(), *AsmInfo,
+                                    *gMII, *gMRI);
   gIP->setPrintImmHex(true);
   gIP->setPrintBranchImmAsAddress(true);
   if (isa == "riscv32" || isa == "riscv64")

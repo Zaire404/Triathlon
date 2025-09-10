@@ -1,5 +1,4 @@
 TOPNAME = cpu
-NXDC_FILES = constr/top.nxdc
 INC_PATH ?= vsrc
 
 VERILATOR = verilator
@@ -16,11 +15,6 @@ LLVM_LIBS := $(shell llvm-config --libs)
 
 $(shell mkdir -p $(BUILD_DIR))
 
-# # constraint file
-# SRC_AUTO_BIND = $(abspath $(BUILD_DIR)/auto_bind.cpp)
-# $(SRC_AUTO_BIND): $(NXDC_FILES)
-# 	python3 $(NVBOARD_HOME)/scripts/auto_pin_bind.py $^ $@
-
 # project source
 
 # 明确将 define.v 放在最前面
@@ -33,8 +27,6 @@ VSRCS = $(VSRCS_DEFINE) $(VSRCS_OTHERS)
 CSRCS = $(shell find $(abspath ./csrc) -name "*.c" -or -name "*.cc" -or -name "*.cpp")
 CSRCS += $(SRC_AUTO_BIND)
 
-# # rules for NVBoard
-# include $(NVBOARD_HOME)/scripts/nvboard.mk
 DIFFTEST = -d $(TRIATHLON_HOME)/npc/ref/riscv32-nemu-interpreter-so
 
 # rules for verilator
@@ -45,7 +37,7 @@ INCFLAGS = $(addprefix -I, $(INC_PATH))
 CXXFLAGS += $(INCFLAGS) -I$(abspath ./include) -DTOP_NAME="\"V$(TOPNAME)\"" -g
 LDFLAGS += -lreadline -ldl -pie $(LLVM_LIBS)
 
-$(BIN): $(VSRCS) $(CSRCS) $(NVBOARD_ARCHIVE)
+$(BIN): $(VSRCS) $(CSRCS)
 	@rm -rf $(OBJ_DIR)
 	$(VERILATOR) $(VERILATOR_CFLAGS) \
 		--top-module $(TOPNAME) $^ \

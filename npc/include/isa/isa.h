@@ -2,9 +2,9 @@
 #define __ISA_H__
 #include <isa/isa-def.h>
 
-//cpu
+// cpu
 extern cpu_state CPU;
-//reg
+// reg
 void isa_reg_display(cpu_state *cpu);
 word_t isa_reg_str2val(const char *s, bool *success);
 

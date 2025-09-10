@@ -1,17 +1,19 @@
-#include <stdio.h>
-#include <readline/readline.h>
-#include <readline/history.h>
 #include "sdb.h"
-#include <isa/isa.h>
+
 #include <cpu/cpu.h>
+#include <isa/isa.h>
+#include <readline/history.h>
+#include <readline/readline.h>
+#include <stdio.h>
 
 static int is_batch_mode = false;
 
 void init_regex();
 void init_wp_pool();
 
-/* We use the `readline' library to provide more flexibility to read from stdin. */
-static char* rl_gets() {
+/* We use the `readline' library to provide more flexibility to read from stdin.
+ */
+static char *rl_gets() {
   static char *line_read = NULL;
 
   if (line_read) {
@@ -39,25 +41,24 @@ static int cmd_q(char *args) {
   return -1;
 }
 
-static int cmd_si(char *args){
+static int cmd_si(char *args) {
   unsigned int execute_number;
-  if(args == NULL) 
+  if (args == NULL)
     execute_number = 1;
-  else 
-    execute_number = strtol(args, NULL, 10);;
-  //atoi 把字符串转变为数字
+  else
+    execute_number = strtol(args, NULL, 10);
+  ;
+  // atoi 把字符串转变为数字
   cpu_exec(execute_number);
   return 0;
 }
 extern void display_wp();
-static int cmd_info(char *args){
-  if(strcmp(args, "r") == 0){
+static int cmd_info(char *args) {
+  if (strcmp(args, "r") == 0) {
     isa_reg_display(&CPU);
-  }
-  else if(strcmp(args, "w") == 0){
+  } else if (strcmp(args, "w") == 0) {
     display_wp();
-  }
-  else {
+  } else {
     printf("未知命令\n");
   }
   return 0;
@@ -65,7 +66,7 @@ static int cmd_info(char *args){
 static int cmd_expr(char *args) {
   bool success;
   unsigned int e_sum = expr(args, &success);
-  printf("%u\n",e_sum);
+  printf("%u\n", e_sum);
   return success;
 }
 extern void add_wp(char *e);
@@ -79,14 +80,15 @@ static int cmd_dw(char *args) {
   return 0;
 }
 extern word_t vaddr_read(vaddr_t addr, int len);
-static int cmd_x(char *args){
-  printf("%s\n",args);
-  char* token = strtok(args, " ");
+static int cmd_x(char *args) {
+  printf("%s\n", args);
+  char *token = strtok(args, " ");
   unsigned int x_number = strtol(token, NULL, 10);
   token = strtok(NULL, " ");
   unsigned int x_start = strtol(token, NULL, 16);
-  for(int i = 0; i < x_number; i ++) {
-    printf("%lx处的值为%08x\n",x_start + i * sizeof(word_t), vaddr_read(x_start + i * sizeof(word_t), sizeof(word_t)));
+  for (int i = 0; i < x_number; i++) {
+    printf("%lx处的值为%08x\n", x_start + i * sizeof(word_t),
+           vaddr_read(x_start + i * sizeof(word_t), sizeof(word_t)));
   }
   return 0;
 }
@@ -96,19 +98,19 @@ static int cmd_help(char *args);
 static struct {
   const char *name;
   const char *description;
-  int (*handler) (char *);
-} cmd_table [] = {
-  { "help", "Display information about all supported commands", cmd_help },
-  { "c", "Continue the execution of the program", cmd_c },
-  { "q", "Exit NEMU", cmd_q },
-  { "si", "Step execution", cmd_si },
-  { "info", "infomation", cmd_info },
-  { "x", "scanf memory", cmd_x},
-  { "expr", "print EXPR", cmd_expr},
-  {"w", "add watch point", cmd_w},
-  {"d", "delete watch point", cmd_dw},
+  int (*handler)(char *);
+} cmd_table[] = {
+    {"help", "Display information about all supported commands", cmd_help},
+    {"c", "Continue the execution of the program", cmd_c},
+    {"q", "Exit NEMU", cmd_q},
+    {"si", "Step execution", cmd_si},
+    {"info", "infomation", cmd_info},
+    {"x", "scanf memory", cmd_x},
+    {"expr", "print EXPR", cmd_expr},
+    {"w", "add watch point", cmd_w},
+    {"d", "delete watch point", cmd_dw},
 
-  /* TODO: Add more commands */
+    /* TODO: Add more commands */
 
 };
 
@@ -121,12 +123,11 @@ static int cmd_help(char *args) {
 
   if (arg == NULL) {
     /* no argument given */
-    for (i = 0; i < NR_CMD; i ++) {
+    for (i = 0; i < NR_CMD; i++) {
       printf("%s - %s\n", cmd_table[i].name, cmd_table[i].description);
     }
-  }
-  else {
-    for (i = 0; i < NR_CMD; i ++) {
+  } else {
+    for (i = 0; i < NR_CMD; i++) {
       if (strcmp(arg, cmd_table[i].name) == 0) {
         printf("%s - %s\n", cmd_table[i].name, cmd_table[i].description);
         return 0;
@@ -137,9 +138,7 @@ static int cmd_help(char *args) {
   return 0;
 }
 
-void sdb_set_batch_mode() {
-  is_batch_mode = true;
-}
+void sdb_set_batch_mode() { is_batch_mode = true; }
 
 void sdb_mainloop() {
   if (is_batch_mode) {
@@ -147,12 +146,14 @@ void sdb_mainloop() {
     return;
   }
 
-  for (char *str; (str = rl_gets()) != NULL; ) {
+  for (char *str; (str = rl_gets()) != NULL;) {
     char *str_end = str + strlen(str);
 
     /* extract the first token as the command */
     char *cmd = strtok(str, " ");
-    if (cmd == NULL) { continue; }
+    if (cmd == NULL) {
+      continue;
+    }
 
     /* treat the remaining string as the arguments,
      * which may need further parsing
@@ -162,14 +163,18 @@ void sdb_mainloop() {
       args = NULL;
     }
     int i;
-    for (i = 0; i < NR_CMD; i ++) {
+    for (i = 0; i < NR_CMD; i++) {
       if (strcmp(cmd, cmd_table[i].name) == 0) {
-        if (cmd_table[i].handler(args) < 0) { return; }
+        if (cmd_table[i].handler(args) < 0) {
+          return;
+        }
         break;
       }
     }
 
-    if (i == NR_CMD) { printf("Unknown command '%s'\n", cmd); }
+    if (i == NR_CMD) {
+      printf("Unknown command '%s'\n", cmd);
+    }
   }
 }
 
