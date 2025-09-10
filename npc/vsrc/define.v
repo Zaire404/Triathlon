@@ -107,7 +107,7 @@
 `define ysyx_25050141_DE_TO_EX_WIDTH `ysyx_25050141_PC_WIDTH +  `ysyx_25050141_OP_WIDTH + `ysyx_25050141_ALU_WIDTH + `ysyx_25050141_BRANCH_WIDTH + `ysyx_25050141_LOAD_WIDTH + `ysyx_25050141_STORE_WIDTH + 1 + 1 + `ysyx_25050141_XLEN + `ysyx_25050141_SYS_WIDTH + 1 + 1 + 1 + `ysyx_25050141_XLEN + `ysyx_25050141_XLEN + `ysyx_25050141_XLEN  + `ysyx_25050141_XLEN + `ysyx_25050141_XLEN
 //pc + ID + rs1_data + rs2_data + csr_data + epcode + ALU_op + branch_op + load_op + store_op + need_dstE + sel_reg + imme + system_op + ecall + mret + wen_csr + wen_csr_index + ren_csr_index + rs1 + rs2 + rd
 //32 + 67 + 32 + 32
-`define  ysyx_25050141_EX_TO_IF_WIDTH `ysyx_25050141_PC_WIDTH
+`define ysyx_25050141_EX_TO_IF_WIDTH `ysyx_25050141_PC_WIDTH
 //npc
 
 `define  ysyx_25050141_EX_TO_ME_WIDTH `ysyx_25050141_XLEN + 1 + `ysyx_25050141_LOAD_WIDTH + `ysyx_25050141_STORE_WIDTH + `ysyx_25050141_XLEN + `ysyx_25050141_XLEN + 1 + `ysyx_25050141_XLEN + 1
