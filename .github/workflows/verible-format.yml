@@ -14,7 +14,7 @@ jobs:
         run: sudo apt-get install -y clang-format
 
       - name: Run clang-format check
-        uses: reviewdog/action-clang-format@v2
+        uses: reviewdog/action-clang-format@v1
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           reporter: github-pr-review
