@@ -5,9 +5,11 @@
 !*.mk
 !*.[cSh]
 !*.v
+!*.sv
 !*.cc
 !*.cpp
 !.gitignore
 !README.md
 !ref/*
+!verible.filelist
 build/

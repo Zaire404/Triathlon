@@ -1,0 +1,6 @@
+./vsrc/frontend/frontend.sv
+./vsrc/include/build_config_pkg.sv
+./vsrc/include/config_pkg.sv
+./vsrc/include/global_config_pkg.sv
+./vsrc/include/test_config_pkg.sv
+./vsrc/triathlon.sv
