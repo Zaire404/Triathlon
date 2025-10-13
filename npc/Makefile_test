@@ -1,0 +1,61 @@
+# Generic Makefile for running Verilator C++ tests
+
+# --- Configuration ---
+TEST ?= test_build_config
+
+# --- Paths ---
+TEST_CPP_DIR = ./csrc
+TEST_CPP_ABSPATH = $(abspath $(TEST_CPP_DIR)/$(TEST).cpp)
+TEST_TB_MODULE = tb_$(subst test_,,$(TEST))
+TEST_TB_SV_DIR = ./vsrc/test
+TEST_TB_SV = $(TEST_TB_SV_DIR)/$(TEST_TB_MODULE).sv
+
+# --- Build Directories ---
+BUILD_DIR = ./build/$(TEST)
+OBJ_DIR = $(BUILD_DIR)/obj_dir
+BIN = $(BUILD_DIR)/$(TEST_TB_MODULE)
+
+# --- Verilator ---
+VERILATOR = verilator
+VERILATOR_CFLAGS += -cc --exe --build -O3 --x-assign fast --x-initial fast --assert
+VERILATOR_CFLAGS += --Wno-fatal --Wno-WIDTH
+VERILATOR_CFLAGS += -I./vsrc/include
+
+# --- Source Files ---
+VSRCS = \
+	./vsrc/include/config_pkg.sv \
+	./vsrc/include/build_config_pkg.sv \
+	$(TEST_TB_SV)
+
+# --- Rules ---
+.PHONY: all run clean clean-all
+
+all: $(BIN)
+
+# The build rule for the final executable
+$(BIN): $(VSRCS) $(TEST_CPP_ABSPATH)
+	# FIX: Ensure the object directory exists before calling Verilator.
+	# This command is now part of the rule, so it runs every time the rule is invoked.
+	@mkdir -p $(OBJ_DIR)
+	@echo "============================================="
+	@echo " VERILATING  : $(TEST_TB_MODULE) (from $(TEST_TB_SV))"
+	@echo " C++ DRIVER  : $(TEST_CPP_ABSPATH)"
+	@echo "============================================="
+	$(VERILATOR) $(VERILATOR_CFLAGS) \
+		--top-module $(TEST_TB_MODULE) \
+		$(VSRCS) $(TEST_CPP_ABSPATH) \
+		--Mdir $(OBJ_DIR) -o $(abspath $(BIN))
+
+run: $(BIN)
+	@echo "============================================="
+	@echo " RUNNING TEST: $(TEST)"
+	@echo "============================================="
+	@$(abspath $(BIN))
+
+clean:
+	@echo "Cleaning build directory for test: $(TEST)"
+	rm -rf $(BUILD_DIR)
+
+clean-all:
+	@echo "Cleaning all build artifacts..."
+	rm -rf ./build

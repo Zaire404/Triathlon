@@ -12,4 +12,5 @@
 !README.md
 !ref/*
 !verible.filelist
+!Makefile_test
 build/
