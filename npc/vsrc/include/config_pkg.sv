@@ -34,6 +34,7 @@ package config_pkg;
 
     int unsigned FETCH_WIDTH;
 
+    int unsigned ICACHE_BYTE_SIZE;
     int unsigned ICACHE_SET_ASSOC;
     int unsigned ICACHE_SET_ASSOC_WIDTH;
     int unsigned ICACHE_INDEX_WIDTH;
