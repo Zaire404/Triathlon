@@ -13,7 +13,7 @@ jobs:
     - name: Run clang-format style check for C/C++/Protobuf programs.
       uses: jidicula/clang-format-action@v4.15.0
       with:
-        clang-format-version: '16'
+        clang-format-version: '20'
         check-path: 'npc'
         fallback-style: 'Google' # optional
   format:
