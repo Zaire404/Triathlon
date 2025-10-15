@@ -1,0 +1,27 @@
+name: Code Format Check
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  formatting-check:
+    name: Formatting Check
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Run clang-format style check for C/C++/Protobuf programs.
+      uses: jidicula/clang-format-action@v4.15.0
+      with:
+        clang-format-version: '20'
+        check-path: 'npc'
+        fallback-style: 'Google' # optional
+  format:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: chipsalliance/verible-formatter-action@main
+      with:
+        files: 
+          ./npc/**/*.{v,sv}
+        github_token: ${{ secrets.GITHUB_TOKEN }}
