@@ -10,10 +10,14 @@ package config_pkg;
 
 
   typedef struct packed {
+    // Number of instructions fetched per cycle
+    int unsigned INSTR_PER_FETCH;
     // General Purpose Register Size (in bits)
     int unsigned XLEN;
     // Virtual address Size (in bits)
     int unsigned VLEN;
+    // Instruction Length (in bits)
+    int unsigned ILEN;
     // Instruction cache size (in bytes)
     int unsigned ICACHE_BYTE_SIZE;
     // Instruction cache associativity (number of ways)
@@ -27,12 +31,14 @@ package config_pkg;
     int unsigned XLEN;
     // Virtual address Size (in bits)
     int unsigned VLEN;
+    // Instruction Length (in bits)
+    int unsigned ILEN;
     // Physical address Size (in bits)
     int unsigned PLEN;
     // General Purpose Physical Register Size (in bits)
     int unsigned GPLEN;
-
-    int unsigned FETCH_WIDTH;
+    // Number of instructions fetched per cycle
+    int unsigned INSTR_PER_FETCH;
 
     int unsigned ICACHE_BYTE_SIZE;
     int unsigned ICACHE_SET_ASSOC;
@@ -40,6 +46,7 @@ package config_pkg;
     int unsigned ICACHE_INDEX_WIDTH;
     int unsigned ICACHE_TAG_WIDTH;
     int unsigned ICACHE_LINE_WIDTH;
+    int unsigned ICACHE_OFFSET_WIDTH;
   } cfg_t;
   localparam cfg_t EmptyCfg = cfg_t'(0);
 endpackage
