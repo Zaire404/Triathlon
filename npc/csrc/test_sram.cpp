@@ -1,12 +1,11 @@
-// csrc/test_sram.cpp
-#include "Vtb_sram.h"
+// 文件: npc/csrc/test_sram.cpp (修改版)
+#include "Vtb_sram.h" // 包含 Verilator 生成的模块头文件
 #include "verilated.h"
 #include <cassert>
 #include <iostream>
 
-vluint64_t main_time = 0; // 跟踪仿真时间
+vluint64_t main_time = 0;
 
-// 时钟滴答辅助函数
 void tick(Vtb_sram *top) {
   top->clk_i = 0;
   top->eval();
@@ -20,76 +19,70 @@ int main(int argc, char **argv) {
   Verilated::commandArgs(argc, argv);
   Vtb_sram *top = new Vtb_sram;
 
-  std::cout << "--- [START] Running Complex C++ test for SRAM ---" << std::endl;
+  std::cout << "--- [START] Running C++ test for 2R1W SRAM ---" << std::endl;
 
   // 1. 复位
   top->rst_ni = 0;
   top->we_i = 0;
-  top->addr_i = 0;
+  top->waddr_i = 0;
   top->wdata_i = 0;
+  top->addr_ra_i = 0;
+  top->addr_rb_i = 0;
   tick(top);
   top->rst_ni = 1;
   std::cout << "[" << main_time << "] Reset complete." << std::endl;
 
-  // --- 测试 1: 写入测试 (Write Enable) ---
-  // 验证 'we_i = 0' 时, 写入不会发生
-  std::cout << "--- Test 1: Write Enable Logic ---" << std::endl;
-  top->we_i = 0; // 明确禁用写入
-  top->addr_i = 5;
-  top->wdata_i = 0xDEADBEEF;
-  std::cout << "[" << main_time
-            << "] Setting addr=5, wdata=0xDEADBEEF, but we_i=0" << std::endl;
-  tick(top); // 即使时钟变化, 也不应写入
-
-  top->addr_i = 5; // 设置读取地址
-  top->eval();     // 异步读
-  std::cout << "[" << main_time
-            << "] Reading from addr=5. Got: " << top->rdata_o
-            << " (Expected: 0)" << std::endl;
-  assert(top->rdata_o == 0); // 应该还是复位后的 0
-
-  // --- 测试 2: 基本的 写-读 测试 (Write-Read) ---
-  std::cout << "--- Test 2: Basic Write-Read ---" << std::endl;
-  top->we_i = 1; // 启用写入
-  top->addr_i = 5;
+  // --- 测试 1: 写入数据 ---
+  std::cout << "--- Test 1: Write ---" << std::endl;
+  top->we_i = 1;    // 启用写入
+  top->waddr_i = 5; // 写入地址 5
   top->wdata_i = 0xCAFEBABE;
-  std::cout << "[" << main_time << "] Writing 0xCAFEBABE to addr=5 (we_i=1)"
+  std::cout << "[" << main_time << "] Writing 0xCAFEBABE to addr=5"
             << std::endl;
-  tick(top); // 时钟上升沿 *计划* 写入
+  tick(top); // 时钟上升沿写入
 
-  top->we_i = 0;   // 停止写入
-  top->addr_i = 5; // 保持读取地址
+  top->waddr_i = 10; // 写入地址 10
+  top->wdata_i = 0xDEADBEEF;
+  std::cout << "[" << main_time << "] Writing 0xDEADBEEF to addr=10"
+            << std::endl;
+  tick(top); // 时钟上升沿写入
+
+  top->we_i = 0; // 停止写入
   top->eval();
 
-  // 在 Cycle N+1, 异步读 (assign) 现在读到的是 Cycle N 写入的值
+  // --- 测试 2: 同时读取两个不同地址 ---
+  std::cout << "--- Test 2: Simultaneous Dual Read ---" << std::endl;
+  top->addr_ra_i = 5;  // 端口 A 读取地址 5
+  top->addr_rb_i = 10; // 端口 B 读取地址 10
+  top->eval();         // 组合逻辑读
+
   std::cout << "[" << main_time
-            << "] Reading from addr=5. Got: " << top->rdata_o
+            << "] Reading Addr 5 (Port A). Got: " << std::hex << top->rdata_ra_o
             << " (Expected: 0xCAFEBABE)" << std::endl;
-  assert(top->rdata_o == 0xCAFEBABE);
-
-  // --- 测试 3: 写后立即读 (RAW) 失败场景 (模拟错误的 C++ 代码) ---
-  std::cout << "--- Test 3: Demonstrating Failed Read-After-Write ---"
-            << std::endl;
-  top->we_i = 1;
-  top->addr_i = 10;
-  top->wdata_i = 0x12345678;
-  std::cout << "[" << main_time << "] Writing 0x12345678 to addr=10"
-            << std::endl;
-  tick(top); // 时钟上升沿 *计划* 写入 (Cycle N+2)
-
-  top->we_i = 0;
-  top->addr_i = 10;
-  top->eval(); // <--- 只调用 eval(), 不推进时钟
+  assert(top->rdata_ra_o == 0xCAFEBABE);
 
   std::cout << "[" << main_time
-            << "] Reading from addr=10 (using eval). Got: " << top->rdata_o
-            << " (Expected previous value: 0x12345678)" << std::endl;
-  // 注意: 它读到的是 addr=5 的旧值, 因为 addr_i 刚刚才改变, 组合逻辑读到了旧的
-  // mem[5] 让我们再 eval() 一次, 确保异步读稳定
+            << "] Reading Addr 10 (Port B). Got: " << std::hex
+            << top->rdata_rb_o << " (Expected: 0xDEADBEEF)" << std::endl;
+  assert(top->rdata_rb_o == 0xDEADBEEF);
+
+  // --- 测试 3: 读未写入的地址 ---
+  std::cout << "--- Test 3: Read unwritten address ---" << std::endl;
+  top->addr_ra_i = 1; // 端口 A 读取地址 1 (未写入)
+  top->addr_rb_i = 2; // 端口 B 读取地址 2 (未写入)
   top->eval();
 
-  std::cout << "--- [PASSED] All SRAM checks passed successfully! ---"
-            << std::endl;
+  std::cout << "[" << main_time
+            << "] Reading Addr 1 (Port A). Got: " << std::hex << top->rdata_ra_o
+            << " (Expected: 0x0)" << std::endl;
+  assert(top->rdata_ra_o == 0);
+
+  std::cout << "[" << main_time
+            << "] Reading Addr 2 (Port B). Got: " << std::hex << top->rdata_rb_o
+            << " (Expected: 0x0)" << std::endl;
+  assert(top->rdata_rb_o == 0);
+
+  std::cout << "--- [PASSED] All 2R1W SRAM checks passed! ---" << std::endl;
 
   delete top;
   return 0;
