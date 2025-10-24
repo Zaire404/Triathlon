@@ -64,7 +64,7 @@ module data_array #(
     end
   endgenerate
 
-  // --- 读数据选择 (Mux) A ---
+  // --- 读数据选择 (Mux) ---
   always_comb begin
     for (int i = 0; i < NUM_WAYS; i++) begin
       // 从正确的Bank为Port A选择数据

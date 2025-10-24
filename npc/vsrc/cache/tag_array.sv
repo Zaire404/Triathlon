@@ -74,7 +74,7 @@ module tag_array #(
     end
   endgenerate
 
-  // --- 读数据选择 (Mux) A ---
+  // --- 读数据选择 (Mux) ---
   always_comb begin
     for (int i = 0; i < NUM_WAYS; i++) begin
       // 从 `bank_sel_ra_i` 对应的Bank选择数据
