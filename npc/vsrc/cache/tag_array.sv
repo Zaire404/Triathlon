@@ -79,12 +79,6 @@ module tag_array #(
     for (int i = 0; i < NUM_WAYS; i++) begin
       // 从 `bank_sel_ra_i` 对应的Bank选择数据
       {rdata_tag_a_o[i], rdata_valid_a_o[i]} = sram_rdata_a[i][bank_sel_ra_i];
-    end
-  end
-
-  // --- 读数据选择 (Mux) B ---
-  always_comb begin
-    for (int i = 0; i < NUM_WAYS; i++) begin
       // 从 `bank_sel_rb_i` 对应的Bank选择数据
       {rdata_tag_b_o[i], rdata_valid_b_o[i]} = sram_rdata_b[i][bank_sel_rb_i];
     end

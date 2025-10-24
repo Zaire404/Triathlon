@@ -69,12 +69,6 @@ module data_array #(
     for (int i = 0; i < NUM_WAYS; i++) begin
       // 从正确的Bank为Port A选择数据
       rdata_a_o[i] = sram_rdata_a[i][bank_sel_ra_i];
-    end
-  end
-
-  // --- 读数据选择 (Mux) B ---
-  always_comb begin
-    for (int i = 0; i < NUM_WAYS; i++) begin
       // 从正确的Bank为Port B选择数据
       rdata_b_o[i] = sram_rdata_b[i][bank_sel_rb_i];
     end
