@@ -47,6 +47,8 @@ package config_pkg;
     int unsigned ICACHE_TAG_WIDTH;
     int unsigned ICACHE_LINE_WIDTH;
     int unsigned ICACHE_OFFSET_WIDTH;
+    int unsigned ICACHE_NUM_BANKS;
+    int unsigned ICACHE_NUM_SETS;
   } cfg_t;
   localparam cfg_t EmptyCfg = cfg_t'(0);
 endpackage

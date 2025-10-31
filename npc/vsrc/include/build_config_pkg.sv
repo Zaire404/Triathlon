@@ -19,6 +19,8 @@ package build_config_pkg;
         user_cfg.ICACHE_BYTE_SIZE * 8 / user_cfg.ICACHE_SET_ASSOC / user_cfg.ICACHE_LINE_WIDTH);
     cfg.ICACHE_OFFSET_WIDTH = $clog2(user_cfg.ICACHE_LINE_WIDTH / 8);
     cfg.ICACHE_TAG_WIDTH = cfg.PLEN - cfg.ICACHE_INDEX_WIDTH - cfg.ICACHE_OFFSET_WIDTH;
+    cfg.ICACHE_NUM_BANKS = 4;  // 固定为4个Bank
+    cfg.ICACHE_NUM_SETS = (user_cfg.ICACHE_BYTE_SIZE * 8) / user_cfg.ICACHE_SET_ASSOC / user_cfg.ICACHE_LINE_WIDTH;
     return cfg;
   endfunction
 endpackage
