@@ -5,6 +5,7 @@ package ifu_pkg;
     // 共享常量 (Shared Constants)
     // ====================================================================
     parameter XLEN = 32;
+    parameter VAddrBits = 32;
     parameter CacheLine_Addr_Width = 32;//Cache line地址宽度
     parameter PredictWidth = 4; //一次取指的数量
     parameter instBytes = 4; //指令字节数
@@ -16,6 +17,7 @@ package ifu_pkg;
     parameter HasCExtension = 0; //1:RVC支持 0:不支持
     parameter INST_BITS = instBytes * 8;  // 32
     parameter FTQ_IDX_WIDTH = 6; //FTQ索引宽度
+    parameter CommitWidth = 4;//定义CPU的提交宽度
     // ====================================================================
     // 共享类型 (Shared Types)
     // ====================================================================
@@ -48,5 +50,11 @@ package ifu_pkg;
         logic [XLEN-1:0] target;       // 正確的目標地址
         logic [FTQ_IDX_WIDTH-1:0] ftqIdx; // 對應的FTQ索引
     } IfuWbInfo_t;
+
+    //定义从ROB传来的提交信息
+    typedef struct packed{
+        logic               valid;          //该提交信息是否有效
+        logic [FTQ_IDX_WIDTH-1:0] ftqIdx;   //对应的FTQ索引
+    }RobCommitInfo_t;
 
 endpackage // 结束包定义

@@ -1,24 +1,3 @@
-`timescale 1ns / 1ps
-//////////////////////////////////////////////////////////////////////////////////
-// Company: 
-// Engineer: 
-// 
-// Create Date: 10/15/2025 02:07:33 PM
-// Design Name: 
-// Module Name: IFU
-// Project Name: 
-// Target Devices: 
-// Tool Versions: 
-// Description: 
-// 
-// Dependencies: 
-// 
-// Revision:
-// Revision 0.01 - File Created
-// Additional Comments:
-// 
-//////////////////////////////////////////////////////////////////////////////////
-
 import ifu_pkg::*;
 
 module IFU (
@@ -59,13 +38,15 @@ module IFU (
     output logic [XLEN-1:0] to_ibuffer_pc        [0:PredictWidth-1],
     output logic [INST_BITS -1:0] to_ibuffer_instr [0:PredictWidth-1],
     output PreDecodeInfo_t to_ibuffer_pd        [0:PredictWidth-1],
-    output logic [PredictWidth-1:0] to_ibuffer_enqEnable
+    output logic [PredictWidth-1:0] to_ibuffer_enqEnable,
     // ... 其他 to_ibuffer_* 端口 ...       
 
+    //来自RoB的提交端口
+    input RobCommitInfo_t rob_commits [0:CommitWidth-1]
 );
 
     //内部信号声明：流水线各级冲刷信号（用于f0 flush的组合）
-    wire f1_flush, f2_flush, f3_flush;
+    wire f0_flush, f1_flush, f2_flush, f3_flush;
     wire             f0_fire;
     //内部信号声明：各级准备好信号
     logic            f2_ready;
@@ -347,6 +328,11 @@ module IFU (
     logic wb_mispredicted;
     logic [XLEN-1:0] wb_target;
 
+    //新增：检查ROB提交的ID是否与F3正在等待的MMIO指令ID匹配
+    logic mmio_commit_match;
+    logic commit_match_found; //用于for循环的临时变量
+
+
 
     // --------------------------------------------------------------------
     // F3 阶段 - 时序逻辑 (F2 -> F3 流水线寄存器 和 简化MMIO状态机)
@@ -393,20 +379,43 @@ module IFU (
     //F3阶段简化的MMIO停机状态机
     // 假设 is_mmio_from_icache_resp 是一个 input 端口，来自 I-Cache 响应
 
-    always_ff @(posedge clk or posedge rst) begin : F3_MMIO_STATE
+    always_ff @(posedge clk or posedge rst) begin : MMIO_STATE_MACHINE
         if(rst)begin
             f3_is_stalled_by_mmio <= 1'b0;
         end else if(f3_flush)begin
+            //异常退出：被更高优先级的冲刷清零
             f3_is_stalled_by_mmio <= 1'b0;
-        end else if(f3_is_mmio_req&& !f3_is_stalled_by_mmio)begin
-            //检测到新的MMIO请求，进入停机状态
+        end else if(f3_is_stalled_by_mmio)begin
+            //如果当前处于停机状态，检查推出条件
+            if(mmio_commit_match)begin
+                f3_is_stalled_by_mmio <= 1'b0;   //匹配成功，正常退出停机
+            end
+        end else if(f3_is_mmio_req)begin
+            //如果检测到MMIO请求，进入停机
             f3_is_stalled_by_mmio <= 1'b1;
-        end 
+        end
     end
 
     // --------------------------------------------------------------------
     // F3 阶段 - 组合逻辑 (握手、子模块连接、输出到I-Buffer)
     // --------------------------------------------------------------------
+    
+
+    always_comb begin
+        commit_match_found = 1'b0;
+        //只有当F3确实因为MMIO而停机时，才需要检查
+        if(f3_is_stalled_by_mmio)begin
+            //遍历所有来自ROB的提交端口
+            for(int i = 0;i<CommitWidth;i++)begin
+                //检查：1.这个提交槽位有效吗？2.它的ID是否就是F3正在等待的那个ID？
+                if(rob_commits[i].valid&&(rob_commits[i].ftqIdx==f3_ftq_req_ftqIdx))begin
+                    commit_match_found = 1'b1;
+                end
+            end
+        end
+    end
+
+    assign mmio_commit_match = commit_match_found;
     // --- A. 握手逻辑 ---
     assign f3_fire = f3_valid & ibuffer_ready & !f3_is_stalled_by_mmio;
     assign f3_ready = f3_fire | !f3_valid;
@@ -433,7 +442,7 @@ module IFU (
     .in_predicted_target(f3_predicted_target),
     
     // 输出：这些信号将用于驱动写回(WB)阶段的重定向逻辑
-    .out_mispredict(wb_mispredicted), 
+    .out_mispredicted(wb_mispredicted), 
     .out_correct_target(wb_target)
     );
 
@@ -650,7 +659,7 @@ module PredChecker (
 
     //---BPU的原始预测信息（也从F3阶段传来）---
     input logic                             in_predicted_taken, //BPU预测是否有跳转发生
-    input logic [$clog2(PredictWidth)-1:0]  in_predicted_index, //BPU预测的跳转指令索引
+    input logic [$clog2(PredictWidth)-1:0]  in_predicted_idx, //BPU预测的跳转指令索引
     input logic [XLEN-1:0]                  in_predicted_target, //BPU预测的跳转目标地址
 
     //---输出（传递到WB阶段）---
@@ -659,7 +668,7 @@ module PredChecker (
 );
 
     //内部信号，用于并行检查每一条指令
-    logic [0:PredictWidth-1] mispredict_vec;
+    logic [PredictWidth-1:0] mispredict_vec;
     logic [XLEN-1:0] correct_target_vec[0:PredictWidth-1];
 
     //使用generate for并行的处理每一条指令
@@ -675,7 +684,7 @@ module PredChecker (
 
                 if(in_valid)begin
                     //2.准备检查所需的信息
-                    is_predicted_branch = in_predicted_taken && (in_predicted_index == i);//BPU是否预测该指令跳转
+                    is_predicted_branch = in_predicted_taken && (in_predicted_idx == i);//BPU是否预测该指令跳转
                     is_actual_branch = (in_pd[i].brType != BR_TYPE_NONE);//该指令是否实际为分支指令
 
                     //3.计算当前指令的实际目标地址（PC+offset）
@@ -712,7 +721,7 @@ module PredChecker (
     //使用优先编码器（Priority Encoder）
     logic [$clog2(PredictWidth-1):0] first_mispredict_idx;
 
-    assign out_mispredict = |mispredict_vec;
+    assign out_mispredicted = |mispredict_vec;
 
     //找到第一个为1的位的索引
     //这是一个简化的实现，实际中可能会用更高效的编码器
