@@ -25,40 +25,67 @@ module data_array #(
 );
 
   localparam int unsigned SRAM_DATA_WIDTH = BLOCK_WIDTH;
+  localparam int unsigned SRAM_ADDR_WIDTH = SETS_PER_BANK_WIDTH;
 
-  // 内部连线: 每个Way/Bank都需要两组SRAM读数据输出
-  logic [SRAM_DATA_WIDTH-1:0] sram_rdata_a[NUM_WAYS][NUM_BANKS];
-  logic [SRAM_DATA_WIDTH-1:0] sram_rdata_b[NUM_WAYS][NUM_BANKS];
-  logic                       sram_we     [NUM_WAYS][NUM_BANKS];
+  // 每个 (way, bank) 一块单端口 SRAM 的读数据
+  logic [SRAM_DATA_WIDTH-1:0]                      sram_rdata [NUM_WAYS][NUM_BANKS];
 
-  // --- 实例化 NUM_WAYS * NUM_BANKS 个 2R1W SRAM ---
+  // bank 级别控制信号
+  logic [      NUM_BANKS-1:0]                      bank_we;
+  logic [      NUM_BANKS-1:0][SRAM_ADDR_WIDTH-1:0] bank_addr;
+  logic [      NUM_BANKS-1:0][SRAM_DATA_WIDTH-1:0] bank_wdata;
+
+  // --- bank 级别仲裁 ---
+  // 优先级：写 > 读A > 读B
+  always_comb begin
+    for (int b = 0; b < NUM_BANKS; b++) begin
+      bank_we[b]    = 1'b0;
+      bank_addr[b]  = '0;
+      bank_wdata[b] = '0;
+    end
+
+    // 写
+    if (|we_way_mask_i) begin
+      bank_we[w_bank_sel_i]    = 1'b1;
+      bank_addr[w_bank_sel_i]  = w_bank_addr_i;
+      bank_wdata[w_bank_sel_i] = wdata_i;
+    end
+
+    // 读 A
+    begin
+      int b = bank_sel_ra_i;
+      bank_addr[b] = bank_addr_ra_i;
+    end
+
+    // 读 B（避免覆盖 A 的地址）
+    begin
+      int b_rb = bank_sel_rb_i;
+      int b_ra = bank_sel_ra_i;
+      if (b_rb != b_ra) begin
+        bank_addr[b_rb] = bank_addr_rb_i;
+      end
+      // bank 冲突时，本拍 B 没被服务，读到的是上一拍的内容
+    end
+  end
+
+  // --- 实例化 NUM_WAYS * NUM_BANKS 个 1RW SRAM ---
   genvar i, j;
   generate
     for (i = 0; i < NUM_WAYS; i = i + 1) begin : gen_ways
       for (j = 0; j < NUM_BANKS; j = j + 1) begin : gen_banks
-
-        // 写使能逻辑: 当 (1) 这一路被选中 且 (2) 这一个Bank被选中时
-        assign sram_we[i][j] = we_way_mask_i[i] && (w_bank_sel_i == j);
+        logic local_we;
+        assign local_we = bank_we[j] && we_way_mask_i[i];
 
         sram #(
             .DATA_WIDTH(SRAM_DATA_WIDTH),
-            .ADDR_WIDTH(SETS_PER_BANK_WIDTH)
+            .ADDR_WIDTH(SRAM_ADDR_WIDTH)
         ) data_sram_inst (
-            .clk_i (clk_i),
-            .rst_ni(rst_ni),
-
-            // 写端口
-            .we_i   (sram_we[i][j]),
-            .waddr_i(w_bank_addr_i),  // 所有SRAM共享同一个写地址
-            .wdata_i(wdata_i),        // 所有SRAM共享同一个写数据
-
-            // 读端口 A
-            .addr_ra_i(bank_addr_ra_i),  // 共享读地址 A
-            .rdata_ra_o(sram_rdata_a[i][j]),
-
-            // 读端口 B
-            .addr_rb_i(bank_addr_rb_i),  // 共享读地址 B
-            .rdata_rb_o(sram_rdata_b[i][j])
+            .clk_i  (clk_i),
+            .rst_ni (rst_ni),
+            .we_i   (local_we),
+            .addr_i (bank_addr[j]),
+            .wdata_i(bank_wdata[j]),
+            .rdata_o(sram_rdata[i][j])
         );
       end
     end
@@ -68,9 +95,9 @@ module data_array #(
   always_comb begin
     for (int i = 0; i < NUM_WAYS; i++) begin
       // 从正确的Bank为Port A选择数据
-      rdata_a_o[i] = sram_rdata_a[i][bank_sel_ra_i];
+      rdata_a_o[i] = sram_rdata[i][bank_sel_ra_i];
       // 从正确的Bank为Port B选择数据
-      rdata_b_o[i] = sram_rdata_b[i][bank_sel_rb_i];
+      rdata_b_o[i] = sram_rdata[i][bank_sel_rb_i];
     end
   end
 
