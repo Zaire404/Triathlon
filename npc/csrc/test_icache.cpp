@@ -1,3 +1,4 @@
+// csrc/test_icache.cpp
 #include "Vtb_icache.h"
 #include "verilated.h"
 #include <cassert>
@@ -12,7 +13,7 @@
 // 这些值应与 Cfg 匹配
 const int VLEN = 32;
 const int ILEN = 32;
-// 内部使用 64 位地址以避免 C++ 警告，并确保内存模拟器的地址空间足够
+// 内部使用 64 位地址以避免 C++ 警告
 const int PLEN = 64;
 const int INSTR_PER_FETCH = 4;
 // ICACHE_LINE_WIDTH 在 test_config_pkg 中是 256
@@ -31,75 +32,101 @@ class SimulatedMemory {
 private:
   // (Line 地址, Cache Line 数据块)
   std::map<uint64_t, std::vector<uint32_t>> memory_data;
+
+  // 模拟状态机
+  enum State { IDLE, WAIT_DELAY, SEND_REFILL };
+  State state;
   int delay_counter;
-  bool response_pending;
-  std::vector<uint32_t> response_data;
-  uint64_t last_req_addr;
+
+  // 暂存当前的 Miss 请求信息
+  uint64_t pending_addr;
+  uint32_t pending_victim_way;
 
 public:
   SimulatedMemory()
-      : delay_counter(-1), response_pending(false), last_req_addr(0) {}
+      : state(IDLE), delay_counter(0), pending_addr(0), pending_victim_way(0) {}
 
   /**
-   * @brief 在 tick() 开始时调用。处理内存响应（作为 DUT 的输入）。
+   * @brief 在 tick() 开始时调用。处理内存响应（Refill）作为 DUT 的输入。
+   * 替代了原来的 provide_response
    */
-  void provide_response(Vtb_icache *top) {
-    // 1. 内存始终准备好接收请求
-    top->mem_rsp_ready_i = 1;
+  void provide_refill(Vtb_icache *top) {
+    // 1. 内存始终准备好接收 Miss 请求
+    top->miss_req_ready_i = 1;
 
-    // 2. 处理来自 ICache 的内存响应
-    if (response_pending && delay_counter > 0) {
-      delay_counter--;
+    // 2. 处理 Refill 逻辑
+    top->refill_valid_i = 0; // 默认拉低
+
+    if (state == WAIT_DELAY) {
+      if (delay_counter > 0) {
+        delay_counter--;
+      } else {
+        state = SEND_REFILL;
+      }
     }
 
-    if (response_pending && delay_counter == 0) {
+    if (state == SEND_REFILL) {
+      // 发送 Refill 数据
+      uint64_t line_addr = pending_addr & ~((uint64_t)LINE_WIDTH_BYTES - 1);
+
       std::cout << "[" << main_time
-                << "] MEM: -> ICache: 'mem_rsp_valid_i' = 1, Data sent for "
-                   "Line Addr=0x"
-                << std::hex << last_req_addr << std::endl;
-      top->mem_rsp_valid_i = 1;
+                << "] MEM: -> ICache: Refill Valid=1, Addr=0x" << std::hex
+                << pending_addr << " Way=" << pending_victim_way << std::endl;
 
-      // VlWide 赋值 (256-bit -> 8 x 32-bit words)
-      for (int i = 0; i < LINE_WIDTH_WORDS_32; ++i) {
-        top->mem_rsp_data_i[i] = response_data[i];
+      top->refill_valid_i = 1;
+      top->refill_paddr_i = pending_addr;     // 把请求的地址传回去
+      top->refill_way_i = pending_victim_way; // 指定填充到哪个 Way
+
+      // 填充数据
+      if (memory_data.count(line_addr)) {
+        const auto &data = memory_data[line_addr];
+        for (int i = 0; i < LINE_WIDTH_WORDS_32; ++i) {
+          top->refill_data_i[i] = data[i];
+        }
+      } else {
+        // 如果没有预加载数据，填充默认值
+        for (int i = 0; i < LINE_WIDTH_WORDS_32; ++i) {
+          top->refill_data_i[i] = 0xBAD0BAD0;
+        }
+        std::cout << "        WARNING: No data preloaded for address 0x"
+                  << std::hex << line_addr << std::endl;
       }
-      top->mem_rsp_is_prefetch_i = 0;
 
-      response_pending = false; // 只发送一个周期
-      delay_counter = -1;
-    } else {
-      top->mem_rsp_valid_i = 0;
+      // 检查 Cache 是否接收了 Refill (握手)
+      // 注意：在组合逻辑中 refill_valid_i 设为 1 后，如果 DUT
+      // 准备好，refill_ready_o 应该为 1 但由于是在 provide_refill (tick开始)
+      // 调用，我们需要在下一次 tick 或 eval 后确认状态
+      // 这里简化处理：假设只要我发了，Cache 处于 MISS_WAIT_REFILL 状态就会收
     }
   }
 
   /**
-   * @brief 在 tick() 中 clk=0, eval() 之后调用。捕获 ICache 请求（作为 DUT
-   * 的输出）。
+   * @brief 在 tick() 中 clk=0, eval() 之后调用。捕获 ICache 请求（Miss）。
+   * 替代了原来的 capture_request
    */
-  void capture_request(Vtb_icache *top) {
-    // 3. 处理来自 ICache 的内存请求
-    // 只有当 ICache 发送请求且内存模拟器准备好接收时才处理
-    if (top->mem_req_valid_o && top->mem_rsp_ready_i) {
-      uint64_t req_addr = top->mem_req_addr_o;
-      // 地址对齐到 Cache Line 边界
-      uint64_t line_addr = req_addr & ~((uint64_t)LINE_WIDTH_BYTES - 1);
-
-      std::cout << "[" << main_time
-                << "] MEM: <- ICache: 'mem_req_valid_o' = 1, Addr=0x"
-                << std::hex << req_addr << " (Line Addr=0x" << line_addr << ")"
+  void capture_miss_req(Vtb_icache *top) {
+    // 如果正在发送 Refill 且 Cache 接收了，则回到 IDLE
+    if (state == SEND_REFILL && top->refill_ready_o) {
+      state = IDLE;
+      std::cout << "[" << main_time << "] MEM: Refill Accepted. State -> IDLE"
                 << std::endl;
+    }
 
-      if (memory_data.count(line_addr)) {
-        response_data = memory_data[line_addr];
-      } else {
-        // 生成默认数据
-        response_data.assign(LINE_WIDTH_WORDS_32, 0xBAD0BAD0);
-        std::cout << "        WARNING: No data preloaded for address 0x"
-                  << std::hex << line_addr << std::endl;
-      }
-      last_req_addr = line_addr;
+    // 处理新的 Miss 请求
+    // 只有当 ICache 发送 Miss 且模拟器处于 IDLE 时处理
+    if (top->miss_req_valid_o && top->miss_req_ready_i && state == IDLE) {
+      pending_addr = top->miss_req_paddr_o;
+      pending_victim_way = top->miss_req_victim_way_o;
 
-      response_pending = true;
+      // 地址对齐到 Cache Line 边界
+      uint64_t line_addr = pending_addr & ~((uint64_t)LINE_WIDTH_BYTES - 1);
+
+      std::cout << "[" << main_time << "] MEM: <- ICache: Miss Req, Addr=0x"
+                << std::hex << pending_addr << " (Line Addr=0x" << line_addr
+                << ")"
+                << " VictimWay=" << std::dec << pending_victim_way << std::endl;
+
+      state = WAIT_DELAY;
       delay_counter = 10; // 模拟 10 个周期的内存延迟
     }
   }
@@ -119,16 +146,15 @@ public:
  * @param memory 内存模拟器指针
  */
 void tick(Vtb_icache *top, SimulatedMemory *memory) {
-  // 1. 内存模拟器更新其输出信号 (mem_rsp_i.valid/data/ready)
-  memory->provide_response(top);
+  // 1. 内存模拟器更新其输出信号 (refill_valid/data)
+  memory->provide_refill(top);
 
   // 2. 时钟低电平
   top->clk_i = 0;
-  top->eval(); // 组合逻辑计算出 mem_req_o
+  top->eval(); // 组合逻辑计算出 miss_req_o
 
-  // 3. 在时钟变高前，捕获ICache发出的请求 (单周期脉冲)
-  // 捕获请求必须在 FSM 状态更新之前 (即 clk=0 eval 之后)
-  memory->capture_request(top);
+  // 3. 在时钟变高前，捕获ICache发出的 Miss 请求
+  memory->capture_miss_req(top);
   main_time++;
 
   // 4. 时钟高电平 (触发寄存器更新)
@@ -142,39 +168,30 @@ void tick(Vtb_icache *top, SimulatedMemory *memory) {
 // =================================================================
 
 /**
- * @brief 设置 IFU 请求
+ * @brief 设置 IFU 请求 (新接口只包含 PC)
  */
-void set_ifu_request(Vtb_icache *top, uint32_t addr0, uint32_t addr1,
-                     uint32_t addr2, uint32_t addr3) {
+void set_ifu_request(Vtb_icache *top, uint32_t pc) {
   top->ifu_req_valid_i = 1;
-  top->ifu_req_vaddr_i[0] = addr0;
-  top->ifu_req_vaddr_i[1] = addr1;
-  top->ifu_req_vaddr_i[2] = addr2;
-  top->ifu_req_vaddr_i[3] = addr3;
+  top->ifu_req_pc_i = pc;
 }
 
 /**
  * @brief 清除 IFU 请求
  */
-void clear_ifu_request(Vtb_icache *top) {
-  top->ifu_req_valid_i = 0;
-  // 保持地址为非零以便于调试，但清除了有效位
-}
+void clear_ifu_request(Vtb_icache *top) { top->ifu_req_valid_i = 0; }
 
 /**
- * @brief 运行一个完整的测试场景（处理 Miss 并等待 Hit）
+ * @brief 运行一个完整的测试场景
  */
 bool run_test_case(Vtb_icache *top, SimulatedMemory *memory,
-                   const char *test_name,
-                   const std::vector<uint32_t> &req_addrs,
+                   const char *test_name, uint32_t req_pc,
                    const std::vector<uint32_t> &expected_data) {
 
   std::cout << "\n--- Test Case: " << test_name << " ---" << std::endl;
-  assert(req_addrs.size() == INSTR_PER_FETCH &&
-         expected_data.size() == INSTR_PER_FETCH);
+  assert(expected_data.size() == INSTR_PER_FETCH);
 
   // 1. 发起 IFU 请求
-  set_ifu_request(top, req_addrs[0], req_addrs[1], req_addrs[2], req_addrs[3]);
+  set_ifu_request(top, req_pc);
 
   int max_cycles = 200;
   bool done = false;
@@ -183,17 +200,17 @@ bool run_test_case(Vtb_icache *top, SimulatedMemory *memory,
     tick(top, memory);
 
     // 2. 检查 IFU 响应
-    if (top->ifu_rsp_ready_o) {
+    // 注意：现在的 icache 中，ifu_rsp_valid_o 指示数据有效
+    if (top->ifu_rsp_valid_o) {
       std::cout << "[" << main_time
-                << "] IFU: <- ICache: 'ifu_rsp_ready_o' = 1. Data received."
+                << "] IFU: <- ICache: 'ifu_rsp_valid_o' = 1. Data received."
                 << std::endl;
       done = true;
       for (int j = 0; j < INSTR_PER_FETCH; ++j) {
-        if (top->ifu_rsp_data_o[j] != expected_data[j]) {
+        if (top->ifu_rsp_instrs_o[j] != expected_data[j]) {
           std::cout << "    [ERROR] Instr " << j << " Fail. Got: 0x" << std::hex
-                    << top->ifu_rsp_data_o[j] << " Expected: 0x"
-                    << expected_data[j] << " at Vaddr: 0x" << req_addrs[j]
-                    << std::endl;
+                    << top->ifu_rsp_instrs_o[j] << " Expected: 0x"
+                    << expected_data[j] << " at PC: 0x" << req_pc << std::endl;
           // 确保测试失败时停止
           assert(false);
         }
@@ -207,6 +224,7 @@ bool run_test_case(Vtb_icache *top, SimulatedMemory *memory,
   if (!done) {
     std::cout << "    [ERROR] Test failed: Timeout after " << max_cycles
               << " cycles." << std::endl;
+    assert(false); // 超时也触发断言失败
   }
 
   return done;
@@ -280,15 +298,9 @@ int main(int argc, char **argv) {
   // 2. 复位
   top->rst_ni = 0;
   clear_ifu_request(top);
-  top->ftq_req_valid_i = 0;
-  memory.provide_response(top);
-  top->clk_i = 0;
-  top->eval();
-  memory.capture_request(top);
-  main_time++;
-
-  top->clk_i = 1;
-  top->eval();
+  top->ifu_req_flush_i = 0;
+  memory.provide_refill(top);
+  tick(top, &memory); // 确保复位期间有时钟沿
   top->rst_ni = 1;
   main_time++;
   std::cout << "[" << main_time << "] Reset complete." << std::endl;
@@ -296,10 +308,9 @@ int main(int argc, char **argv) {
   // =================================================================
   //  Test 1: 单行 Miss (Addr 0x80000000)
   // =================================================================
-  bool test1_passed =
-      run_test_case(top, &memory, "1: Single Line Miss (0x80000000)",
-                    {0x80000000, 0x80000004, 0x80000008, 0x8000000C},
-                    {0x80000000, 0x80000004, 0x80000008, 0x8000000C});
+  bool test1_passed = run_test_case(
+      top, &memory, "1: Single Line Miss (0x80000000)", 0x80000000,
+      {0x80000000, 0x80000004, 0x80000008, 0x8000000C});
   assert(test1_passed);
   std::cout << "--- Test 1 PASSED ---" << std::endl;
 
@@ -310,8 +321,7 @@ int main(int argc, char **argv) {
   //  Test 2: 单行 Hit (Addr 0x80000010, 仍在 Line 1)
   // =================================================================
   bool test2_passed =
-      run_test_case(top, &memory, "2: Single Line Hit (0x80000010)",
-                    {0x80000010, 0x80000014, 0x80000018, 0x8000001C},
+      run_test_case(top, &memory, "2: Single Line Hit (0x80000010)", 0x80000010,
                     {0x80000010, 0x80000014, 0x80000018, 0x8000001C});
   assert(test2_passed);
   std::cout << "--- Test 2 PASSED ---" << std::endl;
@@ -323,9 +333,9 @@ int main(int argc, char **argv) {
   //  Test 3: 跨行 Hit-Miss (Addr 0x80000018 & 0x80000020)
   // =================================================================
   // Line 1 (0x80000000) Hit, Line 2 (0x80000020) Miss
+  // 期望数据: 0x18, 0x1C (from Line 1), 0x20, 0x24 (from Line 2)
   bool test3_passed = run_test_case(
-      top, &memory, "3: Cross-Line Hit-Miss (0x80000018/0x80000020)",
-      {0x80000018, 0x8000001C, 0x80000020, 0x80000024},
+      top, &memory, "3: Cross-Line Hit-Miss (0x80000018)", 0x80000018,
       {0x80000018, 0x8000001C, 0x80000020, 0x80000024});
   assert(test3_passed);
   std::cout << "--- Test 3 PASSED ---" << std::endl;
@@ -336,10 +346,9 @@ int main(int argc, char **argv) {
   // =================================================================
   //  Test 4: 跨行 Hit-Miss (Addr 0x80000038 & 0x80000040)
   // =================================================================
-  // Line 2 (0x80000020) Hit, Line 3 (0x80000040) Miss
+  // Line 2 (0x80000020) Hit (Test 3 中已 Refill), Line 3 (0x80000040) Miss
   bool test4_passed = run_test_case(
-      top, &memory, "4: Cross-Line Hit-Miss (0x80000038/0x80000040)",
-      {0x80000038, 0x8000003C, 0x80000040, 0x80000044},
+      top, &memory, "4: Cross-Line Hit-Miss (0x80000038)", 0x80000038,
       {0x80000038, 0x8000003C, 0x80000040, 0x80000044});
   assert(test4_passed);
   std::cout << "--- Test 4 PASSED ---" << std::endl;
@@ -352,19 +361,19 @@ int main(int argc, char **argv) {
   // =================================================================
   std::cout << "\n--- Test Case: 5: Cache Line Replacement ---" << std::endl;
   // 1: 访问 Addr B, C, D，填满 Index=1 的所有 way (Addr A 已经在 Test 3 中加载)
+  // 注意: 只需要请求每行的首地址即可触发 Refill
   run_test_case(
-      top, &memory, "5.1: Fill Set 1 (Addr B)",
-      {repl_addr_B, repl_addr_B + 4, repl_addr_B + 8, repl_addr_B + 12},
+      top, &memory, "5.1: Fill Set 1 (Addr B)", repl_addr_B,
       {repl_addr_B, repl_addr_B + 4, repl_addr_B + 8, repl_addr_B + 12});
   tick(top, &memory);
+
   run_test_case(
-      top, &memory, "5.2: Fill Set 1 (Addr C)",
-      {repl_addr_C, repl_addr_C + 4, repl_addr_C + 8, repl_addr_C + 12},
+      top, &memory, "5.2: Fill Set 1 (Addr C)", repl_addr_C,
       {repl_addr_C, repl_addr_C + 4, repl_addr_C + 8, repl_addr_C + 12});
   tick(top, &memory);
+
   run_test_case(
-      top, &memory, "5.3: Fill Set 1 (Addr D)",
-      {repl_addr_D, repl_addr_D + 4, repl_addr_D + 8, repl_addr_D + 12},
+      top, &memory, "5.3: Fill Set 1 (Addr D)", repl_addr_D,
       {repl_addr_D, repl_addr_D + 4, repl_addr_D + 8, repl_addr_D + 12});
   tick(top, &memory);
 
@@ -372,18 +381,20 @@ int main(int argc, char **argv) {
   std::cout << "--- Now requesting Addr E to trigger replacement ---"
             << std::endl;
   run_test_case(
-      top, &memory, "5.4: Trigger Replacement (Addr E)",
-      {repl_addr_E, repl_addr_E + 4, repl_addr_E + 8, repl_addr_E + 12},
+      top, &memory, "5.4: Trigger Replacement (Addr E)", repl_addr_E,
       {repl_addr_E, repl_addr_E + 4, repl_addr_E + 8, repl_addr_E + 12});
   tick(top, &memory);
 
-  // 3: 再次访问 Addr A (或 B,C,D 中的任何一个)。它现在应该是 Miss
-  std::cout << "--- Now requesting Addr A again, expecting a miss ---"
-            << std::endl;
-  bool test5_passed =
-      run_test_case(top, &memory, "5.5: Verify Replacement (Re-fetch Addr A)",
-                    {0x80000020, 0x80000024, 0x80000028, 0x8000002C},
-                    {0x80000020, 0x80000024, 0x80000028, 0x8000002C});
+  // 3: 再次访问 Addr A (或 B,C,D 中的任何一个)。
+  // 如果是随机替换或 LRU 近似，A 可能还在也可能不在。
+  // 但由于我们只有 4 路，而我们访问了 A, B, C, D, E
+  // (5个不同Tag)，必然有一个被踢出。 这里我们简单重新访问
+  // A，验证它是否正确返回数据（无论是 Hit 还是 Miss+Refill，只要数据对就行）
+  // 如果被踢出，ICache 将重新发起 Refill。
+  std::cout << "--- Now requesting Addr A again ---" << std::endl;
+  bool test5_passed = run_test_case(
+      top, &memory, "5.5: Verify Replacement (Re-fetch Addr A)", 0x80000020,
+      {0x80000020, 0x80000024, 0x80000028, 0x8000002C});
   assert(test5_passed);
   std::cout << "--- Test 5 PASSED ---" << std::endl;
 
