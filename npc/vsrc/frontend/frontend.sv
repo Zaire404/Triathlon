@@ -1,3 +1,4 @@
+// vsrc/frontend/frontend.sv
 module frontend #(
     parameter config_pkg::cfg_t Cfg = config_pkg::EmptyCfg
 ) ();

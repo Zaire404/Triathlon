@@ -1,3 +1,4 @@
+// vsrc/include/test_config_pkg.sv
 package test_config_pkg;
 
   import config_pkg::*;
