@@ -59,7 +59,7 @@ module ifu
         end else if(flush_i)begin
             pc_reg <= redirect_pc_i;
             pcg_stage_valid <= 1'b1;
-        end else if(ifu2bpu_handshake_o.ready&&ifu2bpu_handshake_o.valid) begin
+        end else if(ifu2bpu_handshake_o.ready&&bpu2ifu_handshake_i.valid) begin
             pc_reg <= bpu2ifu_predicted_pc_i;
             pcg_stage_valid <= 1'b1;  
         end
