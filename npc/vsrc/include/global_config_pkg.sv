@@ -12,4 +12,12 @@ package global_config_pkg;
     logic valid;
     logic ready;
   } handshake_t;
+
+  typedef struct packed {
+    logic [Cfg.XLEN-1:0] pc;
+  } ifu_to_bpu_t;
+  
+  typedef struct packed {
+    logic [Cfg.XLEN-1:0] npc;
+  } bpu_to_ifu_t;
 endpackage : global_config_pkg
