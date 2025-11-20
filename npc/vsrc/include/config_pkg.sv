@@ -20,6 +20,9 @@ package config_pkg;
     int unsigned ICACHE_SET_ASSOC;
     // Instruction cache line width
     int unsigned ICACHE_LINE_WIDTH;
+
+    int unsigned frontedn_hash_LEN;
+    int unsigned frontend_predict_LEN;
   } user_cfg_t;
 
   typedef struct packed {
@@ -33,6 +36,9 @@ package config_pkg;
     int unsigned GPLEN;
 
     int unsigned FETCH_WIDTH;
+
+    int unsigned frontedn_hash_LEN;
+    int unsigned frontend_predict_LEN;
 
     int unsigned ICACHE_BYTE_SIZE;
     int unsigned ICACHE_SET_ASSOC;

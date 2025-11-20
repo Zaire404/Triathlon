@@ -6,8 +6,6 @@ package global_config_pkg;
 
   localparam config_pkg::cfg_t Cfg = config_pkg::build_config(test_config_pkg::TestCfg);
 
-
-
   // For Example
 
   // Exception information
@@ -51,5 +49,18 @@ package global_config_pkg;
     logic [Cfg.VLEN-1:0]        vaddr;  // virtual address out
     exception_t                 ex;     // we've encountered an exception
   } icache_drsp_t;
+
+  typedef struct packed {
+    logic valid;
+    logic ready;
+  } handshake_t;
+
+  typedef struct packed{
+    logic [Cfg.XLEN - 1:0] npc;
+  } bpu_to_ifu_t;
+
+  typedef struct packed {
+    logic [Cfg.XLEN - 1:0] pc;
+  } ifu_to_bpu_t;
 
 endpackage : global_config_pkg
