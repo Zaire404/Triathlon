@@ -28,8 +28,6 @@ package config_pkg;
     // Instruction cache line width
     int unsigned ICACHE_LINE_WIDTH;
 
-    int unsigned frontedn_hash_LEN;
-    int unsigned frontend_predict_LEN;
   } user_cfg_t;
 
   typedef struct packed {
@@ -45,6 +43,8 @@ package config_pkg;
     int unsigned GPLEN;
     // Number of instructions fetched per cycle
     int unsigned INSTR_PER_FETCH;
+    // Fetch width (in bits)
+    int unsigned FETCH_WIDTH;
 
     // ICache configuration
     int unsigned ICACHE_BYTE_SIZE;
