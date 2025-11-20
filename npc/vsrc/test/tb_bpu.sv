@@ -6,7 +6,7 @@ module tb_bpu (
 	input logic clk_i,
 	input logic rst_i,
 	input logic ifu_ready_i,
-	input logic ifu_vaild_i,
+	input logic ifu_valid_i,
 	input logic[Cfg.XLEN - 1:0] pc_i,
     // --- 输出端口  ---
 	output logic [Cfg.XLEN-1:0] npc_o
@@ -17,7 +17,7 @@ module tb_bpu (
 	bpu_to_ifu_t bpu_to_ifu_o;
 	assign ifu_to_bpu_i.pc = pc_i;
 	assign ifu_to_bpu_handshake_i.ready = ifu_ready_i;
-	assign ifu_to_bpu_handshake_i.valid = ifu_vaild_i;
+	assign ifu_to_bpu_handshake_i.valid = ifu_valid_i;
   bpu #(
       .Cfg(Cfg)
   ) i_BPU (
