@@ -2,7 +2,7 @@
 # Generic Makefile for running Verilator C++ tests
 
 # --- Configuration ---
-TEST ?= test_build_config
+TEST ?= test_build_config test_ifu
 
 # --- Paths ---
 TEST_CPP_DIR = ./csrc
@@ -26,8 +26,8 @@ PKG_VSRCS = \
 	./vsrc/include/config_pkg.sv \
 	./vsrc/include/test_config_pkg.sv \
 	./vsrc/include/build_config_pkg.sv \
-	./vsrc/include/global_config_pkg.sv
-
+	./vsrc/include/global_config_pkg.sv \
+	
 # Automatically find all other design files (non-package, non-test).
 DESIGN_VSRCS = $(shell find ./vsrc -path ./vsrc/include -prune -o -path ./vsrc/test -prune -o -name "*.sv" -print)
 
