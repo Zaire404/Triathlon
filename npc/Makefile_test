@@ -18,7 +18,7 @@ BIN = $(BUILD_DIR)/$(TEST_TB_MODULE)
 
 # --- Verilator ---
 VERILATOR = verilator
-VERILATOR_CFLAGS += -cc --exe --build -O3 --x-assign fast --x-initial fast --assert
+VERILATOR_CFLAGS += -cc --exe --build -O3 --x-assign fast --x-initial fast --assert --trace
 VERILATOR_CFLAGS += --Wno-fatal --Wno-WIDTH
 VERILATOR_CFLAGS += -I./vsrc/include -I./vsrc
 
