@@ -81,6 +81,7 @@ module ifu
     assign flush_icache_o = flush_i;
     assign ifu2bpu_pc_o = pc_reg;
     assign ifu_ibuffer_rsp_pc_o = pc_reg;
+    assign ifu2icache_req_addr_o = pc_reg;
     assign ifu_ibuffer_rsp_data_o = icache2ifu_rsp_data_i;
 
     always_comb begin
