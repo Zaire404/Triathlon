@@ -14,6 +14,8 @@ int main(int argc, char **argv) {
   // 1. 设置输入值，直接访问独立的输入端口
   top->i_XLEN = 32;
   top->i_VLEN = 32;
+  top->i_ILEN = 32;
+  top->i_INSTR_PER_FETCH = 4;
   top->i_ICACHE_BYTE_SIZE = 8192;
   top->i_ICACHE_SET_ASSOC = 8;
   top->i_ICACHE_LINE_WIDTH = 64;
@@ -24,7 +26,7 @@ int main(int argc, char **argv) {
   // 3. 计算预期结果
   int expected_plen = 32;
   int expected_assoc_width = 3;
-  int expected_index_width = 10;
+  int expected_index_width = 7;
   int expected_tag_width = 22;
 
   // 4. 读取输出并验证，访问独立的输出端口

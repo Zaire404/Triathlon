@@ -1,3 +1,4 @@
+// vsrc/include/config_pkg.sv
 package config_pkg;
 
   // ---------------
@@ -10,10 +11,16 @@ package config_pkg;
 
 
   typedef struct packed {
+    // Number of instructions fetched per cycle
+    int unsigned INSTR_PER_FETCH;
     // General Purpose Register Size (in bits)
     int unsigned XLEN;
     // Virtual address Size (in bits)
     int unsigned VLEN;
+    // Instruction Length (in bits)
+    int unsigned ILEN;
+
+    // ICache configuration
     // Instruction cache size (in bytes)
     int unsigned ICACHE_BYTE_SIZE;
     // Instruction cache associativity (number of ways)
@@ -30,22 +37,34 @@ package config_pkg;
     int unsigned XLEN;
     // Virtual address Size (in bits)
     int unsigned VLEN;
+    // Instruction Length (in bits)
+    int unsigned ILEN;
     // Physical address Size (in bits)
     int unsigned PLEN;
     // General Purpose Physical Register Size (in bits)
     int unsigned GPLEN;
+    // Number of instructions fetched per cycle
+    int unsigned INSTR_PER_FETCH;
 
+<<<<<<< HEAD
     int unsigned FETCH_WIDTH;
 
     int unsigned frontedn_hash_LEN;
     int unsigned frontend_predict_LEN;
 
+=======
+    // ICache configuration
+>>>>>>> main
     int unsigned ICACHE_BYTE_SIZE;
     int unsigned ICACHE_SET_ASSOC;
     int unsigned ICACHE_SET_ASSOC_WIDTH;
     int unsigned ICACHE_INDEX_WIDTH;
     int unsigned ICACHE_TAG_WIDTH;
     int unsigned ICACHE_LINE_WIDTH;
+    int unsigned ICACHE_OFFSET_WIDTH;
+    int unsigned ICACHE_NUM_BANKS;
+    int unsigned ICACHE_BANK_SEL_WIDTH;
+    int unsigned ICACHE_NUM_SETS;
   } cfg_t;
   localparam cfg_t EmptyCfg = cfg_t'(0);
 endpackage
