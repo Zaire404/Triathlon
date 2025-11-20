@@ -46,15 +46,7 @@ package config_pkg;
     // Number of instructions fetched per cycle
     int unsigned INSTR_PER_FETCH;
 
-<<<<<<< HEAD
-    int unsigned FETCH_WIDTH;
-
-    int unsigned frontedn_hash_LEN;
-    int unsigned frontend_predict_LEN;
-
-=======
     // ICache configuration
->>>>>>> main
     int unsigned ICACHE_BYTE_SIZE;
     int unsigned ICACHE_SET_ASSOC;
     int unsigned ICACHE_SET_ASSOC_WIDTH;
