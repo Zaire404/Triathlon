@@ -1,4 +1,5 @@
 ./vsrc/cache/data_array.sv
+./vsrc/cache/icache_mshr.sv
 ./vsrc/cache/icache.sv
 ./vsrc/cache/lfsr.sv
 ./vsrc/cache/sram.sv
@@ -12,6 +13,7 @@
 ./vsrc/include/test_config_pkg.sv
 ./vsrc/test/tb_build_config.sv
 ./vsrc/test/tb_data_array.sv
+./vsrc/test/tb_icache_mshr.sv
 ./vsrc/test/tb_icache.sv
 ./vsrc/test/tb_sram.sv
 ./vsrc/test/tb_tag_array.sv

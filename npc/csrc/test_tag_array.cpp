@@ -106,7 +106,7 @@ int main(int argc, char **argv) {
   top->bank_sel_ra_i = test_bank;
   top->bank_addr_rb_i = unwritten_addr; // 端口 B 读未写入的地址
   top->bank_sel_rb_i = unwritten_bank;
-  top->eval(); // 组合逻辑读
+  tick(top);
 
   // 检查 端口 A (读取写入的数据)
   uint32_t read_tag_a = get_tag(top->rdata_tag_a_o, test_way);

@@ -1,6 +1,3 @@
-import config_pkg::*;
-import global_config_pkg::*;
-
 module icache #(
     parameter config_pkg::cfg_t Cfg = config_pkg::EmptyCfg
 ) (
@@ -8,416 +5,505 @@ module icache #(
     input logic rst_ni,
 
     // IFU Interface
-    input  global_config_pkg::ifu2icache_req_t ifu_req_i,
-    output global_config_pkg::icache2ifu_rsp_t ifu_rsp_o,
+    input global_config_pkg::handshake_t ifu_req_handshake_i,
+    output global_config_pkg::handshake_t ifu_rsp_handshake_o,
+    input logic [Cfg.VLEN-1:0] ifu_req_pc_i,
+    output logic [Cfg.INSTR_PER_FETCH-1:0][Cfg.ILEN-1:0] ifu_rsp_instrs_o,
+    input logic ifu_req_flush_i,
 
-    //FTQ Interface
-    input  global_config_pkg::ftq2icache_req_t ftq_req_i,
-    output global_config_pkg::icache2ftq_rsp_t ftq_rsp_o,
+    // Miss / Refill interface to external memory system (e.g. AXI wrapper)
+    output logic                                  miss_req_valid_o,
+    input  logic                                  miss_req_ready_i,
+    output logic [                  Cfg.PLEN-1:0] miss_req_paddr_o,       // line-aligned address
+    output logic [Cfg.ICACHE_SET_ASSOC_WIDTH-1:0] miss_req_victim_way_o,  // which way to fill
+    output logic [    Cfg.ICACHE_INDEX_WIDTH-1:0] miss_req_index_o,       // index within cache
 
-    // Memory Interface
-    input  global_config_pkg::mem2icache_rsp_t mem_rsp_i,
-    output global_config_pkg::icache2mem_req_t mem_req_o
+    input  logic                                  refill_valid_i,
+    output logic                                  refill_ready_o,
+    input  logic [                  Cfg.PLEN-1:0] refill_paddr_i,
+    input  logic [Cfg.ICACHE_SET_ASSOC_WIDTH-1:0] refill_way_i,
+    input  logic [     Cfg.ICACHE_LINE_WIDTH-1:0] refill_data_i
 );
-  // --- Refill 逻辑信号 ---
-  logic [                               Cfg.ICACHE_SET_ASSOC-1:0] refill_way_mask;
-  logic [                             Cfg.ICACHE_INDEX_WIDTH-1:0] refill_index;
-  logic [Cfg.ICACHE_INDEX_WIDTH-$clog2(Cfg.ICACHE_NUM_BANKS)-1:0] refill_bank_addr;
-  logic [                       $clog2(Cfg.ICACHE_NUM_BANKS)-1:0] refill_bank_sel;
-  logic [                               Cfg.ICACHE_TAG_WIDTH-1:0] refill_tag;
-  logic                                                           refill_valid;
 
-  logic [Cfg.ICACHE_SET_ASSOC-1:0][Cfg.ICACHE_TAG_WIDTH-1:0] line1_tags_data, line2_tags_data;
-  logic [Cfg.ICACHE_SET_ASSOC-1:0] line1_tags_valid, line2_tags_valid;
-  tag_array #(
-      .NUM_WAYS(Cfg.ICACHE_SET_ASSOC),
-      .NUM_BANKS(Cfg.ICACHE_NUM_BANKS),
-      .SETS_PER_BANK_WIDTH($clog2(Cfg.ICACHE_NUM_SETS / Cfg.ICACHE_NUM_BANKS)),
-      .TAG_WIDTH(Cfg.ICACHE_TAG_WIDTH)
-  ) i_tag_array (
-      .clk_i (clk_i),
-      .rst_ni(rst_ni),
+  // ---------------------------------------------------------------------------
+  // Local parameters derived from Cfg
+  // ---------------------------------------------------------------------------
+  localparam int unsigned NUM_WAYS = Cfg.ICACHE_SET_ASSOC;
+  localparam int unsigned NUM_BANKS = Cfg.ICACHE_NUM_BANKS;
+  localparam int unsigned BANK_SEL_WIDTH = Cfg.ICACHE_BANK_SEL_WIDTH;
+  localparam int unsigned INDEX_WIDTH = Cfg.ICACHE_INDEX_WIDTH;
+  localparam int unsigned OFFSET_WIDTH = Cfg.ICACHE_OFFSET_WIDTH;
+  localparam int unsigned TAG_WIDTH = Cfg.ICACHE_TAG_WIDTH;
+  localparam int unsigned LINE_WIDTH = Cfg.ICACHE_LINE_WIDTH;
+  localparam int unsigned SETS_PER_BANK_WIDTH = INDEX_WIDTH - BANK_SEL_WIDTH;
+  localparam int unsigned LINE_BYTES = LINE_WIDTH / 8;
+  localparam int unsigned ILEN = Cfg.ILEN;
+  localparam int unsigned ILEN_BYTES = ILEN / 8;
+  localparam int unsigned ILEN_OFFSET_BITS = (ILEN_BYTES > 1) ? $clog2(ILEN_BYTES) : 0;
+  localparam int unsigned FETCH_NUM = Cfg.INSTR_PER_FETCH;
+  localparam int unsigned LINE_WORDS = LINE_WIDTH / ILEN;
+  localparam int unsigned SLOT_WIDTH = (LINE_WORDS > 1) ? $clog2(LINE_WORDS) : 1;
+  localparam int unsigned LINE_ADDR_WIDTH = Cfg.PLEN - OFFSET_WIDTH;
 
-      // 读端口 A (用于 Line 1)
-      .bank_addr_ra_i (addr1_bank_addr),
-      .bank_sel_ra_i  (addr1_bank_sel),
-      .rdata_tag_a_o  (line1_tags_data),
-      .rdata_valid_a_o(line1_tags_valid),
-
-      // 读端口 B (用于 Line 2)
-      .bank_addr_rb_i (addr2_bank_addr),
-      .bank_sel_rb_i  (addr2_bank_sel),
-      .rdata_tag_b_o  (line2_tags_data),
-      .rdata_valid_b_o(line2_tags_valid),
-
-      // 写端口 (用于 Refill)
-      .we_way_mask_i(refill_way_mask),
-      .w_bank_addr_i(refill_bank_addr),
-      .w_bank_sel_i (refill_bank_sel),
-      .wdata_tag_i  (refill_tag),
-      .wdata_valid_i(refill_valid)
-  );
-
-  logic [Cfg.ICACHE_SET_ASSOC-1:0][Cfg.ICACHE_LINE_WIDTH-1:0]
-      line1_data_all_ways, line2_data_all_ways;
-
-  assign refill_bank_addr = refill_index[Cfg.ICACHE_INDEX_WIDTH-1 : $clog2(Cfg.ICACHE_NUM_BANKS)];
-  assign refill_bank_sel  = refill_index[$clog2(Cfg.ICACHE_NUM_BANKS)-1:0];
-  data_array #(
-      .NUM_WAYS(Cfg.ICACHE_SET_ASSOC),
-      .NUM_BANKS(Cfg.ICACHE_NUM_BANKS),
-      .SETS_PER_BANK_WIDTH($clog2(Cfg.ICACHE_NUM_SETS / Cfg.ICACHE_NUM_BANKS)),
-      .BLOCK_WIDTH(Cfg.ICACHE_LINE_WIDTH)
-  ) i_data_array (
-      .clk_i (clk_i),
-      .rst_ni(rst_ni),
-
-      // 读端口 A (用于 Line 1)
-      .bank_addr_ra_i(addr1_bank_addr),
-      .bank_sel_ra_i(addr1_bank_sel),
-      .rdata_a_o(line1_data_all_ways),  // [NUM_WAYS-1:0][LINE_WIDTH-1:0]
-
-      // 读端口 B (用于 Line 2)
-      .bank_addr_rb_i(addr2_bank_addr),
-      .bank_sel_rb_i(addr2_bank_sel),
-      .rdata_b_o(line2_data_all_ways),
-
-      // 写端口 (用于 Refill)
-      .we_way_mask_i(refill_way_mask),
-      .w_bank_addr_i(refill_bank_addr),
-      .w_bank_sel_i(refill_bank_sel),
-      .wdata_i(mem_rsp_i.data)
-  );
-
-  // --- LFSR 替换策略信号 ---
-  logic                                    lfsr_en;
-  logic [$clog2(Cfg.ICACHE_SET_ASSOC)-1:0] replace_way_index;
-
-  // LFSR 替换策略
-  lfsr #(
-      .LfsrWidth(4),
-      .OutWidth ($clog2(Cfg.ICACHE_SET_ASSOC))
-  ) i_lfsr (
-      .clk_i(clk_i),
-      .rst_ni(rst_ni),
-      .en_i(lfsr_en),  // 当需要替换时
-      .out_o(replace_way_index)
-  );
-
-  // =================================================================
-  //  地址分解与跨行检测 (Address Decomposition & Cross-Line Detection)
-  // =================================================================
-
-  // 如果本次fetch请求跨越了两个cache line，则需要特殊处理
-  logic cross_line_fetch;
-  // 在不同cache line的指令地址
-  logic [Cfg.VLEN-1:0] addr1_vaddr, addr2_vaddr;
-  logic [Cfg.ICACHE_INDEX_WIDTH-1:0] addr1_index, addr2_index;
-  logic [Cfg.ICACHE_TAG_WIDTH-1:0] addr1_tag, addr2_tag;
-  logic [Cfg.ICACHE_INDEX_WIDTH-$clog2(Cfg.ICACHE_NUM_BANKS)-1:0] addr1_bank_addr, addr2_bank_addr;
-  logic [$clog2(Cfg.ICACHE_NUM_BANKS)-1:0] addr1_bank_sel, addr2_bank_sel;
-
-  logic [Cfg.ICACHE_TAG_WIDTH-1:0] ifu_tag[Cfg.INSTR_PER_FETCH];
-  logic [Cfg.ICACHE_INDEX_WIDTH-1:0] ifu_index[Cfg.INSTR_PER_FETCH];
-  logic [Cfg.ICACHE_OFFSET_WIDTH-1:0] ifu_offset[Cfg.INSTR_PER_FETCH];
-
-  always_comb begin
-    addr1_vaddr = ifu_req_i.vaddr[0];
-    addr2_vaddr = '0;
-    cross_line_fetch = 1'b0;
-
-    for (int i = 0; i < Cfg.INSTR_PER_FETCH; i++) begin
-      ifu_tag[i] = ifu_req_i.vaddr[i][Cfg.PLEN-1-:Cfg.ICACHE_TAG_WIDTH];
-      ifu_index[i] = ifu_req_i.vaddr[i][Cfg.PLEN-Cfg.ICACHE_TAG_WIDTH-1-:Cfg.ICACHE_INDEX_WIDTH];
-      ifu_offset[i] = ifu_req_i.vaddr[i][Cfg.ICACHE_OFFSET_WIDTH-1:0];
-      if (ifu_index[i] != ifu_index[0] && !cross_line_fetch) begin
-        cross_line_fetch = 1'b1;
-        addr2_vaddr = ifu_req_i.vaddr[i];
-      end
-    end
-  end
-
-  assign addr1_tag = addr1_vaddr[Cfg.PLEN-1-:Cfg.ICACHE_TAG_WIDTH];
-  assign addr1_index = addr1_vaddr[Cfg.PLEN-Cfg.ICACHE_TAG_WIDTH-1-:Cfg.ICACHE_INDEX_WIDTH];
-  assign addr1_bank_addr = addr1_index[Cfg.ICACHE_INDEX_WIDTH-1 : $clog2(Cfg.ICACHE_NUM_BANKS)];
-  assign addr1_bank_sel = addr1_index[$clog2(Cfg.ICACHE_NUM_BANKS)-1:0];
-  // 仅当跨行fetch时才使用addr2_vaddr
-  assign addr2_tag = addr2_vaddr[Cfg.PLEN-1-:Cfg.ICACHE_TAG_WIDTH];
-  assign addr2_index = addr2_vaddr[Cfg.PLEN-Cfg.ICACHE_TAG_WIDTH-1-:Cfg.ICACHE_INDEX_WIDTH];
-  assign addr2_bank_addr = addr2_index[Cfg.ICACHE_INDEX_WIDTH-1 : $clog2(Cfg.ICACHE_NUM_BANKS)];
-  assign addr2_bank_sel = addr2_index[$clog2(Cfg.ICACHE_NUM_BANKS)-1:0];
-
-  // =================================================================
-  //  hit/miss检测 (Hit/Miss Detection)
-  // =================================================================
-
-  logic [Cfg.ICACHE_SET_ASSOC-1:0] line1_hit_ways, line2_hit_ways;
-  logic line1_hit, line2_hit, ifu_all_hit;
-  logic [Cfg.ICACHE_SET_ASSOC_WIDTH-1:0] line1_hit_way, line2_hit_way;
-
-  priority_encoder #(
-      .WIDTH(Cfg.ICACHE_SET_ASSOC)
-  ) line1_pe (
-      .in (line1_hit_ways),
-      .out(line1_hit_way)
-  );
-  priority_encoder #(
-      .WIDTH(Cfg.ICACHE_SET_ASSOC)
-  ) line2_pe (
-      .in (line2_hit_ways),
-      .out(line2_hit_way)
-  );
-
-  always_comb begin
-    line1_hit_ways = '0;
-    line2_hit_ways = '0;
-    for (int i = 0; i < Cfg.ICACHE_SET_ASSOC; i++) begin
-      line1_hit_ways[i] = line1_tags_valid[i] && (line1_tags_data[i] == addr1_tag);
-      line2_hit_ways[i] = line2_tags_valid[i] && (line2_tags_data[i] == addr2_tag);
-    end
-
-    line1_hit   = |line1_hit_ways;
-    line2_hit   = |line2_hit_ways;
-
-    // 最终的Hit判断
-    ifu_all_hit = line1_hit && (!cross_line_fetch || line2_hit);
-    // $display("ICache Lookup: Cross_line_fetch=%b, line1_hit=%b, line2_hit=%b, ifu_all_hit=%b",
-    //  cross_line_fetch, line1_hit, line2_hit, ifu_all_hit);
-  end
-
-  // =================================================================
-  //  指令数据组装 (Instruction Data Assembly)
-  // =================================================================
-  logic [Cfg.ICACHE_LINE_WIDTH-1:0] line1_data, line2_data;
-
-  assign line1_data = line1_data_all_ways[line1_hit_way];
-  assign line2_data = line2_data_all_ways[line2_hit_way];
-
-  function automatic logic [Cfg.ILEN-1:0] select_from_line(
-      input logic [Cfg.ICACHE_LINE_WIDTH-1:0] line_data,
-      input logic [Cfg.ICACHE_OFFSET_WIDTH-1:0] instr_offset);
-    localparam int unsigned BIT_OFFSET_WIDTH = $clog2(Cfg.ICACHE_LINE_WIDTH);
-    logic [BIT_OFFSET_WIDTH - 1:0] bit_offset = instr_offset * 8;
-    select_from_line = line_data[bit_offset+:Cfg.ILEN];
-  endfunction
-
-  always_comb begin
-    ifu_rsp_o.data = '0;
-    for (int i = 0; i < Cfg.INSTR_PER_FETCH; i++) begin
-      // 判断这条指令地址属于 Line 1 还是 Line 2
-      if (!cross_line_fetch || (ifu_index[i] == addr1_index)) begin
-        // 从 Line 1 数据中提取
-        ifu_rsp_o.data[i] = select_from_line(line1_data, ifu_offset[i]);
-      end else begin
-        // 从 Line 2 数据中提取
-        ifu_rsp_o.data[i] = select_from_line(line2_data, ifu_offset[i]);
-      end
-    end
-  end
-
-  // =================================================================
-  //  主状态机(FSM)
-  // =================================================================
-  typedef enum logic [2:0] {
+  // ---------------------------------------------------------------------------
+  // State machine
+  // ---------------------------------------------------------------------------
+  typedef enum logic [1:0] {
     IDLE,
     LOOKUP,
-    MISS_WAIT,
-    REFILL
-  } state_t;
+    MISS_REQ,
+    MISS_WAIT_REFILL
+  } ic_state_e;
+  ic_state_e state_q, state_d;
 
-  state_t state_q, state_d;
-  // 保存 Miss 上下文的寄存器
-  logic [Cfg.PLEN-1:0] miss_addr1_q, miss_addr1_d;
-  logic [Cfg.PLEN-1:0] miss_addr2_q, miss_addr2_d;
-  logic miss_line1_pending_q, miss_line1_pending_d;
-  logic miss_line2_pending_q, miss_line2_pending_d;
-  logic is_prefetch_miss_q, is_prefetch_miss_d;
+  // ---------------------------------------------------------------------------
+  // Request pipeline registers (one in-flight request)
+  // ---------------------------------------------------------------------------
+  logic [       Cfg.PLEN-1:0] pc_q;
+  logic [     SLOT_WIDTH-1:0] start_slot_q;
+  logic                       cross_line_q;
+  // Line address (TAG+INDEX) for current PC and the next line
+  logic [LINE_ADDR_WIDTH-1:0] line_addr_a_q;
+  logic [LINE_ADDR_WIDTH-1:0] line_addr_b_q;  // next line (for cross-line fetch)
 
-  // 时序逻辑：所有状态寄存器
-  always_ff @(posedge clk_i or negedge rst_ni) begin
-    if (!rst_ni) begin
-      state_q <= IDLE;
-      miss_addr1_q <= '0;
-      miss_addr2_q <= '0;
-      miss_line1_pending_q <= 1'b0;
-      miss_line2_pending_q <= 1'b0;
-      is_prefetch_miss_q <= 1'b0;
+  // Decoded index/tag/bank for A/B
+  logic [INDEX_WIDTH-1:0] index_a_q, index_b_q;
+  logic [TAG_WIDTH-1:0] tag_a_expected_q, tag_b_expected_q;
+
+  // [New] Next state signals for decoding (Fix BLKANDNBLK)
+  logic [LINE_ADDR_WIDTH-1:0] line_addr_a_d;
+  logic [LINE_ADDR_WIDTH-1:0] line_addr_b_d;
+  logic [INDEX_WIDTH-1:0] index_a_d, index_b_d;
+  logic [TAG_WIDTH-1:0] tag_a_expected_d, tag_b_expected_d;
+  logic [                SLOT_WIDTH-1:0] start_slot_d;
+  logic                                  cross_line_d;
+
+  // Miss context
+  logic [                  Cfg.PLEN-1:0] miss_paddr_q;
+  logic [Cfg.ICACHE_SET_ASSOC_WIDTH-1:0] miss_victim_way_q;
+  logic [               INDEX_WIDTH-1:0] miss_index_q;
+  logic [       SETS_PER_BANK_WIDTH-1:0] miss_bank_addr_q;
+  logic [            BANK_SEL_WIDTH-1:0] miss_bank_sel_q;
+
+  // ---------------------------------------------------------------------------
+  // Request decode helper (combinational)
+  // ---------------------------------------------------------------------------
+  function automatic void decode_pc(
+      input logic [Cfg.PLEN-1:0] pc, output logic [LINE_ADDR_WIDTH-1:0] line_addr_a,
+      output logic [LINE_ADDR_WIDTH-1:0] line_addr_b, output logic [INDEX_WIDTH-1:0] index_a,
+      output logic [INDEX_WIDTH-1:0] index_b, output logic [TAG_WIDTH-1:0] tag_a_exp,
+      output logic [TAG_WIDTH-1:0] tag_b_exp, output logic [SLOT_WIDTH-1:0] start_slot,
+      output logic cross_line);
+
+    logic [LINE_ADDR_WIDTH-1:0] line_addr_base;
+    line_addr_base = pc[Cfg.PLEN-1:OFFSET_WIDTH];
+    line_addr_a    = line_addr_base;
+    line_addr_b    = line_addr_base + 1'b1;
+    index_a        = line_addr_a[INDEX_WIDTH-1:0];
+    index_b        = line_addr_b[INDEX_WIDTH-1:0];
+    tag_a_exp      = line_addr_a[INDEX_WIDTH+:TAG_WIDTH];
+    tag_b_exp      = line_addr_b[INDEX_WIDTH+:TAG_WIDTH];
+
+    // Slot of first instruction within the line (ILEN alignment)
+    if (ILEN_BYTES > 1) begin
+      start_slot = pc[OFFSET_WIDTH-1:ILEN_OFFSET_BITS];
     end else begin
-      state_q <= state_d;
-      miss_addr1_q <= miss_addr1_d;
-      miss_addr2_q <= miss_addr2_d;
-      miss_line1_pending_q <= miss_line1_pending_d;
-      miss_line2_pending_q <= miss_line2_pending_d;
-      is_prefetch_miss_q <= is_prefetch_miss_d;
+      start_slot = '0;
     end
-    $display("ICache State: %0d", state_q);
+
+    if (FETCH_NUM >= LINE_WORDS) begin
+      cross_line = 1'b0;
+    end else begin
+      cross_line = (start_slot > (LINE_WORDS - FETCH_NUM));
+    end
+  endfunction
+
+  // Combinational decode logic
+  always_comb begin
+    decode_pc(ifu_req_pc_i, line_addr_a_d, line_addr_b_d, index_a_d, index_b_d, tag_a_expected_d,
+              tag_b_expected_d, start_slot_d, cross_line_d);
   end
 
-  always_comb begin
-    // --- 默认输出 和 默认状态保持 ---
-    state_d = state_q;  // 默认保持当前状态
-    // 默认保持所有状态寄存器
-    miss_addr1_d = miss_addr1_q;
-    miss_addr2_d = miss_addr2_q;
-    miss_line1_pending_d = miss_line1_pending_q;
-    miss_line2_pending_d = miss_line2_pending_q;
-    is_prefetch_miss_d = is_prefetch_miss_q;
+  // ---------------------------------------------------------------------------
+  // Tag & Data arrays
+  // ---------------------------------------------------------------------------
+  logic [NUM_WAYS-1:0][TAG_WIDTH-1:0] tag_a, tag_b;
+  logic [NUM_WAYS-1:0][0:0] valid_a, valid_b;
+  logic [NUM_WAYS-1:0][LINE_WIDTH-1:0] line_a_all, line_b_all;
 
-    // 默认接口信号
-    ifu_rsp_o.ready = 1'b0;
-    ftq_rsp_o.ready = 1'b0;
-    mem_req_o.valid = 1'b0;
-    lfsr_en = 1'b0;
+  // Write ports (for refill)
+  logic [           NUM_WAYS-1:0] we_way_mask;
+  logic [SETS_PER_BANK_WIDTH-1:0] w_bank_addr;
+  logic [     BANK_SEL_WIDTH-1:0] w_bank_sel;
+  logic [          TAG_WIDTH-1:0] w_tag;
+  logic [                    0:0] w_valid;
+  logic [         LINE_WIDTH-1:0] w_line;
 
-    // Refill 信号清零
-    refill_way_mask = '0;
-    refill_valid = 1'b0;
-    refill_tag = '0;
-    refill_index = '0;
+  // Tag array instance
+  tag_array #(
+      .NUM_WAYS           (NUM_WAYS),
+      .NUM_BANKS          (NUM_BANKS),
+      .SETS_PER_BANK_WIDTH(SETS_PER_BANK_WIDTH),
+      .TAG_WIDTH          (TAG_WIDTH),
+      .VALID_WIDTH        (1)
+  ) u_tag_array (
+      .clk_i          (clk_i),
+      .rst_ni         (rst_ni),
+      // Read port A
+      .bank_addr_ra_i (index_a_q[INDEX_WIDTH-1:BANK_SEL_WIDTH]),
+      .bank_sel_ra_i  (index_a_q[BANK_SEL_WIDTH-1:0]),
+      .rdata_tag_a_o  (tag_a),
+      .rdata_valid_a_o(valid_a),
+      // Read port B
+      .bank_addr_rb_i (index_b_q[INDEX_WIDTH-1:BANK_SEL_WIDTH]),
+      .bank_sel_rb_i  (index_b_q[BANK_SEL_WIDTH-1:0]),
+      .rdata_tag_b_o  (tag_b),
+      .rdata_valid_b_o(valid_b),
+      // Write port
+      .w_bank_addr_i  (w_bank_addr),
+      .w_bank_sel_i   (w_bank_sel),
+      .we_way_mask_i  (we_way_mask),
+      .wdata_tag_i    (w_tag),
+      .wdata_valid_i  (w_valid)
+  );
 
-    // --- FTQ 预取请求处理 ---
-    if (ftq_req_i.valid && (state_q == IDLE)) begin
-      ftq_rsp_o.ready = 1'b1;
-      // TODO:需要一个MSHR来处理FTQ的Miss，这里暂时省略
+  // Data array instance
+  data_array #(
+      .NUM_WAYS           (NUM_WAYS),
+      .NUM_BANKS          (NUM_BANKS),
+      .SETS_PER_BANK_WIDTH(SETS_PER_BANK_WIDTH),
+      .BLOCK_WIDTH        (LINE_WIDTH)
+  ) u_data_array (
+      .clk_i         (clk_i),
+      .rst_ni        (rst_ni),
+      // Read port A
+      .bank_addr_ra_i(index_a_q[INDEX_WIDTH-1:BANK_SEL_WIDTH]),
+      .bank_sel_ra_i (index_a_q[BANK_SEL_WIDTH-1:0]),
+      .rdata_a_o     (line_a_all),
+      // Read port B
+      .bank_addr_rb_i(index_b_q[INDEX_WIDTH-1:BANK_SEL_WIDTH]),
+      .bank_sel_rb_i (index_b_q[BANK_SEL_WIDTH-1:0]),
+      .rdata_b_o     (line_b_all),
+      // Write port
+      .w_bank_addr_i (w_bank_addr),
+      .w_bank_sel_i  (w_bank_sel),
+      .we_way_mask_i (we_way_mask),
+      .wdata_i       (w_line)
+  );
+
+  // ---------------------------------------------------------------------------
+  // LFSR for pseudo-random replacement
+  // ---------------------------------------------------------------------------
+  logic [Cfg.ICACHE_SET_ASSOC_WIDTH-1:0] lfsr_out;
+  lfsr #(
+      .LfsrWidth(4),
+      .OutWidth (Cfg.ICACHE_SET_ASSOC_WIDTH)
+  ) u_lfsr (
+      .clk_i (clk_i),
+      .rst_ni(rst_ni),
+      .en_i  (1'b1),     // free running
+      .out_o (lfsr_out)
+  );
+
+  // ---------------------------------------------------------------------------
+  // Hit / replacement logic
+  // ---------------------------------------------------------------------------
+  logic [NUM_WAYS-1:0] way_valid_a, way_valid_b;
+  logic [NUM_WAYS-1:0] hit_way_a, hit_way_b;
+  logic hit_a, hit_b, hit_all;
+  logic [Cfg.ICACHE_SET_ASSOC_WIDTH-1:0] hit_way_idx_a, hit_way_idx_b;
+
+  // Extract valid bits
+  generate
+    genvar w;
+    for (w = 0; w < NUM_WAYS; w++) begin : gen_valid_extract
+      assign way_valid_a[w] = valid_a[w][0];
+      assign way_valid_b[w] = valid_b[w][0];
     end
+  endgenerate
+
+  // Hit detection
+  genvar wi;
+  generate
+    for (wi = 0; wi < NUM_WAYS; wi++) begin : gen_hit
+      assign hit_way_a[wi] = way_valid_a[wi] && (tag_a[wi] == tag_a_expected_q);
+      assign hit_way_b[wi] = way_valid_b[wi] && (tag_b[wi] == tag_b_expected_q);
+    end
+  endgenerate
+
+  assign hit_a   = |hit_way_a;
+  assign hit_b   = |hit_way_b;
+  assign hit_all = hit_a && (!cross_line_q || hit_b);
+
+  // Priority encoders to select first hit way
+  priority_encoder #(
+      .WIDTH(NUM_WAYS)
+  ) u_pe_hit_a (
+      .in (hit_way_a),
+      .out(hit_way_idx_a)
+  );
+  priority_encoder #(
+      .WIDTH(NUM_WAYS)
+  ) u_pe_hit_b (
+      .in (hit_way_b),
+      .out(hit_way_idx_b)
+  );
+
+  // Determine which Line missed (A or B)
+  // If !hit_all, and we have cross line, and A hit, then it must be B that missed.
+  // Note: hit_a is comb logic, stable during LOOKUP.
+  logic miss_on_b;
+  assign miss_on_b = hit_a && cross_line_q;
+
+  // Select valid bits for the set that missed
+  logic [NUM_WAYS-1:0] ways_valid_for_victim;
+  assign ways_valid_for_victim = miss_on_b ? way_valid_b : way_valid_a;
+
+  // Replacement (victim) selection
+  logic [                  NUM_WAYS-1:0] invalid_ways;
+  logic [Cfg.ICACHE_SET_ASSOC_WIDTH-1:0] first_invalid_idx;
+  logic                                  has_invalid;
+  logic [Cfg.ICACHE_SET_ASSOC_WIDTH-1:0] victim_way_d;
+
+  // invalid_ways now derived from the correct set
+  assign invalid_ways = ~ways_valid_for_victim;
+  assign has_invalid  = |invalid_ways;
+
+  priority_encoder #(
+      .WIDTH(NUM_WAYS)
+  ) u_pe_invalid (
+      .in (invalid_ways),
+      .out(first_invalid_idx)
+  );
+
+  always_comb begin
+    if (has_invalid) begin
+      victim_way_d = first_invalid_idx;
+    end else begin
+      victim_way_d = lfsr_out;
+    end
+  end
+
+  // ---------------------------------------------------------------------------
+  // Output instruction assembly from cache lines
+  // ---------------------------------------------------------------------------
+  logic [LINE_WORDS-1:0][ILEN-1:0] line_a_words, line_b_words;
+  logic [FETCH_NUM-1:0][ILEN-1:0] assembled_instrs;
+
+  generate
+    genvar wi2;
+    for (wi2 = 0; wi2 < LINE_WORDS; wi2++) begin : gen_line_words
+      assign line_a_words[wi2] = line_a_all[hit_way_idx_a][ILEN*wi2+:ILEN];
+      assign line_b_words[wi2] = line_b_all[hit_way_idx_b][ILEN*wi2+:ILEN];
+    end
+  endgenerate
+
+  always_comb begin
+    // [Fix] LATCH Warning: Initialize variables
+    int first_cnt = 0;
+    assembled_instrs = '0;
+
+    if (!cross_line_q) begin
+      // All instructions from line A
+      for (int i = 0; i < FETCH_NUM; i++) begin
+        assembled_instrs[i] = line_a_words[start_slot_q+i];
+      end
+    end else begin
+      // Cross line: tail of A + head of B
+      first_cnt = LINE_WORDS - start_slot_q;
+      for (int i = 0; i < FETCH_NUM; i++) begin
+        if (i < first_cnt) begin
+          assembled_instrs[i] = line_a_words[start_slot_q+i];
+        end else begin
+          assembled_instrs[i] = line_b_words[i-first_cnt];
+        end
+      end
+    end
+  end
+
+  // ---------------------------------------------------------------------------
+  // Simple response registers
+  // ---------------------------------------------------------------------------
+  logic                           rsp_valid_q;
+  logic [FETCH_NUM-1:0][ILEN-1:0] rsp_instrs_q;
+
+  assign ifu_rsp_instrs_o          = rsp_instrs_q;
+  assign ifu_rsp_handshake_o.valid = rsp_valid_q;
+  assign ifu_rsp_handshake_o.ready = 1'b1;  // no back-pressure from cache
+
+  // ---------------------------------------------------------------------------
+  // Miss / refill write port & handshake defaults
+  // ---------------------------------------------------------------------------
+  logic [LINE_ADDR_WIDTH-1:0] refill_line_addr;
+
+  always_comb begin
+    // Default: no write
+    we_way_mask           = '0;
+    w_bank_addr           = miss_bank_addr_q;
+    w_bank_sel            = miss_bank_sel_q;
+    w_tag                 = '0;
+    w_valid               = '0;
+    w_line                = '0;
+    refill_ready_o        = 1'b0;
+    miss_req_valid_o      = 1'b0;
+    miss_req_paddr_o      = miss_paddr_q;
+    miss_req_victim_way_o = miss_victim_way_q;
+    miss_req_index_o      = miss_index_q;
 
     case (state_q)
-      IDLE: begin
-        ifu_rsp_o.ready = 1'b0;  // 默认不响应IFU
-        ftq_rsp_o.ready = 1'b1;  // 空闲时，接收FTQ预取
+      MISS_REQ: begin
+        miss_req_valid_o = 1'b1;
+      end
 
-        if (ifu_req_i.valid) begin
-          state_d = LOOKUP;
-        end
-        // (注意: mem_rsp_i.valid 也可能在 IDLE 时到达，如果是预取完成)
-        if (mem_rsp_i.valid && mem_rsp_i.is_prefetch) begin
-          // (这是一个预取数据的返回)
-          is_prefetch_miss_d = 1'b1;
-          // 需要保存预取的地址信息才能填充
-          // TODO: ... 假设 prefetch MSHR 提供了地址
-          state_d = REFILL;  // 去填充预取的数据
+      MISS_WAIT_REFILL: begin
+        refill_ready_o = 1'b1;
+        if (refill_valid_i) begin
+          // Accept refill, write into arrays
+          we_way_mask = '0;
+          we_way_mask[refill_way_i] = 1'b1;
+
+          // Use stored bank addr / sel from miss context
+          w_bank_addr = miss_bank_addr_q;
+          w_bank_sel = miss_bank_sel_q;
+
+          // Extract tag from refill address
+          refill_line_addr = refill_paddr_i[Cfg.PLEN-1:OFFSET_WIDTH];
+          w_tag = refill_line_addr[INDEX_WIDTH+:TAG_WIDTH];
+          w_valid = 1'b1;
+          w_line = refill_data_i;
         end
       end
 
-      LOOKUP: begin
-        if (ifu_all_hit) begin
-          $display("ICache Hit! Cross_line_fetch=%b, line1_hit=%b, line2_hit=%b", cross_line_fetch,
-                   line1_hit, line2_hit);
-          ifu_rsp_o.ready = 1'b1;
-
-          if (ifu_req_i.valid) begin
-            state_d = LOOKUP;
-          end else begin
-            state_d = IDLE;
-          end
-        end else begin
-          // Miss
-          ifu_rsp_o.ready = 1'b0;
-
-          // 保存 Miss 请求信息
-          miss_line1_pending_d = !line1_hit;
-          miss_line2_pending_d = cross_line_fetch && !line2_hit;
-          miss_addr1_d = addr1_vaddr;
-          miss_addr2_d = addr2_vaddr;
-          is_prefetch_miss_d = 1'b0;  // 这是来自IFU的Miss
-
-          // 发起内存请求
-          mem_req_o.valid = 1'b1;
-          // 总是先请求 Line 1 (如果L1 Miss), 否则请求 Line 2
-          mem_req_o.addr = (!line1_hit) ? addr1_vaddr : addr2_vaddr;
-          mem_req_o.is_prefetch = 1'b0;
-
-          $display("Requesting memory Addr: 0x%h, Valid=%b", mem_req_o.addr, mem_req_o.valid);
-          if (mem_rsp_i.ready) begin  // 假设内存总线接受了
-            state_d = MISS_WAIT;
-            $display("mem_req_o: Valid=%b, Addr=0x%h", mem_req_o.valid, mem_req_o.addr);
-            $display("mem_rsp_i: ready=%b, Valid=%b", mem_rsp_i.ready, mem_rsp_i.valid);
-          end else begin
-            state_d = LOOKUP;  // 等待内存响应
-          end
-        end
-      end
-
-      MISS_WAIT: begin
-        if (mem_rsp_i.valid) begin
-          // 数据返回
-          // (注意: 我们假设这不是一个乱序的预取返回)
-          if (mem_rsp_i.is_prefetch == is_prefetch_miss_q) begin
-            state_d = REFILL;
-          end else begin
-            // 收到意外的响应 (例如，一个预取响应)
-            // 保持 MISS_WAIT，等待我们正在等待的数据
-            state_d = MISS_WAIT;
-          end
-        end
-      end
-
-      REFILL: begin
-        // --- 1. 驱动SRAM/TagArray的写端口 ---
-        // 此时 `mem_rsp_i.valid` 为高, `mem_rsp_i.data` 包含数据
-        lfsr_en = 1'b1;  // 触发LFSR，得到 replace_way_index
-        refill_way_mask = (1 << replace_way_index);
-        refill_valid = 1'b1;  // 写入有效位
-
-        // 确定我们刚刚填充的是哪一行
-        if (miss_line1_pending_q) begin
-          // 我们刚刚接收了 Line 1 的数据
-          refill_tag   = miss_addr1_q[Cfg.PLEN-1-:Cfg.ICACHE_TAG_WIDTH];
-          refill_index = miss_addr1_q[Cfg.PLEN-Cfg.ICACHE_TAG_WIDTH-1-:Cfg.ICACHE_INDEX_WIDTH];
-        end else if (miss_line2_pending_q) begin
-          // 我们刚刚接收了 Line 2 的数据 (Line 1 肯定命中了)
-          refill_tag   = miss_addr2_q[Cfg.PLEN-1-:Cfg.ICACHE_TAG_WIDTH];
-          refill_index = miss_addr2_q[Cfg.PLEN-Cfg.ICACHE_TAG_WIDTH-1-:Cfg.ICACHE_INDEX_WIDTH];
-        end
-
-        // --- 2. 决定下一个状态 ---
-        if (is_prefetch_miss_q) begin
-          // 如果这是一个预取 (Prefetch)
-          state_d = IDLE;
-          miss_line1_pending_d = 1'b0;
-          miss_line2_pending_d = 1'b0;
-        end else begin
-          // 这是一个 IFU Miss
-
-          if (miss_line1_pending_q && miss_line2_pending_q) begin
-            // --- Case A: 跨行Miss，刚收到 Line 1 ---
-            // 我们刚填充了 Line 1, 但 Line 2 仍然 pending.
-
-            // 立即发起 Line 2 的请求
-            mem_req_o.valid = 1'b1;
-            mem_req_o.addr = miss_addr2_q;  // 请求 Line 2
-            mem_req_o.is_prefetch = 1'b0;
-
-            if (mem_rsp_i.ready) begin  // 检查内存是否能接受新请求
-              state_d = MISS_WAIT;  // 回到 MISS_WAIT, 等待 Line 2
-              miss_line1_pending_d = 1'b0;  // Line 1 已处理
-              miss_line2_pending_d = 1'b1;  // Line 2 仍在处理 (状态保持)
-            end else begin
-              // 内存忙，停在 REFILL 状态，下一拍重试 L2 请求
-              state_d = REFILL;
-              // 保持 pending 标志不变 (d = q)
-            end
-          end else begin
-            // --- Case B: 单行Miss, 或 跨行Miss的Line 2 刚收到 ---
-            // 所有的 Miss 都已处理完毕。
-
-            state_d = LOOKUP;  // 返回 LOOKUP 状态
-            // `ifu_req_i` 仍然是 valid (被`ready=0`反压)
-            // 下一拍，LOOKUP 状态会重新评估，此时 `ifu_all_hit` 将为真
-            // 然后 `ifu_rsp_o.ready` 会被置1，完成IFU请求。
-
-            // 清空所有 pending 标志
-            miss_line1_pending_d = 1'b0;
-            miss_line2_pending_d = 1'b0;
-          end
-        end
-      end
       default: begin
-        $display("ICache State: ILLEGAL (%h)! Back to IDLE", state_q);
-        state_d = IDLE;
+        // nothing
       end
     endcase
   end
 
-endmodule : icache
+  // ---------------------------------------------------------------------------
+  // Sequential logic: state, request pipeline, miss context, response regs
+  // ---------------------------------------------------------------------------
+  always_ff @(posedge clk_i or negedge rst_ni) begin
+    if (!rst_ni) begin
+      state_q           <= IDLE;
+      pc_q              <= '0;
+      start_slot_q      <= '0;
+      cross_line_q      <= 1'b0;
+      line_addr_a_q     <= '0;
+      line_addr_b_q     <= '0;
+      index_a_q         <= '0;
+      index_b_q         <= '0;
+      tag_a_expected_q  <= '0;
+      tag_b_expected_q  <= '0;
+      rsp_valid_q       <= 1'b0;
+      rsp_instrs_q      <= '0;
+      miss_paddr_q      <= '0;
+      miss_victim_way_q <= '0;
+      miss_index_q      <= '0;
+      miss_bank_addr_q  <= '0;
+      miss_bank_sel_q   <= '0;
+    end else begin
+      state_q <= state_d;
+      // Simple flush: drop response and go idle
+      if (ifu_req_flush_i) begin
+        rsp_valid_q <= 1'b0;
+      end
 
+      unique case (state_q)
+        IDLE: begin
+          rsp_valid_q <= 1'b0;
+          if (ifu_req_handshake_i.valid && !ifu_req_flush_i) begin
+            // Latch request (Use computed _d signals)
+            pc_q             <= ifu_req_pc_i;
+            line_addr_a_q    <= line_addr_a_d;
+            line_addr_b_q    <= line_addr_b_d;
+            index_a_q        <= index_a_d;
+            index_b_q        <= index_b_d;
+            tag_a_expected_q <= tag_a_expected_d;
+            tag_b_expected_q <= tag_b_expected_d;
+            start_slot_q     <= start_slot_d;
+            cross_line_q     <= cross_line_d;
+          end
+        end
+
+        LOOKUP: begin
+          // Use array outputs + stored expected tag to determine hit/miss
+          if (hit_all) begin
+            rsp_valid_q  <= 1'b1;
+            rsp_instrs_q <= assembled_instrs;
+          end else begin
+            rsp_valid_q <= 1'b0;
+            // [Fix] Capture miss context for the SPECIFIC line that missed
+            if (miss_on_b) begin
+              miss_paddr_q     <= {line_addr_b_q, {OFFSET_WIDTH{1'b0}}};
+              miss_index_q     <= index_b_q;
+              miss_bank_addr_q <= index_b_q[INDEX_WIDTH-1:BANK_SEL_WIDTH];
+              miss_bank_sel_q  <= index_b_q[BANK_SEL_WIDTH-1:0];
+            end else begin
+              miss_paddr_q     <= {line_addr_a_q, {OFFSET_WIDTH{1'b0}}};
+              miss_index_q     <= index_a_q;
+              miss_bank_addr_q <= index_a_q[INDEX_WIDTH-1:BANK_SEL_WIDTH];
+              miss_bank_sel_q  <= index_a_q[BANK_SEL_WIDTH-1:0];
+            end
+
+            miss_victim_way_q <= victim_way_d;
+          end
+        end
+
+        MISS_WAIT_REFILL: begin
+          // When we accept a refill (combinational block will do the array write)
+          if (refill_valid_i && refill_ready_o) begin
+            rsp_valid_q <= 1'b0;
+          end
+        end
+
+        default: begin
+          // nothing
+        end
+      endcase
+    end
+  end
+
+  // ---------------------------------------------------------------------------
+  // Next state logic
+  // ---------------------------------------------------------------------------
+  always_comb begin
+    state_d = state_q;
+    if (ifu_req_flush_i) begin
+      state_d = IDLE;
+    end else begin
+      unique case (state_q)
+        IDLE: begin
+          if (ifu_req_handshake_i.valid && !ifu_req_flush_i) begin
+            // Next cycle arrays will output data for this request
+            state_d = LOOKUP;
+          end
+        end
+
+        LOOKUP: begin
+          if (hit_all) begin
+            state_d = IDLE;
+          end else begin
+            state_d = MISS_REQ;
+          end
+        end
+
+        MISS_REQ: begin
+          if (miss_req_valid_o && miss_req_ready_i) begin
+            state_d = MISS_WAIT_REFILL;
+          end
+        end
+
+        MISS_WAIT_REFILL: begin
+          if (refill_valid_i && refill_ready_o) begin
+            // After refill, re-do lookup for the same PC
+            state_d = LOOKUP;
+          end
+        end
+
+        default: state_d = IDLE;
+      endcase
+    end
+  end
+
+endmodule : icache
