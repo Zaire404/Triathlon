@@ -1,3 +1,4 @@
+// vsrc/cache/icache.sv
 module icache #(
     parameter config_pkg::cfg_t Cfg = config_pkg::EmptyCfg
 ) (
@@ -325,11 +326,13 @@ module icache #(
   // Simple response registers
   // ---------------------------------------------------------------------------
   logic                           rsp_valid_q;
+  logic                           rsp_ready_q;
   logic [FETCH_NUM-1:0][ILEN-1:0] rsp_instrs_q;
 
   assign ifu_rsp_instrs_o          = rsp_instrs_q;
   assign ifu_rsp_handshake_o.valid = rsp_valid_q;
-  assign ifu_rsp_handshake_o.ready = 1'b1;  // no back-pressure from cache
+  assign ifu_rsp_handshake_o.ready = rsp_ready_q;
+  // assign ifu_rsp_handshake_o.ready = 1'b1;  // no back-pressure from cache
 
   // ---------------------------------------------------------------------------
   // Miss / refill write port & handshake defaults
@@ -397,6 +400,7 @@ module icache #(
       tag_b_expected_q  <= '0;
       rsp_valid_q       <= 1'b0;
       rsp_instrs_q      <= '0;
+      // rsp_ready_q       <= 1'b1;
       miss_paddr_q      <= '0;
       miss_victim_way_q <= '0;
       miss_index_q      <= '0;
@@ -411,7 +415,7 @@ module icache #(
 
       unique case (state_q)
         IDLE: begin
-          rsp_valid_q <= 1'b0;
+          rsp_ready_q <= 1'b1;
           if (ifu_req_handshake_i.valid && !ifu_req_flush_i) begin
             // Latch request (Use computed _d signals)
             pc_q             <= ifu_req_pc_i;
@@ -423,10 +427,12 @@ module icache #(
             tag_b_expected_q <= tag_b_expected_d;
             start_slot_q     <= start_slot_d;
             cross_line_q     <= cross_line_d;
+            rsp_valid_q      <= 1'b0;
           end
         end
 
         LOOKUP: begin
+          rsp_ready_q <= 1'b0;
           // Use array outputs + stored expected tag to determine hit/miss
           if (hit_all) begin
             rsp_valid_q  <= 1'b1;
@@ -462,6 +468,12 @@ module icache #(
         end
       endcase
     end
+    $display("ifu2icache_pc: %h", ifu_req_pc_i);
+    $display("icache2ifu_valid: %b", ifu_rsp_handshake_o.valid);
+    $display("icache2ifu_ready: %b", ifu_rsp_handshake_o.ready);
+    $display("icache_current_state: %d", state_q);
+
+
   end
 
   // ---------------------------------------------------------------------------
