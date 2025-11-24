@@ -14,6 +14,7 @@
 ./vsrc/test/tb_bpu.sv
 ./vsrc/test/tb_build_config.sv
 ./vsrc/test/tb_data_array.sv
+./vsrc/test/tb_icache_mshr.sv
 ./vsrc/test/tb_icache.sv
 ./vsrc/test/tb_ifu.sv
 ./vsrc/test/tb_sram.sv

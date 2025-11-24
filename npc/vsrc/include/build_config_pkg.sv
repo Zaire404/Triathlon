@@ -11,7 +11,7 @@ package build_config_pkg;
     cfg.VLEN = user_cfg.VLEN;
     cfg.PLEN = user_cfg.VLEN;  // 假设物理地址大小等于虚拟地址大小
     cfg.ILEN = user_cfg.ILEN;
-    cfg.FETCH_WIDTH = user_cfg.INSTR_PER_FETCH * user_cfg.ILEN;
+    cfg.FETCH_WIDTH = user_cfg.INSTR_PER_FETCH * user_cfg.ILEN / 8;
 
     // ICache 配置
     cfg.ICACHE_BYTE_SIZE = user_cfg.ICACHE_BYTE_SIZE;
