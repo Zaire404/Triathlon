@@ -28,6 +28,9 @@ module ibuffer #(
   localparam int unsigned FETCH_WIDTH = Cfg.INSTR_PER_FETCH;
   localparam int unsigned PTR_W = $clog2(IB_DEPTH);
   localparam int unsigned CNT_W = $clog2(IB_DEPTH + 1);
+  initial
+    assert (IB_DEPTH > 0 && (IB_DEPTH & (IB_DEPTH - 1)) == 0)
+    else $fatal(1, "IB_DEPTH must be a power of two.");
 
   // 存储单条指令的 FIFO
   ibuf_entry_t [IB_DEPTH-1:0] fifo_q;
@@ -80,7 +83,7 @@ module ibuffer #(
           // 写指针位置 = wr_ptr_q + i（环形）
           fifo_d[PTR_W'(wr_ptr_q + i)].instr = fe_instrs_i[i];
           // 这里假设固定 4 字节指令：pc = base_pc + 4*i
-          fifo_d[PTR_W'(wr_ptr_q + i)].pc    = fe_pc_i + (Cfg.ILEN/8)'(Cfg.ILEN / 8 * i);
+          fifo_d[PTR_W'(wr_ptr_q + i)].pc    = fe_pc_i + (Cfg.ILEN / 8 * i);
         end
 
         wr_ptr_d = wr_ptr_q + FETCH_WIDTH[PTR_W-1:0];
@@ -116,6 +119,7 @@ module ibuffer #(
       wr_ptr_q <= wr_ptr_d;
       rd_ptr_q <= rd_ptr_d;
       count_q  <= count_d;
+      // TODO: 优化为只写入被更新的那些位置
       fifo_q   <= fifo_d;
     end
   end

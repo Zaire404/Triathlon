@@ -39,7 +39,7 @@ void reset(Vtb_ibuffer *top) {
   top->fe_valid_i = 0;
   top->ibuf_ready_i = 0;
   // 清空输入数据
-  for (int i = 0; i < 4; ++i)
+  for (int i = 0; i < INSTR_PER_FETCH; ++i)
     top->fe_instrs_i[i] = 0;
   top->fe_pc_i = 0;
 
@@ -149,10 +149,10 @@ int main(int argc, char **argv) {
       for (int i = 0; i < INSTR_PER_FETCH; ++i) {
         Instruction instr;
         instr.inst = top->fe_instrs_i[i];
-        instr.pc = current_fetch_pc + i * 4;
+        instr.pc = current_fetch_pc + i * ILEN_BYTES;
         expected_queue.push_back(instr);
       }
-      current_fetch_pc += INSTR_PER_FETCH * 4;
+      current_fetch_pc += INSTR_PER_FETCH * ILEN_BYTES;
       accepted_instr_count += INSTR_PER_FETCH;
       // std::cout << "  [Fetch] Accepted " << INSTR_PER_FETCH << " instrs." <<
       // std::endl;

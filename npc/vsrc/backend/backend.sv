@@ -1,7 +1,7 @@
 module backend #(
     parameter config_pkg::cfg_t Cfg = config_pkg::EmptyCfg
 ) (
-    input logic clk,
+    input logic clk_i,
     input logic rst_ni,
     input logic flush_from_backend,
     input logic frontend_ibuf_valid,
