@@ -405,8 +405,13 @@ GoldenInfo decode_reference(uint32_t inst, uint32_t pc) {
       }
     } else {
       // CSRRW, CSRRS, CSRRC, etc.
-      info.has_rs1 = true;
-      info.has_rd = (rd != 0);
+      // 为了匹配当前 decoder.sv 的实现（尚未支持 CSR），这里必须标记为
+      // illegal
+      info.illegal = true;
+
+      // 等硬件实现了 CSR 再恢复下面的代码
+      // info.has_rs1 = true;
+      // info.has_rd = (rd != 0);
     }
     break;
 
