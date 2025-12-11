@@ -24,22 +24,21 @@ module tb_decoder (
     output logic        check_is_store,
     output logic        check_is_jump
 );
-
+  localparam int DECODE_WIDTH = global_config_pkg::Cfg.INSTR_PER_FETCH;
+  localparam int ILEN = global_config_pkg::Cfg.ILEN;
   // 内部信号
-  uop_t [3:0] dec_uops;  // 假设 decode width = 4
-  logic [3:0][31:0] ibuf_instrs;
-  logic [3:0][31:0] ibuf_pcs;
+  uop_t [DECODE_WIDTH-1:0] dec_uops;  // 假设 decode width = 4
+  logic [DECODE_WIDTH-1:0][ILEN-1:0] ibuf_instrs;
+  logic [DECODE_WIDTH-1:0][ILEN-1:0] ibuf_pcs;
 
   // 构造输入：只给第0路喂有效数据，其他给NOP
   assign ibuf_instrs[0] = inst_i;
-  assign ibuf_instrs[1] = 32'h00000013;  // NOP
-  assign ibuf_instrs[2] = 32'h00000013;
-  assign ibuf_instrs[3] = 32'h00000013;
+  assign ibuf_pcs[0]    = pc_i;
 
-  assign ibuf_pcs[0] = pc_i;
-  assign ibuf_pcs[1] = pc_i + 4;
-  assign ibuf_pcs[2] = pc_i + 8;
-  assign ibuf_pcs[3] = pc_i + 12;
+  for (genvar i = 1; i < DECODE_WIDTH; i++) begin : gen_nop_instrs
+    assign ibuf_instrs[i] = 32'h00000013;  // NOP
+    assign ibuf_pcs[i]    = pc_i + i * 4;
+  end
 
   // 实例化 DUT
   decoder #(

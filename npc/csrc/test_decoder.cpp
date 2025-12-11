@@ -443,8 +443,18 @@ uint32_t generate_random_inst() {
   case 0: // OP-IMM (e.g., ADDI)
     opcode = 0x13;
     imm = rand() & 0xFFF;
-    if (funct3 == 1 || funct3 == 5)
-      imm &= 0x3F; // Shift amounts
+    if (funct3 == 1 || funct3 == 5) {
+      if (funct3 == 1) { // SLLI
+        imm &= 0x1F;     // shamt for RV32I is 5 bits. inst[31:25] must be 0.
+      } else if (funct3 == 5) { // SRLI/SRAI
+        imm = rand() & 0x1F;    // 5-bit shamt
+        if (rand() % 2) {       // Randomly generate SRAI
+          // For SRAI, inst[30] must be 1. The immediate field is inst[31:20].
+          // So we set bit 10 of the 12-bit immediate.
+          imm |= (1 << 10);
+        }
+      }
+    }
     return (imm << 20) | (rs1 << 15) | (funct3 << 12) | (rd << 7) | opcode;
 
   case 1: // OP (e.g., ADD)
@@ -595,6 +605,37 @@ int main(int argc, char **argv) {
           std::cout << "[ERROR] RD mismatch!" << std::endl;
           mismatch = true;
         }
+      }
+      // 检查所有相关的解码字段
+      if (ref.has_rs1 && top->check_rs1 != ref.rs1) {
+        std::cout << "[ERROR] RS1 mismatch! Ref=" << std::dec << ref.rs1
+                  << " DUT=" << (int)top->check_rs1 << std::endl;
+        mismatch = true;
+      }
+      if (ref.has_rs2 && top->check_rs2 != ref.rs2) {
+        std::cout << "[ERROR] RS2 mismatch! Ref=" << std::dec << ref.rs2
+                  << " DUT=" << (int)top->check_rs2 << std::endl;
+        mismatch = true;
+      }
+      if (ref.has_rd && top->check_rd != ref.rd) {
+        std::cout << "[ERROR] RD mismatch! Ref=" << std::dec << ref.rd
+                  << " DUT=" << (int)top->check_rd << std::endl;
+        mismatch = true;
+      }
+      if ((ref.is_load || ref.is_store) && top->check_lsu_op != ref.lsu_op) {
+        std::cout << "[ERROR] LSU_OP mismatch! Ref=" << std::dec << ref.lsu_op
+                  << " DUT=" << top->check_lsu_op << std::endl;
+        mismatch = true;
+      }
+      if (ref.is_branch && top->check_br_op != ref.br_op) {
+        std::cout << "[ERROR] BR_OP mismatch! Ref=" << std::dec << ref.br_op
+                  << " DUT=" << top->check_br_op << std::endl;
+        mismatch = true;
+      }
+      if (top->check_is_jump != ref.is_jump) {
+        std::cout << "[ERROR] is_jump mismatch! Ref=" << ref.is_jump
+                  << " DUT=" << (int)top->check_is_jump << std::endl;
+        mismatch = true;
       }
     }
 
