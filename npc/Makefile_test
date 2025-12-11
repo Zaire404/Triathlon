@@ -27,6 +27,7 @@ PKG_VSRCS = \
 	./vsrc/include/test_config_pkg.sv \
 	./vsrc/include/build_config_pkg.sv \
 	./vsrc/include/global_config_pkg.sv \
+	./vsrc/include/decode_pkg.sv
 	
 # Automatically find all other design files (non-package, non-test).
 DESIGN_VSRCS = $(shell find ./vsrc -path ./vsrc/include -prune -o -path ./vsrc/test -prune -o -name "*.sv" -print)
