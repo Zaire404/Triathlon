@@ -1,0 +1,74 @@
+// vsrc/test/tb_decoder.sv
+import config_pkg::*;
+import decode_pkg::*;
+
+module tb_decoder (
+    input logic clk_i,
+    input logic rst_ni,
+    // 1. 输入：给 Decoder 的指令和 PC
+    input logic [31:0] inst_i,
+    input logic [31:0] pc_i,
+
+    // 2. 输出：拆开后的“检查点”信号 (供 C++ 读取)
+    output logic        check_valid,
+    output logic        check_illegal,
+    output logic [ 4:0] check_rs1,
+    output logic [ 4:0] check_rs2,
+    output logic [ 4:0] check_rd,
+    output logic [31:0] check_imm,
+    output int          check_alu_op,    // 使用 int 方便 C++ 里的 enum 转换
+    output int          check_lsu_op,
+    output int          check_br_op,
+    output int          check_fu_type,
+    output logic        check_is_load,
+    output logic        check_is_store,
+    output logic        check_is_jump
+);
+  localparam int DECODE_WIDTH = global_config_pkg::Cfg.INSTR_PER_FETCH;
+  localparam int ILEN = global_config_pkg::Cfg.ILEN;
+  // 内部信号
+  uop_t [DECODE_WIDTH-1:0] dec_uops;  // 假设 decode width = 4
+  logic [DECODE_WIDTH-1:0][ILEN-1:0] ibuf_instrs;
+  logic [DECODE_WIDTH-1:0][ILEN-1:0] ibuf_pcs;
+
+  // 构造输入：只给第0路喂有效数据，其他给NOP
+  assign ibuf_instrs[0] = inst_i;
+  assign ibuf_pcs[0]    = pc_i;
+
+  for (genvar i = 1; i < DECODE_WIDTH; i++) begin : gen_nop_instrs
+    assign ibuf_instrs[i] = 32'h00000013;  // NOP
+    assign ibuf_pcs[i]    = pc_i + i * 4;
+  end
+
+  // 实例化 DUT
+  decoder #(
+      .Cfg(global_config_pkg::Cfg)
+  ) dut (
+      .clk_i(1'b0),  // 组合逻辑不需要时钟，但为了兼容性留着
+      .rst_ni(1'b1),
+      .ibuf2dec_valid_i(1'b1),  // 始终有效
+      .dec2ibuf_ready_o(),
+      .ibuf_instrs_i(ibuf_instrs),
+      .ibuf_pcs_i(ibuf_pcs),
+      .dec2backend_valid_o(),
+      .backend2dec_ready_i(1'b1),
+      .dec_slot_valid_o(),
+      .dec_uops_o(dec_uops)
+  );
+
+  // --- 核心步骤：拆包 (只拆第 0 路) ---
+  assign check_valid    = dec_uops[0].valid;
+  assign check_illegal  = dec_uops[0].illegal;
+  assign check_rs1      = dec_uops[0].rs1;
+  assign check_rs2      = dec_uops[0].rs2;
+  assign check_rd       = dec_uops[0].rd;
+  assign check_imm      = dec_uops[0].imm;  // 32位立即数
+  assign check_alu_op   = dec_uops[0].alu_op;
+  assign check_lsu_op   = dec_uops[0].lsu_op;
+  assign check_br_op    = dec_uops[0].br_op;
+  assign check_fu_type  = dec_uops[0].fu;
+  assign check_is_load  = dec_uops[0].is_load;
+  assign check_is_store = dec_uops[0].is_store;
+  assign check_is_jump  = dec_uops[0].is_jump;
+
+endmodule

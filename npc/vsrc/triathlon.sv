@@ -13,10 +13,4 @@ module triathlon #(
   // --------------
   // Frontend
   // --------------
-  frontend #(
-      .Cfg(Cfg)
-  ) i_frontend (
-      .clk_i (clk_i),
-      .rst_ni(rst_ni)
-  );
 endmodule : triathlon
