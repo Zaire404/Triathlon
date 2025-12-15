@@ -1,10 +1,11 @@
-// vsrc/backend/rename.sv
+// vsrc/backend/rename.sv (Data-in-ROB Version)
 import config_pkg::*;
 import decode_pkg::*;
 
 module rename #(
     parameter config_pkg::cfg_t Cfg = config_pkg::EmptyCfg,
-    parameter int unsigned PHY_REG_ADDR_WIDTH = 6
+    parameter int unsigned ROB_DEPTH = 64,
+    parameter int unsigned ROB_IDX_WIDTH = $clog2(ROB_DEPTH)
 ) (
     input logic clk_i,
     input logic rst_ni,
@@ -12,138 +13,156 @@ module rename #(
     // --- From Decoder ---
     input logic [3:0] dec_valid_i,
     input decode_pkg::uop_t [3:0] dec_uops_i,
-    output logic rename_ready_o, // 告诉 Decoder 可以发指令 (FreeList有空位 & ROB有空位)
+    output logic rename_ready_o, // 告诉 Decoder 可以发指令 (ROB有空位)
 
     // --- To ROB (Dispatch Interface) ---
+    // Rename 阶段顺便把指令分发给 ROB
     output logic [3:0] rob_dispatch_valid_o,
     output logic [3:0][Cfg.PLEN-1:0] rob_dispatch_pc_o,
     output decode_pkg::fu_e [3:0]    rob_dispatch_fu_type_o,
     output logic [3:0][4:0]          rob_dispatch_areg_o,
-    output logic [3:0][PHY_REG_ADDR_WIDTH-1:0] rob_dispatch_preg_o, // 新分配的
-    output logic [3:0][PHY_REG_ADDR_WIDTH-1:0] rob_dispatch_opreg_o, // 被覆盖的旧的
-    input  logic rob_ready_i,
+    
+    // 输入 ROB 的状态，用于生成 Tag
+    input  logic rob_ready_i,                 // ROB 不满
+    input  logic [ROB_IDX_WIDTH-1:0] rob_tail_ptr_i, // ROB 当前的尾指针 (用于生成 Tag)
 
-    // --- To Issue Queue / Dispatcher (发送重命名后的指令去执行) ---
+    // --- To Issue Queue / Dispatcher ---
     output logic [3:0] issue_valid_o,
-    output logic [3:0][PHY_REG_ADDR_WIDTH-1:0] issue_rs1_preg_o,
-    output logic [3:0][PHY_REG_ADDR_WIDTH-1:0] issue_rs2_preg_o,
-    output logic [3:0][PHY_REG_ADDR_WIDTH-1:0] issue_rd_preg_o,
-    // ... 其他需要传给执行单元的信息 (imm, fu_type等)
+    // 源操作数 Tag (如果 in_rob=1, 则是 ROB ID; 否则无效)
+    output logic [3:0] issue_rs1_in_rob_o,
+    output logic [3:0][ROB_IDX_WIDTH-1:0] issue_rs1_rob_idx_o,
+    output logic [3:0] issue_rs2_in_rob_o,
+    output logic [3:0][ROB_IDX_WIDTH-1:0] issue_rs2_rob_idx_o,
+    // 目标 Tag (分配给这条指令的 ROB ID)
+    output logic [3:0][ROB_IDX_WIDTH-1:0] issue_rd_rob_idx_o,
 
-    // --- From ROB Commit (用于回收物理寄存器) ---
+    // --- From ROB Commit (用于更新 RAT 状态) ---
     input logic [3:0] commit_valid_i,
-    input logic [3:0][PHY_REG_ADDR_WIDTH-1:0] commit_opreg_i,
+    input logic [3:0][4:0] commit_areg_i,
+    input logic [3:0][ROB_IDX_WIDTH-1:0] commit_rob_idx_i, // 退休指令的 ID
 
     input logic flush_i
 );
-
-    // 内部信号
+    // ---------------------------------------------------------
+    // 1. 生成新的 Tags (物理寄存器号)
+    // ---------------------------------------------------------
+    // 在 Data-in-ROB 架构中，Tag 就是 ROB ID。
+    // 第 0 条指令分到的 Tag 是 Tail; 第 1 条是 Tail+1 ...
+    logic [3:0][ROB_IDX_WIDTH-1:0] new_tags;
     logic [3:0] alloc_req;
-    logic [3:0][PHY_REG_ADDR_WIDTH-1:0] alloc_pregs;
-    logic alloc_can_do;
-
-    logic [3:0][PHY_REG_ADDR_WIDTH-1:0] rat_rs1_preg, rat_rs2_preg;
-    logic [3:0][PHY_REG_ADDR_WIDTH-1:0] rat_old_preg; // Current RAT value for rd
-    
-    // 1. 实例化 Free List
-    freelist #(
-        .PHY_REG_NUM(64), // 假设
-        .DISPATCH_WIDTH(4),
-        .COMMIT_WIDTH(4)
-    ) u_freelist (
-        .clk_i, .rst_ni,
-        .alloc_req_i(alloc_req),
-        .alloc_pregs_o(alloc_pregs),
-        .alloc_can_do_o(alloc_can_do),
-        .commit_valid_i(commit_valid_i),
-        .commit_opregs_i(commit_opreg_i),
-        .flush_i(flush_i)
-    );
-
-    // 2. 实例化 RAT
-    // 构造写信号：只有当指令有效且需要写回寄存器时才更新 RAT
-    logic [3:0] rat_we;
-    logic [3:0][4:0] rs1_idx, rs2_idx, rd_idx;
-    logic [3:0][PHY_REG_ADDR_WIDTH-1:0] final_rd_preg; // 处理依赖后的最终分配
 
     always_comb begin
         for (int i=0; i<4; i++) begin
+            // 简单的加法计算 Tag (利用位宽溢出自动回绕，或者显式取模)
+            new_tags[i] = (rob_tail_ptr_i + i) % ROB_DEPTH;
+            
+            // 只有写寄存器的指令才需要更新 RAT
             alloc_req[i] = dec_valid_i[i] && dec_uops_i[i].has_rd && (dec_uops_i[i].rd != 0);
-            rat_we[i]    = alloc_req[i]; // 这里的逻辑是一样的
-            rs1_idx[i]   = dec_uops_i[i].rs1;
-            rs2_idx[i]   = dec_uops_i[i].rs2;
-            rd_idx[i]    = dec_uops_i[i].rd;
         end
     end
 
-    rat u_rat (
+    // ---------------------------------------------------------
+    // 2. RAT 读写 (查表 + 更新)
+    // ---------------------------------------------------------
+    logic [3:0]       rat_rs1_in_rob, rat_rs2_in_rob;
+    logic [3:0][ROB_IDX_WIDTH-1:0] rat_rs1_tag, rat_rs2_tag;
+
+    // RAT 实例化
+    rat #(
+        .ROB_DEPTH(ROB_DEPTH)
+    ) u_rat (
         .clk_i, .rst_ni,
-        .rs1_idx_i(rs1_idx), .rs2_idx_i(rs2_idx),
-        .rs1_preg_o(rat_rs1_preg), .rs2_preg_o(rat_rs2_preg),
-        .we_i(rat_we), .rd_idx_i(rd_idx), .rd_preg_i(final_rd_preg),
-        .old_preg_o(rat_old_preg),
+        // 读端口 (查源操作数)
+        .rs1_idx_i(get_rs1_indices(dec_uops_i)), // 辅助函数提取 index
+        .rs2_idx_i(get_rs2_indices(dec_uops_i)),
+        .rs1_in_rob_o(rat_rs1_in_rob), .rs1_rob_idx_o(rat_rs1_tag),
+        .rs2_in_rob_o(rat_rs2_in_rob), .rs2_rob_idx_o(rat_rs2_tag),
+
+        // 写端口 (Allocation: 建立 逻辑寄存器 -> 新 ROB ID 的映射)
+        .disp_we_i(alloc_req),
+        .disp_rd_idx_i(get_rd_indices(dec_uops_i)),
+        .disp_rob_idx_i(new_tags), // 直接写入计算出的 ROB ID
+
+        // 提交端口 (Retirement: 清除旧的 Speculative 状态)
+        .commit_we_i(commit_valid_i),
+        .commit_rd_idx_i(commit_areg_i),
+        .commit_rob_idx_i(commit_rob_idx_i),
+
         .flush_i(flush_i)
     );
 
-    // 3. 核心重命名逻辑 (处理组内依赖 Intra-group Dependency)
-    // 这是多发射最难的地方：如果Instr 1写r5，Instr 2读r5，Instr 2必须读到Instr 1新分配的preg，而不是RAT里的旧preg
-    
+    // ---------------------------------------------------------
+    // 3. 组内依赖检查 (Intra-group Dependency Check)
+    // ---------------------------------------------------------
+    logic [3:0]       final_rs1_in_rob, final_rs2_in_rob;
+    logic [3:0][ROB_IDX_WIDTH-1:0] final_rs1_tag, final_rs2_tag;
+
     always_comb begin
-        // 默认：从 FreeList 获取新 Preg
-        final_rd_preg = alloc_pregs; 
+        // 默认来自 RAT
+        final_rs1_in_rob = rat_rs1_in_rob;
+        final_rs1_tag    = rat_rs1_tag;
+        final_rs2_in_rob = rat_rs2_in_rob;
+        final_rs2_tag    = rat_rs2_tag;
 
-        // 默认：从 RAT 获取源操作数 Preg
-        issue_rs1_preg_o = rat_rs1_preg;
-        issue_rs2_preg_o = rat_rs2_preg;
-
-        // --- 组内依赖检查 (Forwarding Logic in Rename) ---
-        for (int i=1; i<4; i++) begin // 从第2条开始检查前面的
+        // 检查前面的指令是否写了我的源寄存器
+        for (int i=1; i<4; i++) begin
             for (int j=0; j<i; j++) begin
-                // 检查 RS1 是否依赖前面的 RD
+                // 如果 Instr i 的 RS1 依赖 Instr j 的 RD
                 if (alloc_req[j] && dec_uops_i[i].has_rs1 && (dec_uops_i[i].rs1 == dec_uops_i[j].rd)) begin
-                    issue_rs1_preg_o[i] = alloc_pregs[j]; // Forward 新分配的 Preg
+                    final_rs1_in_rob[i] = 1'b1;         // 数据肯定在 ROB (因为 Instr j 刚分进去)
+                    final_rs1_tag[i]    = new_tags[j];  // 也就是 Instr j 分到的 ROB ID
                 end
-                // 检查 RS2 是否依赖前面的 RD
+                // 检查 RS2
                 if (alloc_req[j] && dec_uops_i[i].has_rs2 && (dec_uops_i[i].rs2 == dec_uops_i[j].rd)) begin
-                    issue_rs2_preg_o[i] = alloc_pregs[j];
+                    final_rs2_in_rob[i] = 1'b1;
+                    final_rs2_tag[i]    = new_tags[j];
                 end
             end
         end
-        
-        // 注意：RAT 的写入端口需要按照程序顺序写入
-        // 如果一组内多条指令写同一个寄存器 (WAW)，RAT 最终必须记录最后那条指令的 Preg
-        // rat 模块内部如果使用简单的并发赋值可能会有竞争，
-        // 严谨的 RAT 写逻辑应该在 rat 模块内部处理：如果 index 相同，index 大的覆盖 index 小的。
-        // 为了简化，这里假设 rat 模块能处理或者我们在输入端就过滤掉被覆盖的写请求。
-        // 但简单实现中，Verilog 的 last-write-wins (如果用循环顺序) 有时有效，但在并行块中需小心。
     end
-    
-    // 4. 输出打包给 ROB
-    assign rename_ready_o = alloc_can_do && rob_ready_i; // 握手：资源都够才 Ready
+
+    // ---------------------------------------------------------
+    // 4. 输出打包
+    // ---------------------------------------------------------
+    // 只要 ROB 没满，Rename 就 Ready (因为不需要等 FreeList)
+    assign rename_ready_o = rob_ready_i;
 
     always_comb begin
         for (int i=0; i<4; i++) begin
-            // 只有当握手成功且指令有效时，才发送给 ROB
             if (rename_ready_o && dec_valid_i[i]) begin
+                // 发送给 ROB
                 rob_dispatch_valid_o[i]   = 1'b1;
                 rob_dispatch_pc_o[i]      = dec_uops_i[i].pc;
                 rob_dispatch_fu_type_o[i] = dec_uops_i[i].fu;
                 rob_dispatch_areg_o[i]    = dec_uops_i[i].rd;
-                
-                // 如果有目标寄存器，则写入新分配的；否则为0
-                rob_dispatch_preg_o[i]    = alloc_req[i] ? alloc_pregs[i] : '0;
-                
-                // 关键：OPreg 是从 RAT 读出来的“旧映射”，用于将来 Commit 时释放
-                rob_dispatch_opreg_o[i]   = alloc_req[i] ? rat_old_preg[i] : '0;
-                
-                issue_rd_preg_o[i]        = alloc_req[i] ? alloc_pregs[i] : '0;
-                issue_valid_o[i]          = 1'b1;
+                // 注意：不再需要发送 preg 或 opreg 给 ROB，因为 ROB 自己知道自己的 ID
+
+                // 发送给 Issue Queue
+                issue_valid_o[i]       = 1'b1;
+                issue_rs1_in_rob_o[i]  = final_rs1_in_rob[i];
+                issue_rs1_rob_idx_o[i] = final_rs1_tag[i];
+                issue_rs2_in_rob_o[i]  = final_rs2_in_rob[i];
+                issue_rs2_rob_idx_o[i] = final_rs2_tag[i];
+                // 目标 Tag 就是这条指令在 ROB 中的位置
+                issue_rd_rob_idx_o[i]  = new_tags[i]; 
+
             end else begin
-                rob_dispatch_valid_o[i]   = 0;
-                // ... 其他清零
-                issue_valid_o[i]          = 0;
+                rob_dispatch_valid_o[i] = 0;
+                issue_valid_o[i]        = 0;
+                // ... zero out others
             end
         end
     end
+
+    // 辅助函数 (SystemVerilog 不支持在端口直接切片结构体数组)
+    function automatic logic [3:0][4:0] get_rs1_indices(decode_pkg::uop_t [3:0] uops);
+        for(int k=0; k<4; k++) get_rs1_indices[k] = uops[k].rs1;
+    endfunction
+    function automatic logic [3:0][4:0] get_rs2_indices(decode_pkg::uop_t [3:0] uops);
+        for(int k=0; k<4; k++) get_rs2_indices[k] = uops[k].rs2;
+    endfunction
+    function automatic logic [3:0][4:0] get_rd_indices(decode_pkg::uop_t [3:0] uops);
+        for(int k=0; k<4; k++) get_rd_indices[k] = uops[k].rd;
+    endfunction
 
 endmodule
