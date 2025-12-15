@@ -1,0 +1,84 @@
+import config_pkg::*;
+import build_config_pkg::*;
+
+module tb_issue #(
+    parameter config_pkg::cfg_t Cfg = global_config_pkg::Cfg,
+    parameter RS_DEPTH = Cfg.RS_DEPTH,
+    parameter DATA_W   = Cfg.ILEN,
+    parameter TAG_W    = 6
+)(
+    input wire clk,
+    input wire rst_n,
+
+    // Dispatch 通道
+    input wire [3:0]        dispatch_valid,
+    input wire [31:0]       dispatch_op     [0:3],
+    input wire [TAG_W-1:0]  dispatch_dst    [0:3],
+    // Src1
+    input wire [DATA_W-1:0] dispatch_v1     [0:3],
+    input wire [TAG_W-1:0]  dispatch_q1     [0:3],
+    input wire              dispatch_r1     [0:3],
+    // Src2
+    input wire [DATA_W-1:0] dispatch_v2     [0:3],
+    input wire [TAG_W-1:0]  dispatch_q2     [0:3],
+    input wire              dispatch_r2     [0:3],
+
+    output wire             issue_ready,
+
+    // CDB 通道
+    input wire [3:0]        cdb_valid,
+    input wire [TAG_W-1:0]  cdb_tag   [0:3],
+    input wire [DATA_W-1:0] cdb_val   [0:3],
+
+    // ALU 0 输出
+    output wire             alu0_en,
+    output wire [31:0]      alu0_op,
+    output wire [DATA_W-1:0] alu0_v1,
+    output wire [DATA_W-1:0] alu0_v2,
+    output wire [TAG_W-1:0]  alu0_dst,
+
+    // ALU 1 输出
+    output wire             alu1_en,
+    output wire [31:0]      alu1_op,
+    output wire [DATA_W-1:0] alu1_v1,
+    output wire [DATA_W-1:0] alu1_v2,
+    output wire [TAG_W-1:0]  alu1_dst
+);
+
+    // 实例化被测模块 (DUT)
+    issue #(
+        .Cfg(Cfg)
+    ) u_issue (
+        .clk            (clk),
+        .rst_n          (rst_n),
+
+        .dispatch_valid (dispatch_valid),
+        .dispatch_op    (dispatch_op),
+        .dispatch_dst   (dispatch_dst),
+        .dispatch_v1    (dispatch_v1),
+        .dispatch_q1    (dispatch_q1),
+        .dispatch_r1    (dispatch_r1),
+        .dispatch_v2    (dispatch_v2),
+        .dispatch_q2    (dispatch_q2),
+        .dispatch_r2    (dispatch_r2),
+
+        .issue_ready    (issue_ready),
+
+        .cdb_valid      (cdb_valid),
+        .cdb_tag        (cdb_tag),
+        .cdb_val        (cdb_val),
+
+        .alu0_en        (alu0_en),
+        .alu0_op        (alu0_op),
+        .alu0_v1        (alu0_v1),
+        .alu0_v2        (alu0_v2),
+        .alu0_dst       (alu0_dst),
+
+        .alu1_en        (alu1_en),
+        .alu1_op        (alu1_op),
+        .alu1_v1        (alu1_v1),
+        .alu1_v2        (alu1_v2),
+        .alu1_dst       (alu1_dst)
+    );
+
+endmodule
