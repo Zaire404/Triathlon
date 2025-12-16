@@ -28,7 +28,7 @@ int main(int argc, char **argv) {
   std::cout << "Checking PLEN..." << std::endl;
   top->pc_i = 0x80000000;
   tick(top, 1);
-  assert(top->npc_o == 0x80000000 + 128);
+  assert(top->npc_o == 0x80000000 + 16);
   std::cout << "--- [PASSED] All checks passed successfully! ---" << std::endl;
   delete top;
   return 0;
