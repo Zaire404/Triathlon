@@ -1,4 +1,4 @@
-// vsrc/backend/rename.sv (Data-in-ROB Version)
+// vsrc/backend/rename.sv (Data-in-ROB Version with Flush Masking)
 import config_pkg::*;
 import decode_pkg::*;
 
@@ -43,8 +43,22 @@ module rename #(
 
     input logic flush_i
 );
+
     // ---------------------------------------------------------
-    // 1. 生成新的 Tags (物理寄存器号)
+    // 0. Flush 门控 (Flush Masking)
+    // ---------------------------------------------------------
+    // 关键逻辑：如果当前周期发生 flush，或者 Decoder 发来的指令无效，则不进行分配。
+    // 这可以防止旧路径的指令在 Flush 发生的同一拍挤进 ROB。
+    logic [3:0] dec_valid_masked;
+    
+    always_comb begin
+        for (int i=0; i<4; i++) begin
+            dec_valid_masked[i] = dec_valid_i[i] && !flush_i;
+        end
+    end
+
+    // ---------------------------------------------------------
+    // 1. 生成新的 Tags (物理寄存器号 / ROB ID)
     // ---------------------------------------------------------
     // 在 Data-in-ROB 架构中，Tag 就是 ROB ID。
     // 第 0 条指令分到的 Tag 是 Tail; 第 1 条是 Tail+1 ...
@@ -56,8 +70,9 @@ module rename #(
             // 简单的加法计算 Tag (利用位宽溢出自动回绕，或者显式取模)
             new_tags[i] = (rob_tail_ptr_i + i) % ROB_DEPTH;
             
-            // 只有写寄存器的指令才需要更新 RAT
-            alloc_req[i] = dec_valid_i[i] && dec_uops_i[i].has_rd && (dec_uops_i[i].rd != 0);
+            // 只有有效且写寄存器的指令才需要更新 RAT
+            // 注意：这里使用的是 masked 信号
+            alloc_req[i] = dec_valid_masked[i] && dec_uops_i[i].has_rd && (dec_uops_i[i].rd != 0);
         end
     end
 
@@ -94,6 +109,7 @@ module rename #(
     // ---------------------------------------------------------
     // 3. 组内依赖检查 (Intra-group Dependency Check)
     // ---------------------------------------------------------
+    // 处理同一周期发射的指令之间的 RAW 依赖
     logic [3:0]       final_rs1_in_rob, final_rs2_in_rob;
     logic [3:0][ROB_IDX_WIDTH-1:0] final_rs1_tag, final_rs2_tag;
 
@@ -107,7 +123,7 @@ module rename #(
         // 检查前面的指令是否写了我的源寄存器
         for (int i=1; i<4; i++) begin
             for (int j=0; j<i; j++) begin
-                // 如果 Instr i 的 RS1 依赖 Instr j 的 RD
+                // 如果 Instr i 的 RS1 依赖 Instr j 的 RD (且 Instr j 确实要写)
                 if (alloc_req[j] && dec_uops_i[i].has_rs1 && (dec_uops_i[i].rs1 == dec_uops_i[j].rd)) begin
                     final_rs1_in_rob[i] = 1'b1;         // 数据肯定在 ROB (因为 Instr j 刚分进去)
                     final_rs1_tag[i]    = new_tags[j];  // 也就是 Instr j 分到的 ROB ID
@@ -129,7 +145,8 @@ module rename #(
 
     always_comb begin
         for (int i=0; i<4; i++) begin
-            if (rename_ready_o && dec_valid_i[i]) begin
+            // 只有当 ROB 准备好，且指令有效（经过 Flush Masking）时才发送
+            if (rename_ready_o && dec_valid_masked[i]) begin
                 // 发送给 ROB
                 rob_dispatch_valid_o[i]   = 1'b1;
                 rob_dispatch_pc_o[i]      = dec_uops_i[i].pc;
@@ -143,13 +160,21 @@ module rename #(
                 issue_rs1_rob_idx_o[i] = final_rs1_tag[i];
                 issue_rs2_in_rob_o[i]  = final_rs2_in_rob[i];
                 issue_rs2_rob_idx_o[i] = final_rs2_tag[i];
-                // 目标 Tag 就是这条指令在 ROB 中的位置
+                // 目标 Tag 就是这条指令在 ROB 中的位置 (ROB ID)
                 issue_rd_rob_idx_o[i]  = new_tags[i]; 
 
             end else begin
                 rob_dispatch_valid_o[i] = 0;
+                rob_dispatch_pc_o[i]    = '0;
+                rob_dispatch_fu_type_o[i] = decode_pkg::FU_NONE;
+                rob_dispatch_areg_o[i]  = '0;
+
                 issue_valid_o[i]        = 0;
-                // ... zero out others
+                issue_rs1_in_rob_o[i]   = 0;
+                issue_rs1_rob_idx_o[i]  = '0;
+                issue_rs2_in_rob_o[i]   = 0;
+                issue_rs2_rob_idx_o[i]  = '0;
+                issue_rd_rob_idx_o[i]   = '0;
             end
         end
     end
