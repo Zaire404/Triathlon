@@ -27,11 +27,6 @@ package build_config_pkg;
     cfg.ICACHE_BANK_SEL_WIDTH = $clog2(cfg.ICACHE_NUM_BANKS);
     cfg.ICACHE_NUM_SETS = (user_cfg.ICACHE_BYTE_SIZE * 8) / user_cfg.ICACHE_SET_ASSOC / user_cfg.ICACHE_LINE_WIDTH;
 
-    // RS 配置
-    cfg.RS_DEPTH = user_cfg.RS_DEPTH;
-    
-    // ALU 配置
-    cfg.ALU_COUNT = user_cfg.ALU_COUNT;
     return cfg;
   endfunction
 endpackage
