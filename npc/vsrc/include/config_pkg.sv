@@ -28,10 +28,6 @@ package config_pkg;
     // Instruction cache line width
     int unsigned ICACHE_LINE_WIDTH;
 
-    int unsigned RS_DEPTH;
-
-    int unsigned ALU_COUNT;
-
   } user_cfg_t;
 
   typedef struct packed {
@@ -61,12 +57,6 @@ package config_pkg;
     int unsigned ICACHE_NUM_BANKS;
     int unsigned ICACHE_BANK_SEL_WIDTH;
     int unsigned ICACHE_NUM_SETS;
-    
-    // Reservation Station configuration
-    int unsigned RS_DEPTH;
-
-    // Execute Station configuration
-    int unsigned ALU_COUNT;
   } cfg_t;
   localparam cfg_t EmptyCfg = cfg_t'(0);
 endpackage
