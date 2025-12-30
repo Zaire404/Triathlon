@@ -70,3 +70,36 @@ clean:
 clean-all:
 	@echo "Cleaning all build artifacts..."
 	rm -rf ./build
+
+# --- Run All Tests Logic ---
+
+ALL_TESTS = $(basename $(notdir $(wildcard ./csrc/test_*.cpp)))
+
+.PHONY: run-all
+
+run-all:
+	@echo "============================================="
+	@echo " Running $(words $(ALL_TESTS)) tests found in ./csrc"
+	@echo "============================================="
+	@mkdir -p ./build
+	@rm -f ./build/run-all.fail
+	@for test in $(ALL_TESTS); do \
+		printf "Test %-25s : " "[$$test]"; \
+		$(MAKE) -s -f Makefile_test TEST=$$test run > ./build/$$test.log 2>&1; \
+		if [ $$? -eq 0 ]; then \
+			printf "\033[32mPASS\033[0m\n"; \
+		else \
+			printf "\033[31mFAIL\033[0m\n"; \
+			printf "    (See details in ./build/$$test.log)\n"; \
+			tail -n 10 ./build/$$test.log | sed 's/^/    | /'; \
+			touch ./build/run-all.fail; \
+		fi; \
+	done
+	@echo "============================================="
+	@if [ -f ./build/run-all.fail ]; then \
+		printf "\033[31mSummary: Some tests failed.\033[0m\n"; \
+		rm ./build/run-all.fail; \
+		exit 1; \
+	else \
+		printf "\033[32mSummary: All tests passed!\033[0m\n"; \
+	fi
