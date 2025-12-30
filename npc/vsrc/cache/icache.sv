@@ -76,8 +76,20 @@ module icache #(
   logic [LINE_ADDR_WIDTH-1:0] line_addr_b_d;
   logic [INDEX_WIDTH-1:0] index_a_d, index_b_d;
   logic [TAG_WIDTH-1:0] tag_a_expected_d, tag_b_expected_d;
-  logic [                SLOT_WIDTH-1:0] start_slot_d;
-  logic                                  cross_line_d;
+  logic [SLOT_WIDTH-1:0] start_slot_d;
+  logic                  cross_line_d;
+
+  // ---------------------------------------------------------------------------
+  // Array address mux (fix for synchronous SRAM model)
+  // ---------------------------------------------------------------------------
+  // sram.sv updates rdata_o on the clock edge (registered output). To achieve a
+  // 1-cycle lookup latency (IDLE accept -> LOOKUP compare), we must drive the
+  // SRAM address with the combinationally decoded index in the accept cycle.
+  // Otherwise, using index_a_q/index_b_q directly would introduce an extra
+  // cycle of latency (and can cause functional mismatch in simulation).
+  logic [INDEX_WIDTH-1:0] index_a_mem, index_b_mem;
+  assign index_a_mem = (state_q == IDLE && ifu_req_handshake_i.valid && !ifu_req_flush_i) ? index_a_d : index_a_q;
+  assign index_b_mem = (state_q == IDLE && ifu_req_handshake_i.valid && !ifu_req_flush_i) ? index_b_d : index_b_q;
 
   // Miss context
   logic [                  Cfg.PLEN-1:0] miss_paddr_q;
@@ -151,13 +163,13 @@ module icache #(
       .clk_i          (clk_i),
       .rst_ni         (rst_ni),
       // Read port A
-      .bank_addr_ra_i (index_a_q[INDEX_WIDTH-1:BANK_SEL_WIDTH]),
-      .bank_sel_ra_i  (index_a_q[BANK_SEL_WIDTH-1:0]),
+      .bank_addr_ra_i (index_a_mem[INDEX_WIDTH-1:BANK_SEL_WIDTH]),
+      .bank_sel_ra_i  (index_a_mem[BANK_SEL_WIDTH-1:0]),
       .rdata_tag_a_o  (tag_a),
       .rdata_valid_a_o(valid_a),
       // Read port B
-      .bank_addr_rb_i (index_b_q[INDEX_WIDTH-1:BANK_SEL_WIDTH]),
-      .bank_sel_rb_i  (index_b_q[BANK_SEL_WIDTH-1:0]),
+      .bank_addr_rb_i (index_b_mem[INDEX_WIDTH-1:BANK_SEL_WIDTH]),
+      .bank_sel_rb_i  (index_b_mem[BANK_SEL_WIDTH-1:0]),
       .rdata_tag_b_o  (tag_b),
       .rdata_valid_b_o(valid_b),
       // Write port
@@ -178,12 +190,12 @@ module icache #(
       .clk_i         (clk_i),
       .rst_ni        (rst_ni),
       // Read port A
-      .bank_addr_ra_i(index_a_q[INDEX_WIDTH-1:BANK_SEL_WIDTH]),
-      .bank_sel_ra_i (index_a_q[BANK_SEL_WIDTH-1:0]),
+      .bank_addr_ra_i(index_a_mem[INDEX_WIDTH-1:BANK_SEL_WIDTH]),
+      .bank_sel_ra_i (index_a_mem[BANK_SEL_WIDTH-1:0]),
       .rdata_a_o     (line_a_all),
       // Read port B
-      .bank_addr_rb_i(index_b_q[INDEX_WIDTH-1:BANK_SEL_WIDTH]),
-      .bank_sel_rb_i (index_b_q[BANK_SEL_WIDTH-1:0]),
+      .bank_addr_rb_i(index_b_mem[INDEX_WIDTH-1:BANK_SEL_WIDTH]),
+      .bank_sel_rb_i (index_b_mem[BANK_SEL_WIDTH-1:0]),
       .rdata_b_o     (line_b_all),
       // Write port
       .w_bank_addr_i (w_bank_addr),

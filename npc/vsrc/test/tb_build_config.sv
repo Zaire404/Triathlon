@@ -1,3 +1,4 @@
+// vsrc/test/tb_build_config.sv
 import config_pkg::*;
 import build_config_pkg::*;
 
@@ -38,7 +39,8 @@ module tb_build_config (
   assign user_cfg_in.ICACHE_LINE_WIDTH = i_ICACHE_LINE_WIDTH;
 
   // 2. 调用函数
-  cfg_t cfg_out = build_config(user_cfg_in);
+  cfg_t cfg_out;
+  assign cfg_out                  = build_config(user_cfg_in);
 
   // 3. 将输出的 cfg_t 结构体解包到独立的输出端口
   assign o_XLEN                   = cfg_out.XLEN;
