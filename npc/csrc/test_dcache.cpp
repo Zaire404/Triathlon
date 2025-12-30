@@ -90,7 +90,7 @@ void handle_memory_interaction(Vtb_dcache *top, VerilatedVcdC *tfp,
       // 简单起见，填充整个 Cache Line 为重复的 32-bit 数据，或者根据地址生成
       // 注意：根据你的 Cache Line 宽度，这里可能需要填充 refill_data_i[1], [2]
       // 等
-      for (int i = 0; i < 4; i++)
+      for (int i = 0; i < 8; i++)
         top->refill_data_i[i] = refill_data_val;
 
       tick(top, tfp);
