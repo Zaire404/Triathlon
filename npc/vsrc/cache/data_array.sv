@@ -53,17 +53,25 @@ module data_array #(
     end
 
     // 读 A
+    // 如果该 bank 本拍在写，则读 A 被写操作抢占，不应覆盖 bank_addr。
     begin
       int b = bank_sel_ra_i;
-      bank_addr[b] = bank_addr_ra_i;
+      if (!(|we_way_mask_i) || (w_bank_sel_i != bank_sel_ra_i)) begin
+        bank_addr[b] = bank_addr_ra_i;
+      end
     end
 
-    // 读 B（避免覆盖 A 的地址）
+    // 读 B：
+    // 1) 如果落在和 A 不同的 bank，则可以正常访问；
+    // 2) 如果该 bank 本拍在写，则读 B 被写操作抢占；
+    // 3) 如果 bank_sel_rb_i == bank_sel_ra_i，该 bank 本拍只能服务 A（或者写）。
     begin
       int b_rb = bank_sel_rb_i;
       int b_ra = bank_sel_ra_i;
       if (b_rb != b_ra) begin
-        bank_addr[b_rb] = bank_addr_rb_i;
+        if (!(|we_way_mask_i) || (w_bank_sel_i != bank_sel_rb_i)) begin
+          bank_addr[b_rb] = bank_addr_rb_i;
+        end
       end
       // bank 冲突时，本拍 B 没被服务，读到的是上一拍的内容
     end
