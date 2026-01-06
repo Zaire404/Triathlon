@@ -1,3 +1,4 @@
+import decode_pkg::*;
 module issue #(
     parameter config_pkg::cfg_t Cfg = config_pkg::EmptyCfg,
     parameter RS_DEPTH = Cfg.RS_DEPTH,
@@ -7,9 +8,9 @@ module issue #(
     input wire clk,
     input wire rst_n,
 
-    input wire [3:0]        dispatch_valid,
-    input wire [31:0]       dispatch_op     [0:3],
-    input wire [TAG_W-1:0]  dispatch_dst    [0:3],
+    input wire [3:0]                        dispatch_valid,
+    input wire decode_pkg::uop_t            dispatch_op     [0:3],
+    input wire [TAG_W-1:0]                  dispatch_dst    [0:3],
     // Src1
     input wire [DATA_W-1:0] dispatch_v1     [0:3],
     input wire [TAG_W-1:0]  dispatch_q1     [0:3],
@@ -27,15 +28,15 @@ module issue #(
     input wire [DATA_W-1:0] cdb_val   [0:3],
 
     // ALU 0 接口
-    output wire             alu0_en,
-    output wire [31:0]      alu0_op,
+    output wire              alu0_en,
+    output decode_pkg::uop_t alu0_uop,
     output wire [DATA_W-1:0] alu0_v1,
     output wire [DATA_W-1:0] alu0_v2,
     output wire [TAG_W-1:0]  alu0_dst,
     
     // ALU 1 接口
-    output wire             alu1_en,
-    output wire [31:0]      alu1_op,
+    output wire              alu1_en,
+    output decode_pkg::uop_t alu1_uop,
     output wire [DATA_W-1:0] alu1_v1,
     output wire [DATA_W-1:0] alu1_v2,
     output wire [TAG_W-1:0]  alu1_dst
@@ -57,14 +58,14 @@ module issue #(
 
     // D. Crossbar <-> RS 输入数据线 (16组宽总线)
     // 这些是在 always_comb 里被驱动的
-    logic [31:0]       rs_in_op  [0:RS_DEPTH-1];
-    logic [TAG_W-1:0]  rs_in_dst [0:RS_DEPTH-1];
-    logic [DATA_W-1:0] rs_in_v1  [0:RS_DEPTH-1];
-    logic [TAG_W-1:0]  rs_in_q1  [0:RS_DEPTH-1];
-    logic              rs_in_r1  [0:RS_DEPTH-1];
-    logic [DATA_W-1:0] rs_in_v2  [0:RS_DEPTH-1];
-    logic [TAG_W-1:0]  rs_in_q2  [0:RS_DEPTH-1];
-    logic              rs_in_r2  [0:RS_DEPTH-1];
+    logic decode_pkg::uop_t     rs_in_op  [0:RS_DEPTH-1];
+    logic [TAG_W-1:0]           rs_in_dst [0:RS_DEPTH-1];
+    logic [DATA_W-1:0]          rs_in_v1  [0:RS_DEPTH-1];
+    logic [TAG_W-1:0]           rs_in_q1  [0:RS_DEPTH-1];
+    logic                       rs_in_r1  [0:RS_DEPTH-1];
+    logic [DATA_W-1:0]          rs_in_v2  [0:RS_DEPTH-1];
+    logic [TAG_W-1:0]           rs_in_q2  [0:RS_DEPTH-1];
+    logic                       rs_in_r2  [0:RS_DEPTH-1];
 
     // ==========================================
     // 模块 1: 分配器 (Allocator)
