@@ -58,7 +58,7 @@ module issue #(
 
     // D. Crossbar <-> RS 输入数据线 (16组宽总线)
     // 这些是在 always_comb 里被驱动的
-    logic decode_pkg::uop_t     rs_in_op  [0:RS_DEPTH-1];
+    decode_pkg::uop_t           rs_in_op [0:RS_DEPTH-1];
     logic [TAG_W-1:0]           rs_in_dst [0:RS_DEPTH-1];
     logic [DATA_W-1:0]          rs_in_v1  [0:RS_DEPTH-1];
     logic [TAG_W-1:0]           rs_in_q1  [0:RS_DEPTH-1];
