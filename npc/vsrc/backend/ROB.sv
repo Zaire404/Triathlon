@@ -117,6 +117,10 @@ module rob #(
     logic [COMMIT_WIDTH-1:0] commit_permitted_mask;
 
     always_comb begin
+        automatic int cnt_br = 0;
+        automatic int cnt_st = 0;
+        automatic int cnt_ld = 0;
+
         stop_commit = 1'b0;
         flush_o = 1'b0;
         flush_pc_o = '0;
@@ -132,9 +136,6 @@ module rob #(
         commit_rob_index_o = '0; 
 
         // --- 1. Resource Check ---
-        automatic int cnt_br = 0;
-        automatic int cnt_st = 0;
-        automatic int cnt_ld = 0;
 
         br_mask = '1; st_mask = '1; ld_mask = '1;
 
