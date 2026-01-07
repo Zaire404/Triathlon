@@ -1,65 +1,136 @@
 #include "Vtb_execute.h"
 #include "verilated.h"
 #include <iostream>
+#include <vector>
 #include <cassert>
+#include <cstdio>
 
-void tick(Vtb_execute *top) {
-    top->clk_i = 0; top->eval();
-    top->clk_i = 1; top->eval();
+// 颜色输出方便观察结果
+#define ANSI_RES_RST  "\x1b[0m"
+#define ANSI_RES_GRN  "\x1b[32m"
+#define ANSI_RES_RED  "\x1b[31m"
+
+struct TestCase {
+    std::string name;
+    uint8_t  alu_op;
+    uint8_t  br_op;
+    bool     is_branch;
+    bool     is_jump;
+    bool     has_rs2;
+    uint32_t rs1;
+    uint32_t rs2;
+    uint32_t imm;
+    uint32_t pc;
+    uint32_t expected_res;
+    bool     expected_mispred;
+    uint32_t expected_redir_pc;
+};
+
+void run_test(Vtb_execute *top, const TestCase &tc) {
+    top->alu_op_i    = tc.alu_op;
+    top->br_op_i     = tc.br_op;
+    top->is_branch_i = tc.is_branch;
+    top->is_jump_i   = tc.is_jump;
+    top->has_rs2_i   = tc.has_rs2;
+    top->rs1_data_i  = tc.rs1;
+    top->rs2_data_i  = tc.rs2;
+    top->imm_i       = tc.imm;
+    top->pc_i        = tc.pc;
+    top->rob_tag_in  = 0x1F;
+
+    top->eval();
+
+    bool pass = true;
+    if (top->alu_result_o != tc.expected_res) pass = false;
+    if (top->is_mispred_o != tc.expected_mispred) pass = false;
+    if (tc.expected_mispred && top->redirect_pc_o != tc.expected_redir_pc) pass = false;
+
+    if (pass) {
+        printf("[ " ANSI_RES_GRN "PASS" ANSI_RES_RST " ] %s\n", tc.name.c_str());
+    } else {
+        printf("[ " ANSI_RES_RED "FAIL" ANSI_RES_RST " ] %s\n", tc.name.c_str());
+        printf("         Expected: Res=0x%08x, Mispred=%d, RedirPC=0x%08x\n", tc.expected_res, tc.expected_mispred, tc.expected_redir_pc);
+        printf("         Actual:   Res=0x%08x, Mispred=%d, RedirPC=0x%08x\n", top->alu_result_o, top->is_mispred_o, top->redirect_pc_o);
+        exit(1);
+    }
 }
 
 int main(int argc, char **argv) {
     Verilated::commandArgs(argc, argv);
     Vtb_execute *top = new Vtb_execute;
 
-    // 复位
     top->rst_ni = 0;
-    tick(top);
+    top->eval();
     top->rst_ni = 1;
-
-    // --- 测试 1: 基本加法与 Tag 透传 ---
-    std::cout << "Checking ADD & Tag Pass-through..." << std::endl;
-    top->alu_op_i = 0; // ALU_ADD
-    top->rs1_data_i = 100;
-    top->rs2_data_i = 200;
-    top->rob_tag_in = 0x2A; // 42
-    top->eval();
-    
-    assert(top->alu_result_o == 300);
-    assert(top->rob_tag_out == 0x2A);
-
-    // --- 测试 2: SLT (比较运算) ---
-    std::cout << "Checking SLT (Signed Less Than)..." << std::endl;
-    top->alu_op_i = 2; // ALU_SLT
-    top->rs1_data_i = -50; 
-    top->rs2_data_i = 10;
-    top->eval();
-    assert(top->alu_result_o == 1); // -50 < 10
-
-    // --- 测试 3: Branch 预测失败检查 ---
-    // 假设预测是不跳，但满足条件实际跳了
-    std::cout << "Checking Branch Misprediction..." << std::endl;
-    top->is_branch_i = 1;
-    top->br_op_i = 0; // BR_EQ
-    top->pc_i = 0x80000000;
-    top->imm_i = 0x10;      // 跳转偏移
-    top->rs1_data_i = 77;
-    top->rs2_data_i = 77;   // 相等，应该跳转
     top->eval();
 
-    assert(top->is_mispred_o == 1); // 预测是不跳，结果跳了，应报误判
-    assert(top->redirect_pc_o == 0x80000010); // 正确目标是 PC+Imm
+    std::vector<TestCase> tests = {
+        // --- 逻辑运算 ---
+        {"AND", 6, 0, 0, 0, 1, 0x0F0F0F0F, 0xFFFF0000, 0, 0, 0x0F0F0000, 0, 0},
+        {"OR",  5, 0, 0, 0, 1, 0x0F0F0F0F, 0xFFFF0000, 0, 0, 0xFFFF0F0F, 0, 0},
+        {"XOR", 4, 0, 0, 0, 1, 0x55555555, 0xAAAAAAAA, 0, 0, 0xFFFFFFFF, 0, 0},
+        
+        // --- 算术运算 ---
+        {"ADD (Pos+Neg)", 0, 0, 0, 0, 1, 100, (uint32_t)-50, 0, 0, 50, 0, 0},
+        {"SUB (Over)",    1, 0, 0, 0, 1, 0, 1, 0, 0, 0xFFFFFFFF, 0, 0},
+        {"LUI",          10, 0, 0, 0, 0, 0, 0, 0x12345000, 0, 0x12345000, 0, 0},
+        {"AUIPC",        11, 0, 0, 0, 0, 0, 0, 0x1000, 0x80000000, 0x80001000, 0, 0},
 
-    // --- 测试 4: JAL 返回地址 ---
-    std::cout << "Checking JAL Return Address (PC+4)..." << std::endl;
-    top->is_branch_i = 0;
-    top->is_jump_i = 1;
-    top->pc_i = 0x1000;
-    top->eval();
-    assert(top->alu_result_o == 0x1004); // JAL 写回寄存器的是下一条指令地址
+        // --- 移位运算 ---
+        {"SLL", 7, 0, 0, 0, 1, 0x1, 5, 0, 0, 0x20, 0, 0},
+        {"SRL", 8, 0, 0, 0, 1, 0x80000000, 1, 0, 0, 0x40000000, 0, 0},
+        {"SRA", 9, 0, 0, 0, 1, 0x80000000, 1, 0, 0, 0xC0000000, 0, 0},
 
-    std::cout << "--- [PASSED] Execute ALU test successful! ---" << std::endl;
-    
+        // --- 比较运算 ---
+        {"SLT (True)",  2, 0, 0, 0, 1, (uint32_t)-1, 1, 0, 0, 1, 0, 0},
+        {"SLT (False)", 2, 0, 0, 0, 1, 1, (uint32_t)-1, 0, 0, 0, 0, 0},
+        {"SLTU (True)", 3, 0, 0, 0, 1, 1, (uint32_t)-1, 0, 0, 1, 0, 0},
+
+        // --- 分支逻辑 (假设预测是不跳，所以 Taken 就是 Mispred) ---
+        {"BEQ_TK", 0, 0, 1, 0, 1, 100, 100, 0x40, 0x8000, 0, 1, 0x8040},
+        {"BNE (NotTk)",  0, 1, 1, 0, 1, 100, 100, 0x40, 0x8000, 0, 0, 0},
+        {"BLT (Taken)",  0, 2, 1, 0, 1, (uint32_t)-2, (uint32_t)-1, 0x10, 0x8000, 0, 1, 0x8010},
+        {"BGEU (Taken)", 0, 5, 1, 0, 1, (uint32_t)-1, 100, 0x10, 0x8000, 0, 1, 0x8010},
+
+        // --- 跳转逻辑 ---
+        {"JAL",  0, 6, 0, 1, 0, 0, 0, 0x100, 0x8000, 0x8004, 1, 0x8100},
+        {"JALR", 0, 7, 0, 1, 0, 0x9000, 0, 0x10, 0x8000, 0x8004, 1, 0x9010},
+
+
+        {"ADDI",   0, 0, 0, 0, 0, 100, 0, (uint32_t)-20, 0, 80, 0, 0},
+
+        // SLTI (有符号比较立即数): -10 < 5 -> True (1)
+        {"SLTI",   2, 0, 0, 0, 0, (uint32_t)-10, 0, 5, 0, 1, 0, 0},
+
+        // SLTIU (无符号比较立即数): -10 (大) < 5 (小) -> False (0)
+        {"SLTIU",  3, 0, 0, 0, 0, (uint32_t)-10, 0, 5, 0, 0, 0, 0},
+
+        // XORI: 0xAAAAAA AA ^ 0x55555555 = 0xFFFFFFFF
+        {"XORI",   4, 0, 0, 0, 0, 0xAAAAAAAA, 0, 0x55555555, 0, 0xFFFFFFFF, 0, 0},
+
+        // ORI: 0xF0F0F0F0 | 0x0F0F0F0F = 0xFFFFFFFF
+        {"ORI",    5, 0, 0, 0, 0, 0xF0F0F0F0, 0, 0x0F0F0F0F, 0, 0xFFFFFFFF, 0, 0},
+
+        // ANDI: 0x12345678 & 0x00000FFF = 0x00000678
+        {"ANDI",   6, 0, 0, 0, 0, 0x12345678, 0, 0x00000FFF, 0, 0x00000678, 0, 0},
+
+        // SLLI (立即数移位): 1 << 10 = 1024
+        {"SLLI",   7, 0, 0, 0, 0, 1, 0, 10, 0, 1024, 0, 0},
+
+        // SRLI (立即数逻辑右移): 0x80000000 >> 2 = 0x20000000
+        {"SRLI",   8, 0, 0, 0, 0, 0x80000000, 0, 2, 0, 0x20000000, 0, 0},
+
+        // SRAI (立即数算术右移): 0x80000000 >>> 2 = 0xE0000000
+        {"SRAI",   9, 0, 0, 0, 0, 0x80000000, 0, 2, 0, 0xE0000000, 0, 0}
+    };
+
+    std::cout << "Starting full instruction set verification..." << std::endl;
+    for (const auto &test : tests) {
+        run_test(top, test);
+    }
+
+    std::cout << ANSI_RES_GRN "--- [ALL TESTS PASSED] Total: " << tests.size() << " cases ---" << ANSI_RES_RST << std::endl;
+
     delete top;
     return 0;
 }

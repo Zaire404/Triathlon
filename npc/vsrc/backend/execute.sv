@@ -103,6 +103,7 @@ module execute_alu #(
   assign alu_valid_o   = alu_valid_i;
   assign alu_rob_tag_o = rob_tag_i;
   // Jump 指令写回的是 PC+4 (返回地址)
-  assign alu_result_o  = (uop_i.is_jump) ? (uop_i.pc + 4) : alu_res;
+  assign alu_result_o = (uop_i.is_jump)   ? (uop_i.pc + 4) : 
+                      (uop_i.is_branch) ? 32'b0 : alu_res;
 
 endmodule

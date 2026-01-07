@@ -16,6 +16,7 @@ module tb_execute (
     input  logic [31:0] rs1_data_i,
     input  logic [31:0] rs2_data_i,
     input  logic [5:0]  rob_tag_in,
+    input  logic        has_rs2_i,
 
     // 输出结果
     output logic [31:0] alu_result_o,
@@ -36,6 +37,7 @@ module tb_execute (
         uop.is_branch = is_branch_i;
         uop.is_jump   = is_jump_i;
         uop.valid     = 1'b1;
+        uop.has_rs2   = has_rs2_i;
     end
 
     execute_alu #(
