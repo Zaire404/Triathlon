@@ -15,7 +15,7 @@ module rename #(
     // --- From Decoder ---
     input logic [3:0] dec_valid_i,
     input decode_pkg::uop_t [3:0] dec_uops_i,
-    output logic rename_ready_o, // 告訴 Decoder 可以發指令
+    output logic rename_ready_o, // 告诉 Decoder 可以发指令
 
     // --- To ROB (Dispatch Interface) ---
     output logic [3:0] rob_dispatch_valid_o,
