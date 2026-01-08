@@ -58,7 +58,7 @@ module issue #(
 
     // D. Crossbar <-> RS 输入数据线 (16组宽总线)
     // 这些是在 always_comb 里被驱动的
-    logic decode_pkg::uop_t     rs_in_op  [0:RS_DEPTH-1];
+    decode_pkg::uop_t           rs_in_op [0:RS_DEPTH-1];
     logic [TAG_W-1:0]           rs_in_dst [0:RS_DEPTH-1];
     logic [DATA_W-1:0]          rs_in_v1  [0:RS_DEPTH-1];
     logic [TAG_W-1:0]           rs_in_q1  [0:RS_DEPTH-1];
@@ -158,13 +158,13 @@ module issue #(
         .issue_grant ( grant_mask_wires ),
         
         .sel_idx_0   ( alu0_sel ),
-        .out_op_0    ( alu0_op ),
+        .out_op_0    ( alu0_uop ),     // <--- 修改这里
         .out_v1_0    ( alu0_v1 ),
         .out_v2_0    ( alu0_v2 ),
         .out_dst_tag_0 ( alu0_dst ),
 
         .sel_idx_1   ( alu1_sel ),
-        .out_op_1    ( alu1_op ),
+        .out_op_1    ( alu1_uop ),     // <--- 修改这里
         .out_v1_1    ( alu1_v1 ),
         .out_v2_1    ( alu1_v2 ),
         .out_dst_tag_1 ( alu1_dst )
