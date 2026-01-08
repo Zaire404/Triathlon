@@ -11,7 +11,6 @@ module reservation_station #(
 
     input wire [RS_DEPTH-1:0]   entry_wen,
     
-    // 写端口 (来自 Crossbar)
     input wire [31:0]           in_op       [0:RS_DEPTH-1],
     input wire [TAG_W-1:0]      in_dst_tag  [0:RS_DEPTH-1],
     input wire [DATA_W-1:0]     in_v1       [0:RS_DEPTH-1],
@@ -21,7 +20,6 @@ module reservation_station #(
     input wire [TAG_W-1:0]      in_q2       [0:RS_DEPTH-1],
     input wire                  in_r2       [0:RS_DEPTH-1],
 
-    // CDB 监听
     input wire [CDB_W-1:0]      cdb_valid,
     input wire [TAG_W-1:0]      cdb_tag     [0:CDB_W-1],
     input wire [DATA_W-1:0]     cdb_value   [0:CDB_W-1],
@@ -49,7 +47,7 @@ module reservation_station #(
 
     // RS 存储阵列
     reg [RS_DEPTH-1:0]  busy;
-    reg [31:0]          op_arr  [0:RS_DEPTH-1];
+    reg decode_pkg::uop_t op_arr [0:RS_DEPTH-1];
     reg [TAG_W-1:0]     dst_arr [0:RS_DEPTH-1];
     
     reg [DATA_W-1:0]    v1_arr  [0:RS_DEPTH-1];
