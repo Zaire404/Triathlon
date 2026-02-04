@@ -13,10 +13,10 @@ module store_buffer #(
     // =======================================================
     // 1. Dispatch (From Rename) - 分配 SB 條目
     // =======================================================
-    input  logic [3:0]                  alloc_req_i,
-    output logic                        alloc_ready_o,  // SB 可接受本周期所有请求
-    output logic [3:0][$clog2(SB_DEPTH)-1:0] alloc_id_o,   // 分配到的 SB ID（每条store）
-    input  logic                        alloc_fire_i,   // 真正执行分配（由上游控制）
+    input logic [3:0] alloc_req_i,
+    output logic alloc_ready_o,  // SB 可接受本周期所有请求
+    output logic [3:0][$clog2(SB_DEPTH)-1:0] alloc_id_o,  // 分配到的 SB ID（每条store）
+    input logic alloc_fire_i,  // 真正执行分配（由上游控制）
 
     // =======================================================
     // 2. Execute (From AGU/ALU) - 填入地址和數據
@@ -32,7 +32,7 @@ module store_buffer #(
     // 3. Commit (From ROB) - 標記為 "Senior Store"
     // =======================================================
     // ROB 只要發個信號，就不管了，不需要等 D-Cache
-    input logic [COMMIT_WIDTH-1:0]                      commit_valid_i,
+    input logic [COMMIT_WIDTH-1:0]                       commit_valid_i,
     input logic [COMMIT_WIDTH-1:0][$clog2(SB_DEPTH)-1:0] commit_sb_id_i,
 
     // =======================================================
@@ -80,12 +80,23 @@ module store_buffer #(
   // 計數器
   logic [$clog2(SB_DEPTH):0] count;
 
+  // --- 辅助信号：本周期将提交的条目 (避免 flush 丢失同周期 commit) ---
+  logic [SB_DEPTH-1:0] commit_set;
+  always_comb begin
+    commit_set = '0;
+    for (int c = 0; c < COMMIT_WIDTH; c++) begin
+      if (commit_valid_i[c]) begin
+        commit_set[commit_sb_id_i[c]] = 1'b1;
+      end
+    end
+  end
+
   // --- 輔助信號：計算已提交的條目數量 ---
   logic [$clog2(SB_DEPTH):0] committed_count;
   always_comb begin
     committed_count = 0;
     for (int i = 0; i < SB_DEPTH; i++) begin
-      if (mem[i].valid && mem[i].committed) begin
+      if (mem[i].valid && (mem[i].committed || commit_set[i])) begin
         committed_count++;
       end
     end
@@ -161,8 +172,12 @@ module store_buffer #(
 
       // 清除無效條目
       for (int i = 0; i < SB_DEPTH; i++) begin
-        if (mem[i].valid && !mem[i].committed) begin
+        if (commit_set[i]) begin
+          mem[i].committed <= 1'b1;
+        end
+        if (mem[i].valid && !(mem[i].committed || commit_set[i])) begin
           mem[i].valid      <= 1'b0;
+          mem[i].committed  <= 1'b0;
           mem[i].addr_valid <= 1'b0;
           mem[i].data_valid <= 1'b0;
         end
