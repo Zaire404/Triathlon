@@ -26,6 +26,8 @@ module issue_lsu #(
     // Store Buffer ID
     input wire                   [  SB_W-1:0] dispatch_sb_id[0:3],
 
+    input wire                   [ TAG_W-1:0] rob_head_i,
+
     input wire fu_ready_i,
 
     output wire issue_ready,
@@ -118,6 +120,8 @@ module issue_lsu #(
       .clk  (clk),
       .rst_n(rst_n),
       .flush_i(flush_i),
+
+      .rob_head_i(rob_head_i),
 
       .entry_wen (alloc_wen),
       .in_op     (rs_in_op),

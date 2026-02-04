@@ -27,6 +27,7 @@ module store_buffer #(
     input logic                [        Cfg.PLEN-1:0] ex_addr_i,
     input logic                [        Cfg.XLEN-1:0] ex_data_i,
     input decode_pkg::lsu_op_e                        ex_op_i,
+    input logic                [    ROB_IDX_WIDTH-1:0] ex_rob_idx_i,
 
     // =======================================================
     // 3. Commit (From ROB) - 標記為 "Senior Store"
@@ -48,8 +49,10 @@ module store_buffer #(
     // 5. Load Forwarding (From Load Unit) - 關鍵邏輯
     // =======================================================
     input  logic [Cfg.PLEN-1:0] load_addr_i,
+    input  logic [ROB_IDX_WIDTH-1:0] load_rob_idx_i,
     output logic                load_hit_o,   // 在 SB 中命中且數據有效
     output logic [Cfg.XLEN-1:0] load_data_o,  // 轉發的數據
+    input  logic [ROB_IDX_WIDTH-1:0] rob_head_i,
 
     // =======================================================
     // 6. Control
@@ -67,9 +70,19 @@ module store_buffer #(
     logic [Cfg.PLEN-1:0] addr;
     logic [Cfg.XLEN-1:0] data;
     decode_pkg::lsu_op_e op;
+    logic [ROB_IDX_WIDTH-1:0] rob_tag;
   } sb_entry_t;
 
   sb_entry_t [SB_DEPTH-1:0] mem;
+
+  function automatic logic [ROB_IDX_WIDTH-1:0] rob_age(
+      input logic [ROB_IDX_WIDTH-1:0] idx, input logic [ROB_IDX_WIDTH-1:0] head);
+    logic [ROB_IDX_WIDTH-1:0] diff;
+    begin
+      diff = idx - head;
+      return diff;
+    end
+  endfunction
 
 
   // 指針定義：
@@ -158,6 +171,7 @@ module store_buffer #(
         mem[i].addr       <= '0;
         mem[i].data       <= '0;
         mem[i].op         <= decode_pkg::LSU_LW;
+        mem[i].rob_tag    <= '0;
       end
     end else if (flush_i) begin
       // 【Flush 處理關鍵邏輯】
@@ -181,6 +195,7 @@ module store_buffer #(
           mem[i].committed  <= 1'b0;
           mem[i].addr_valid <= 1'b0;
           mem[i].data_valid <= 1'b0;
+          mem[i].rob_tag    <= '0;
         end
       end
     end else begin
@@ -192,6 +207,7 @@ module store_buffer #(
         mem[ex_sb_id_i].addr       <= ex_addr_i;
         mem[ex_sb_id_i].data       <= ex_data_i;
         mem[ex_sb_id_i].op         <= ex_op_i;
+        mem[ex_sb_id_i].rob_tag    <= ex_rob_idx_i;
         mem[ex_sb_id_i].addr_valid <= 1'b1;
         mem[ex_sb_id_i].data_valid <= 1'b1;
       end
@@ -211,6 +227,7 @@ module store_buffer #(
             mem[idx].committed  <= 1'b0;  // 默認為推測狀態
             mem[idx].addr_valid <= 1'b0;
             mem[idx].data_valid <= 1'b0;
+            mem[idx].rob_tag    <= '0;
             off++;
           end
         end
@@ -268,10 +285,13 @@ module store_buffer #(
   // =======================================================
   // 策略：從最新分配的條目 (tail-1) 開始向舊條目 (head) 搜索。
   // 找到的第一個地址匹配且有效的 Store 即為正確的數據來源。
+  logic [ROB_IDX_WIDTH-1:0] load_age;
 
   always_comb begin
     load_hit_o  = 1'b0;
     load_data_o = '0;
+
+    load_age = rob_age(load_rob_idx_i, rob_head_i);
 
     // 遍歷整個 SB (邏輯上從 tail-1 到 head)
     for (int i = 0; i < SB_DEPTH; i++) begin
@@ -287,7 +307,8 @@ module store_buffer #(
       if (mem[idx].valid && 
                 mem[idx].addr_valid && 
                 mem[idx].data_valid && 
-                (mem[idx].addr == load_addr_i)) begin
+                (mem[idx].addr == load_addr_i) &&
+                (rob_age(mem[idx].rob_tag, rob_head_i) < load_age)) begin
 
         load_hit_o  = 1'b1;
         load_data_o = mem[idx].data;
@@ -296,6 +317,7 @@ module store_buffer #(
         break;
       end
     end
+
   end
 
 endmodule

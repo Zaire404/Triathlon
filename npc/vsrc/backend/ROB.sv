@@ -77,7 +77,8 @@ module rob #(
     output logic [QUERY_WIDTH-1:0][Cfg.XLEN-1:0]           query_data_o,
 
     output logic rob_empty_o,
-    output logic rob_full_o
+    output logic rob_full_o,
+    output logic [$clog2(ROB_DEPTH)-1:0] rob_head_o
 );
   localparam int unsigned PTR_WIDTH = $clog2(ROB_DEPTH);
 
@@ -254,6 +255,8 @@ module rob #(
   end
   assign tail_ptr_d = tail_ptr_q + PTR_WIDTH'(dispatch_cnt);
   assign head_ptr_d = head_ptr_q + PTR_WIDTH'(commit_cnt);
+
+  assign rob_head_o = head_ptr_q;
   assign count_d    = count_q + dispatch_cnt - commit_cnt;
 
   // ... Sequential Logic ...

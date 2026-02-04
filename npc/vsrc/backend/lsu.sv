@@ -36,9 +36,11 @@ module lsu #(
     output logic [Cfg.PLEN-1:0]          sb_ex_addr_o,
     output logic [Cfg.XLEN-1:0]          sb_ex_data_o,
     output decode_pkg::lsu_op_e          sb_ex_op_o,
+    output logic [ROB_IDX_WIDTH-1:0]     sb_ex_rob_idx_o,
 
     // Store-to-Load Forwarding (query)
     output logic [Cfg.PLEN-1:0]          sb_load_addr_o,
+    output logic [ROB_IDX_WIDTH-1:0]     sb_load_rob_idx_o,
     input  logic                        sb_load_hit_i,
     input  logic [Cfg.XLEN-1:0]          sb_load_data_i,
 
@@ -186,9 +188,11 @@ module lsu #(
   assign sb_ex_addr_o  = eff_addr;
   assign sb_ex_data_o  = rs2_data_i;
   assign sb_ex_op_o    = uop_i.lsu_op;
+  assign sb_ex_rob_idx_o = rob_tag_i;
 
   // Store-buffer forwarding address (only meaningful for incoming load)
   assign sb_load_addr_o = (state_q == S_IDLE && req_valid_i && is_load) ? eff_addr : '0;
+  assign sb_load_rob_idx_o = rob_tag_i;
 
   // D-Cache load port
   assign ld_req_valid_o = (state_q == S_LD_REQ);

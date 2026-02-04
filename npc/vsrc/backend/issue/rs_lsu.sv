@@ -11,6 +11,8 @@ module reservation_station_lsu #(
     input wire rst_n,
     input wire flush_i,
 
+    input wire [ TAG_W-1:0] rob_head_i,
+
     input wire [RS_DEPTH-1:0] entry_wen,
 
     input decode_pkg::uop_t              in_op     [0:RS_DEPTH-1],
@@ -58,7 +60,6 @@ module reservation_station_lsu #(
   reg               [   SB_W-1:0]  sb_arr [0:RS_DEPTH-1];
 
   integer i, k;
-
   always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       busy <= {RS_DEPTH{1'b0}};
@@ -115,16 +116,26 @@ module reservation_station_lsu #(
     end
   end
 
+  function automatic logic [TAG_W-1:0] rob_age(
+      input logic [TAG_W-1:0] idx, input logic [TAG_W-1:0] head);
+    logic [TAG_W-1:0] diff;
+    begin
+      diff = idx - head;
+      return diff;
+    end
+  endfunction
+
   // Load/store ordering: block loads behind older stores.
-  // NOTE: Uses ROB tag numeric compare; assumes no wrap within small windows.
   always_comb begin
     for (int m = 0; m < RS_DEPTH; m++) begin
       logic block_load;
       block_load = 1'b0;
       if (busy[m] && op_arr[m].is_load) begin
         for (int n = 0; n < RS_DEPTH; n++) begin
-          if (busy[n] && op_arr[n].is_store && (dst_arr[n] < dst_arr[m])) begin
-            block_load = 1'b1;
+          if (busy[n] && op_arr[n].is_store) begin
+            if (rob_age(dst_arr[n], rob_head_i) < rob_age(dst_arr[m], rob_head_i)) begin
+              block_load = 1'b1;
+            end
           end
         end
       end

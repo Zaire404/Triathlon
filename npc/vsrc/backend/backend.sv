@@ -123,6 +123,7 @@ module backend #(
   logic [DISPATCH_WIDTH*2-1:0][ROB_IDX_WIDTH-1:0] rob_query_idx;
   logic [DISPATCH_WIDTH*2-1:0]                   rob_query_ready;
   logic [DISPATCH_WIDTH*2-1:0][Cfg.XLEN-1:0]      rob_query_data;
+  logic [ROB_IDX_WIDTH-1:0]                      rob_head_ptr;
 
   rob #(
       .Cfg(Cfg),
@@ -173,7 +174,8 @@ module backend #(
       .query_data_o   (rob_query_data),
 
       .rob_empty_o(),
-      .rob_full_o()
+      .rob_full_o(),
+      .rob_head_o(rob_head_ptr)
   );
 
   assign backend_flush = flush_from_backend | rob_flush;
@@ -211,8 +213,10 @@ module backend #(
   logic [Cfg.PLEN-1:0] sb_ex_addr;
   logic [Cfg.XLEN-1:0] sb_ex_data;
   decode_pkg::lsu_op_e sb_ex_op;
+  logic [ROB_IDX_WIDTH-1:0] sb_ex_rob_idx;
 
   logic [Cfg.PLEN-1:0] sb_load_addr;
+  logic [ROB_IDX_WIDTH-1:0] sb_load_rob_idx;
   logic sb_load_hit;
   logic [Cfg.XLEN-1:0] sb_load_data;
 
@@ -234,6 +238,7 @@ module backend #(
       .ex_addr_i  (sb_ex_addr),
       .ex_data_i  (sb_ex_data),
       .ex_op_i    (sb_ex_op),
+      .ex_rob_idx_i(sb_ex_rob_idx),
 
       .commit_valid_i(sb_commit_valid),
       .commit_sb_id_i(sb_commit_id),
@@ -245,8 +250,11 @@ module backend #(
       .dcache_req_op_o   (sb_dcache_req_op),
 
       .load_addr_i(sb_load_addr),
+      .load_rob_idx_i(sb_load_rob_idx),
       .load_hit_o (sb_load_hit),
       .load_data_o(sb_load_data),
+
+      .rob_head_i(rob_head_ptr),
 
       .flush_i(backend_flush)
   );
@@ -580,6 +588,7 @@ module backend #(
             lsu_dispatch_q2[lsu_k]    = issue_q2[i];
             lsu_dispatch_r2[lsu_k]    = issue_r2[i];
             lsu_dispatch_sb_id[lsu_k] = rob_dispatch_sb_id[i];
+
             lsu_k++;
           end
           default: begin
@@ -711,6 +720,8 @@ module backend #(
       .dispatch_r2   (lsu_dispatch_r2),
       .dispatch_sb_id(lsu_dispatch_sb_id),
 
+      .rob_head_i(rob_head_ptr),
+
       .fu_ready_i (lsu_req_ready),
 
       .issue_ready (lsu_issue_ready),
@@ -727,6 +738,7 @@ module backend #(
       .lsu_dst  (lsu_dst),
       .lsu_sb_id(lsu_sb_id)
   );
+
 
   // Backpressure calculation (MDU/CSR not implemented yet)
   logic alu_can_accept;
@@ -883,8 +895,10 @@ module backend #(
       .sb_ex_addr_o (sb_ex_addr),
       .sb_ex_data_o (sb_ex_data),
       .sb_ex_op_o   (sb_ex_op),
+      .sb_ex_rob_idx_o(sb_ex_rob_idx),
 
       .sb_load_addr_o(sb_load_addr),
+      .sb_load_rob_idx_o(sb_load_rob_idx),
       .sb_load_hit_i (sb_load_hit),
       .sb_load_data_i(sb_load_data),
 
