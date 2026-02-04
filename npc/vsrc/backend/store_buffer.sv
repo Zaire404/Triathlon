@@ -71,6 +71,7 @@ module store_buffer #(
 
   sb_entry_t [SB_DEPTH-1:0] mem;
 
+
   // 指針定義：
   // head_ptr: 指向最舊的條目 (隊頭，負責寫 D-Cache)
   // tail_ptr: 指向隊尾下一個空閒位置 (負責 Dispatch 分配)

@@ -114,17 +114,19 @@ module dcache #(
       input logic [LINE_WIDTH-1:0] line, input logic [OFFSET_WIDTH-1:0] byte_off,
       input decode_pkg::lsu_op_e op, input logic [Cfg.XLEN-1:0] wdata);
     logic [LINE_WIDTH-1:0] res;
+    int unsigned bit_idx;
     // Zero-extend store data to 64b to avoid out-of-range selects when XLEN=32.
     logic [63:0] wdata64;
     wdata64 = '0;
     wdata64[Cfg.XLEN-1:0] = wdata;
 
     res = line;
+    bit_idx = int'($unsigned(byte_off)) * 8;
     unique case (op)
-      LSU_SB: res[byte_off*8+:8] = wdata64[7:0];
-      LSU_SH: res[byte_off*8+:16] = wdata64[15:0];
-      LSU_SW: res[byte_off*8+:32] = wdata64[31:0];
-      LSU_SD: res[byte_off*8+:64] = wdata64[63:0];
+      LSU_SB: res[bit_idx+:8] = wdata64[7:0];
+      LSU_SH: res[bit_idx+:16] = wdata64[15:0];
+      LSU_SW: res[bit_idx+:32] = wdata64[31:0];
+      LSU_SD: res[bit_idx+:64] = wdata64[63:0];
       default:  /* do nothing */;
     endcase
     return res;
@@ -135,41 +137,43 @@ module dcache #(
                                                        input decode_pkg::lsu_op_e op);
     logic [Cfg.XLEN-1:0] res;
     logic sign;
+    int unsigned bit_idx;
     res = '0;
+    bit_idx = int'($unsigned(byte_off)) * 8;
     unique case (op)
       LSU_LB: begin
-        sign = line[byte_off*8+7];
-        res  = {{(Cfg.XLEN - 8) {sign}}, line[byte_off*8+:8]};
+        sign = line[bit_idx+7];
+        res  = {{(Cfg.XLEN - 8) {sign}}, line[bit_idx+:8]};
       end
       LSU_LBU: begin
-        res = {{(Cfg.XLEN - 8) {1'b0}}, line[byte_off*8+:8]};
+        res = {{(Cfg.XLEN - 8) {1'b0}}, line[bit_idx+:8]};
       end
       LSU_LH: begin
-        sign = line[byte_off*8+15];
-        res  = {{(Cfg.XLEN - 16) {sign}}, line[byte_off*8+:16]};
+        sign = line[bit_idx+15];
+        res  = {{(Cfg.XLEN - 16) {sign}}, line[bit_idx+:16]};
       end
       LSU_LHU: begin
-        res = {{(Cfg.XLEN - 16) {1'b0}}, line[byte_off*8+:16]};
+        res = {{(Cfg.XLEN - 16) {1'b0}}, line[bit_idx+:16]};
       end
       LSU_LW: begin
         if (Cfg.XLEN == 32) begin
-          res = line[byte_off*8+:32];
+          res = line[bit_idx+:32];
         end else begin
-          sign = line[byte_off*8+31];
-          res  = {{(Cfg.XLEN - 32) {sign}}, line[byte_off*8+:32]};
+          sign = line[bit_idx+31];
+          res  = {{(Cfg.XLEN - 32) {sign}}, line[bit_idx+:32]};
         end
       end
       LSU_LWU: begin
         // Only meaningful for RV64; for RV32 this is illegal but harmless.
         if (Cfg.XLEN == 32) begin
-          res = line[byte_off*8+:32];
+          res = line[bit_idx+:32];
         end else begin
-          res = {{(Cfg.XLEN - 32) {1'b0}}, line[byte_off*8+:32]};
+          res = {{(Cfg.XLEN - 32) {1'b0}}, line[bit_idx+:32]};
         end
       end
       LSU_LD: begin
         // RV64
-        res = line[byte_off*8+:64];
+        res = line[bit_idx+:64];
       end
       default: res = '0;
     endcase
@@ -305,6 +309,13 @@ module dcache #(
   // Store-hit update buffer
   logic                [                LINE_WIDTH-1:0] store_new_line_q;
   logic                [Cfg.DCACHE_SET_ASSOC_WIDTH-1:0] store_hit_way_q;
+
+  // Last write bypass (fix RAW hazard on back-to-back stores/loads)
+  logic                                 last_write_valid_q;
+  logic                 [TAG_WIDTH-1:0] last_write_tag_q;
+  logic               [INDEX_WIDTH-1:0] last_write_index_q;
+  logic [Cfg.DCACHE_SET_ASSOC_WIDTH-1:0] last_write_way_q;
+  logic                [LINE_WIDTH-1:0] last_write_line_q;
 
   // Load response regs
   logic                                                 rsp_err_q;
@@ -452,6 +463,18 @@ module dcache #(
     end
   end
 
+  // Select the freshest line data for a hit (bypass last write if same line/way).
+  logic [LINE_WIDTH-1:0] hit_line;
+  always_comb begin
+    hit_line = line_a_all[hit_way_idx];
+    if (last_write_valid_q &&
+        (last_write_tag_q == req_tag_q) &&
+        (last_write_index_q == req_index_q) &&
+        (last_write_way_q == hit_way_idx)) begin
+      hit_line = last_write_line_q;
+    end
+  end
+
   // ---------------------------------------------------------------------------
   // Default assignments for write port and memory interface
   // ---------------------------------------------------------------------------
@@ -527,7 +550,7 @@ module dcache #(
     endcase
 
     // On flush, suppress handshakes/responses.
-    if (flush_i) begin
+    if (flush_i && !(state_q != S_IDLE && req_is_store_q)) begin
       miss_req_valid_o = 1'b0;
       refill_ready_o   = 1'b0;
       wb_req_valid_o   = 1'b0;
@@ -601,7 +624,7 @@ module dcache #(
       default: state_d = S_IDLE;
     endcase
 
-    if (flush_i) begin
+    if (flush_i && !(state_q != S_IDLE && req_is_store_q)) begin
       state_d = S_IDLE;
     end
   end
@@ -644,7 +667,13 @@ module dcache #(
       rsp_err_q        <= 1'b0;
       rsp_data_q       <= '0;
 
-    end else if (flush_i) begin
+      last_write_valid_q <= 1'b0;
+      last_write_tag_q   <= '0;
+      last_write_index_q <= '0;
+      last_write_way_q   <= '0;
+      last_write_line_q  <= '0;
+
+    end else if (flush_i && !(state_q != S_IDLE && req_is_store_q)) begin
       state_q          <= S_IDLE;
 
       req_is_store_q   <= 1'b0;
@@ -677,6 +706,12 @@ module dcache #(
 
       rsp_err_q        <= 1'b0;
       rsp_data_q       <= '0;
+
+      last_write_valid_q <= 1'b0;
+      last_write_tag_q   <= '0;
+      last_write_index_q <= '0;
+      last_write_way_q   <= '0;
+      last_write_line_q  <= '0;
 
     end else begin
       state_q <= state_d;
@@ -732,12 +767,12 @@ module dcache #(
         end else if (hit) begin
           if (!req_is_store_q) begin
             rsp_err_q  <= 1'b0;
-            rsp_data_q <= extract_load(line_a_all[hit_way_idx], req_byte_off_q, req_op_q);
+            rsp_data_q <= extract_load(hit_line, req_byte_off_q, req_op_q);
           end else begin
             // Store hit: compute merged line, write in next state.
             store_hit_way_q <= hit_way_idx;
             store_new_line_q <= apply_store(
-                line_a_all[hit_way_idx], req_byte_off_q, req_op_q, req_wdata_q
+                hit_line, req_byte_off_q, req_op_q, req_wdata_q
             );
           end
         end
@@ -751,6 +786,25 @@ module dcache #(
           rsp_err_q  <= 1'b0;
           rsp_data_q <= extract_load(refill_data_i, req_byte_off_q, req_op_q);
         end
+      end
+
+      // ----------------------------------------------------------
+      // Track last write to handle RAW hazards on the same line/way
+      // ----------------------------------------------------------
+      if (state_q == S_STORE_WRITE) begin
+        last_write_valid_q <= 1'b1;
+        last_write_tag_q   <= req_tag_q;
+        last_write_index_q <= req_index_q;
+        last_write_way_q   <= store_hit_way_q;
+        last_write_line_q  <= store_new_line_q;
+      end else if (state_q == S_WAIT_REFILL && refill_valid_i && refill_ready_o) begin
+        last_write_valid_q <= 1'b1;
+        last_write_tag_q   <= refill_paddr_i[Cfg.PLEN-1:OFFSET_WIDTH][INDEX_WIDTH+:TAG_WIDTH];
+        last_write_index_q <= miss_index_q;
+        last_write_way_q   <= refill_way_i;
+        last_write_line_q  <= w_line;
+      end else if (state_q == S_IDLE && !accept_req) begin
+        last_write_valid_q <= 1'b0;
       end
 
       // ----------------------------------------------------------

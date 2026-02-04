@@ -356,6 +356,23 @@ module backend #(
   logic [DISPATCH_WIDTH-1:0] issue_r1;
   logic [DISPATCH_WIDTH-1:0] issue_r2;
 
+  // Commit -> ARF read bypass (handles same-cycle commit/rename after flush)
+  function automatic logic [Cfg.XLEN-1:0] arf_bypass(
+      input logic [4:0] reg_idx, input logic [Cfg.XLEN-1:0] arf_val);
+    logic [Cfg.XLEN-1:0] val;
+    begin
+      val = arf_val;
+      if (reg_idx != '0) begin
+        for (int c = 0; c < COMMIT_WIDTH; c++) begin
+          if (commit_we[c] && (commit_areg[c] == reg_idx)) begin
+            val = commit_wdata[c];
+          end
+        end
+      end
+      return val;
+    end
+  endfunction
+
   always_comb begin
     // ARF read addresses
     for (int i = 0; i < DISPATCH_WIDTH; i++) begin
@@ -396,26 +413,26 @@ module backend #(
           end else begin
             issue_r1[i] = 1'b0;
             issue_q1[i] = issue_rs1_rob_idx[i];
-          end
-        end else begin
-          issue_r1[i] = 1'b1;
-          issue_v1[i] = arf_rdata[i];
         end
+      end else begin
+        issue_r1[i] = 1'b1;
+        issue_v1[i] = arf_bypass(issue_rs1_idx[i], arf_rdata[i]);
+      end
 
-        if (issue_rs2_in_rob[i]) begin
-          if (rob_query_ready[i + 4] && !rs2_tag_allocated[i]) begin
-            issue_r2[i] = 1'b1;
-            issue_v2[i] = rob_query_data[i + 4];
-          end else begin
-            issue_r2[i] = 1'b0;
-            issue_q2[i] = issue_rs2_rob_idx[i];
-          end
-        end else begin
+      if (issue_rs2_in_rob[i]) begin
+        if (rob_query_ready[i + 4] && !rs2_tag_allocated[i]) begin
           issue_r2[i] = 1'b1;
-          issue_v2[i] = arf_rdata[i+4];
+          issue_v2[i] = rob_query_data[i + 4];
+        end else begin
+          issue_r2[i] = 1'b0;
+          issue_q2[i] = issue_rs2_rob_idx[i];
         end
+      end else begin
+        issue_r2[i] = 1'b1;
+        issue_v2[i] = arf_bypass(issue_rs2_idx[i], arf_rdata[i+4]);
       end
     end
+  end
   end
 
   // =========================================================
