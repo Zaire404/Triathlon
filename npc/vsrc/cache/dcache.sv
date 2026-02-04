@@ -7,6 +7,7 @@ module dcache #(
 ) (
     input logic clk_i,
     input logic rst_ni,
+    input logic flush_i,
 
     // =============================================================
     // 1) Load port (from LSU)
@@ -186,8 +187,8 @@ module dcache #(
 
   // Ready/accept policy: blocking cache; accept new req only in IDLE.
   always_comb begin
-    ld_req_ready_o = (state_q == S_IDLE);
-    st_req_ready_o = (state_q == S_IDLE) && !ld_req_valid_i;  // load wins if same cycle
+    ld_req_ready_o = (state_q == S_IDLE) && !flush_i;
+    st_req_ready_o = (state_q == S_IDLE) && !ld_req_valid_i && !flush_i;  // load wins if same cycle
 
     sel_is_load    = 1'b0;
     sel_is_store   = 1'b0;
@@ -195,16 +196,18 @@ module dcache #(
     sel_op         = decode_pkg::LSU_LW;
     sel_wdata      = '0;
 
-    if (ld_req_valid_i && ld_req_ready_o) begin
-      sel_is_load = 1'b1;
-      sel_addr    = ld_req_addr_i;
-      sel_op      = ld_req_op_i;
-      sel_wdata   = '0;
-    end else if (st_req_valid_i && st_req_ready_o) begin
-      sel_is_store = 1'b1;
-      sel_addr     = st_req_addr_i;
-      sel_op       = st_req_op_i;
-      sel_wdata    = st_req_data_i;
+    if (!flush_i) begin
+      if (ld_req_valid_i && ld_req_ready_o) begin
+        sel_is_load = 1'b1;
+        sel_addr    = ld_req_addr_i;
+        sel_op      = ld_req_op_i;
+        sel_wdata   = '0;
+      end else if (st_req_valid_i && st_req_ready_o) begin
+        sel_is_store = 1'b1;
+        sel_addr     = st_req_addr_i;
+        sel_op       = st_req_op_i;
+        sel_wdata    = st_req_data_i;
+      end
     end
   end
 
@@ -522,6 +525,16 @@ module dcache #(
         // no writes
       end
     endcase
+
+    // On flush, suppress handshakes/responses.
+    if (flush_i) begin
+      miss_req_valid_o = 1'b0;
+      refill_ready_o   = 1'b0;
+      wb_req_valid_o   = 1'b0;
+      ld_rsp_valid_o   = 1'b0;
+      ld_rsp_data_o    = '0;
+      ld_rsp_err_o     = 1'b0;
+    end
   end
 
   // ---------------------------------------------------------------------------
@@ -587,6 +600,10 @@ module dcache #(
 
       default: state_d = S_IDLE;
     endcase
+
+    if (flush_i) begin
+      state_d = S_IDLE;
+    end
   end
 
   // ---------------------------------------------------------------------------
@@ -594,6 +611,40 @@ module dcache #(
   // ---------------------------------------------------------------------------
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (!rst_ni) begin
+      state_q          <= S_IDLE;
+
+      req_is_store_q   <= 1'b0;
+      req_addr_q       <= '0;
+      req_op_q         <= decode_pkg::LSU_LW;
+      req_wdata_q      <= '0;
+      req_line_addr_q  <= '0;
+      req_index_q      <= '0;
+      req_tag_q        <= '0;
+      req_byte_off_q   <= '0;
+      req_bank_addr_q  <= '0;
+      req_bank_sel_q   <= '0;
+      req_err_q        <= 1'b0;
+
+      victim_way_q     <= '0;
+      victim_tag_q     <= '0;
+      victim_line_q    <= '0;
+      victim_valid_q   <= 1'b0;
+      victim_dirty_q   <= 1'b0;
+
+      miss_paddr_q     <= '0;
+      miss_index_q     <= '0;
+      miss_bank_addr_q <= '0;
+      miss_bank_sel_q  <= '0;
+
+      wb_paddr_q       <= '0;
+
+      store_new_line_q <= '0;
+      store_hit_way_q  <= '0;
+
+      rsp_err_q        <= 1'b0;
+      rsp_data_q       <= '0;
+
+    end else if (flush_i) begin
       state_q          <= S_IDLE;
 
       req_is_store_q   <= 1'b0;

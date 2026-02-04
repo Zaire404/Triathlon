@@ -419,8 +419,11 @@ module decoder #(
         //   等你想支持 Zicsr 再扩展 decode_pkg 加 csr_op 等字段。
         // -------------------------
         OPCODE_SYSTEM: begin
-          uop_decoded.fu     = FU_CSR;
-          uop_decoded.is_csr = 1'b1;
+          // 当前后端未实现 CSR 单元：将系统指令降级为 ALU NOP，
+          // 以保证 ECALL/EBREAK/MRET 可以正常退休（由软件/仿真层处理）。
+          uop_decoded.fu     = FU_ALU;
+          uop_decoded.alu_op = ALU_NOP;
+          uop_decoded.is_csr = 1'b0;
 
           unique case (funct3_field)
             3'b000: begin

@@ -1,10 +1,15 @@
-TOPNAME = cpu
+TOPNAME ?= tb_triathlon
 NXDC_FILES = constr/top.nxdc
-INC_PATH ?= vsrc
+INC_PATH ?= vsrc vsrc/include
+NPC_HOME ?= $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
+TRIATHLON_HOME ?= $(abspath $(NPC_HOME)/..)
 
 VERILATOR = verilator
-VERILATOR_CFLAGS += -MMD --build -cc  \
-				-O3 --x-assign fast --x-initial fast --noassert --trace
+# VERILATOR_CFLAGS += -MMD --build -cc \
+# 				-O3 --x-assign fast --x-initial fast --noassert --trace -sv
+VERILATOR_CFLAGS += -MMD --build -cc \
+				-O1 -j $(shell nproc) --x-assign fast --x-initial fast --noassert --trace -sv
+VERILATOR_CFLAGS += --Wno-fatal --Wno-WIDTH
 
 BUILD_DIR = ./build
 OBJ_DIR = $(BUILD_DIR)/obj_dir
@@ -12,7 +17,7 @@ BIN = $(BUILD_DIR)/$(TOPNAME)
 
 default: $(BIN)
 
-LLVM_LIBS := $(shell llvm-config --libs)
+LLVM_LIBS := $(shell llvm-config --libs 2>/dev/null)
 
 $(shell mkdir -p $(BUILD_DIR))
 
@@ -23,30 +28,70 @@ $(shell mkdir -p $(BUILD_DIR))
 
 # project source
 
-# 明确将 define.v 放在最前面
-VSRCS_DEFINE = $(abspath ./vsrc/define.v)
-# 找到 vsrc 目录下除 define.v 之外的所有 .v 文件
-VSRCS_OTHERS = $(filter-out $(VSRCS_DEFINE), $(shell find $(abspath ./vsrc) -name "*.v"))
-# 组合成最终的文件列表
-VSRCS = $(VSRCS_DEFINE) $(VSRCS_OTHERS)
+PKG_VSRCS = \
+	$(abspath ./vsrc/include/config_pkg.sv) \
+	$(abspath ./vsrc/include/test_config_pkg.sv) \
+	$(abspath ./vsrc/include/build_config_pkg.sv) \
+	$(abspath ./vsrc/include/global_config_pkg.sv) \
+	$(abspath ./vsrc/include/riscv_pkg.sv) \
+	$(abspath ./vsrc/include/decode_pkg.sv)
 
-CSRCS = $(shell find $(abspath ./csrc) -name "*.c" -or -name "*.cc" -or -name "*.cpp")
-CSRCS += $(SRC_AUTO_BIND)
+DESIGN_VSRCS = $(shell find $(abspath ./vsrc) \
+	-path $(abspath ./vsrc/include) -prune -o \
+	-path $(abspath ./vsrc/test) -prune -o \
+	\( -name "*.sv" -o -name "*.v" \) -print)
+
+TOP_SV = $(firstword $(wildcard \
+	$(abspath ./vsrc/test/$(TOPNAME).sv) \
+	$(abspath ./vsrc/$(TOPNAME).sv)))
+
+SIM_MAIN ?= $(firstword $(wildcard \
+	$(abspath ./csrc/npc_main.cpp) \
+	$(abspath ./csrc/npc_main.cc) \
+	$(abspath ./csrc/npc_main.c) \
+	$(abspath ./csrc/sim_main.cpp) \
+	$(abspath ./csrc/sim_main.cc) \
+	$(abspath ./csrc/sim_main.c) \
+	$(abspath ./csrc/main.cpp) \
+	$(abspath ./csrc/main.cc) \
+	$(abspath ./csrc/main.c)))
+SIM_SRCS ?=
+
+VSRCS = $(PKG_VSRCS) $(DESIGN_VSRCS) $(TOP_SV)
+CSRCS = $(SIM_MAIN) $(SIM_SRCS) $(SRC_AUTO_BIND)
 
 # # rules for NVBoard
 # include $(NVBOARD_HOME)/scripts/nvboard.mk
-DIFFTEST = -d $(TRIATHLON_HOME)/npc/ref/riscv32-nemu-interpreter-so
+DIFFTEST_SO ?= $(NPC_HOME)/ref/riscv32-nemu-interpreter-so
+DIFFTEST ?= $(if $(wildcard $(DIFFTEST_SO)),-d $(DIFFTEST_SO),)
 
 # rules for verilator
-IMG ?= 
-ARGS ?= 
-NPC_EXE := $(ARGS) $(DIFFTEST) $(IMG)
+IMG ?=
+ARGS ?=
+NPC_EXE := $(strip $(ARGS) $(DIFFTEST) $(IMG))
 INCFLAGS = $(addprefix -I, $(INC_PATH))
-CXXFLAGS += $(INCFLAGS) -I$(abspath ./include) -DTOP_NAME="\"V$(TOPNAME)\"" -g
+CXXFLAGS += $(INCFLAGS) -I$(abspath ./include) -DTOP_NAME="\"V$(TOPNAME)\"" -g -std=c++17
 LDFLAGS += -lreadline -ldl -pie $(LLVM_LIBS)
 
+NEED_CHECKS := $(filter-out clean clean-all help,$(MAKECMDGOALS))
+ifneq ($(NEED_CHECKS),)
+  ifeq ($(strip $(TOP_SV)),)
+    $(error TOPNAME=$(TOPNAME) not found. Expected vsrc/$(TOPNAME).sv or vsrc/test/$(TOPNAME).sv)
+  endif
+  ifeq ($(strip $(SIM_MAIN)),)
+    $(error No simulator main found. Set SIM_MAIN=... or add csrc/npc_main.cpp)
+  endif
+else ifeq ($(MAKECMDGOALS),)
+  ifeq ($(strip $(TOP_SV)),)
+    $(error TOPNAME=$(TOPNAME) not found. Expected vsrc/$(TOPNAME).sv or vsrc/test/$(TOPNAME).sv)
+  endif
+  ifeq ($(strip $(SIM_MAIN)),)
+    $(error No simulator main found. Set SIM_MAIN=... or add csrc/npc_main.cpp)
+  endif
+endif
+
 $(BIN): $(VSRCS) $(CSRCS) $(NVBOARD_ARCHIVE)
-	@rm -rf $(OBJ_DIR)
+# 	@rm -rf $(OBJ_DIR)
 	$(VERILATOR) $(VERILATOR_CFLAGS) \
 		--top-module $(TOPNAME) $^ \
 		$(addprefix -CFLAGS , $(CXXFLAGS)) $(addprefix -LDFLAGS , $(LDFLAGS)) \

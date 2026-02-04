@@ -104,6 +104,7 @@ int main(int argc, char **argv) {
     // 1. 复位
     top->rst_n = 0;
     top->clk = 0;
+    top->flush_i = 0;
     set_dispatch(top, {});
     set_cdb(top, {});
     tick(top);

@@ -1,10 +1,11 @@
-module reservation_station #(
+module reservation_station_lsu #(
     parameter config_pkg::cfg_t Cfg      = config_pkg::EmptyCfg,
     parameter                   RS_DEPTH = Cfg.RS_DEPTH,
-    parameter                   DATA_W   = Cfg.ILEN,
+    parameter                   DATA_W   = Cfg.XLEN,
     parameter                   RS_IDX_W = $clog2(Cfg.RS_DEPTH),
     parameter                   TAG_W    = 6,
-    parameter                   CDB_W    = 4
+    parameter                   CDB_W    = 4,
+    parameter                   SB_W     = 4
 ) (
     input wire clk,
     input wire rst_n,
@@ -20,30 +21,25 @@ module reservation_station #(
     input wire              [DATA_W-1:0] in_v2     [0:RS_DEPTH-1],
     input wire              [ TAG_W-1:0] in_q2     [0:RS_DEPTH-1],
     input wire                           in_r2     [0:RS_DEPTH-1],
+    input wire              [  SB_W-1:0] in_sb_id  [0:RS_DEPTH-1],
 
     input wire [ CDB_W-1:0] cdb_valid,
     input wire [ TAG_W-1:0] cdb_tag  [0:CDB_W-1],
     input wire [DATA_W-1:0] cdb_value[0:CDB_W-1],
 
     // 握手信号
-    output wire [RS_DEPTH-1:0] ready_mask,
+    output logic [RS_DEPTH-1:0] ready_mask,
     input  wire [RS_DEPTH-1:0] issue_grant,
 
     output wire [RS_DEPTH-1:0] busy_vector,
 
-    // ALU 0 读取通道
-    input  wire  [RS_IDX_W-1:0] sel_idx_0,      // 新增：输入索引
+    // LSU 读取通道
+    input  wire  [RS_IDX_W-1:0] sel_idx_0,
     output decode_pkg::uop_t   out_op_0,
     output logic [   TAG_W-1:0] out_dst_tag_0,
     output logic [  DATA_W-1:0] out_v1_0,
     output logic [  DATA_W-1:0] out_v2_0,
-
-    // ALU 1 读取通道
-    input  wire  [RS_IDX_W-1:0] sel_idx_1,      // 新增：输入索引
-    output decode_pkg::uop_t   out_op_1,
-    output logic [   TAG_W-1:0] out_dst_tag_1,
-    output logic [  DATA_W-1:0] out_v1_1,
-    output logic [  DATA_W-1:0] out_v2_1
+    output logic [   SB_W-1:0]  out_sb_id_0
 );
 
   // RS 存储阵列
@@ -59,9 +55,10 @@ module reservation_station #(
   reg               [   TAG_W-1:0] q2_arr [0:RS_DEPTH-1];
   reg                              r2_arr [0:RS_DEPTH-1];
 
+  reg               [   SB_W-1:0]  sb_arr [0:RS_DEPTH-1];
+
   integer i, k;
 
-  // 写入与 CDB 监听逻辑 (保持不变)
   always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       busy <= {RS_DEPTH{1'b0}};
@@ -71,16 +68,15 @@ module reservation_station #(
       for (i = 0; i < RS_DEPTH; i = i + 1) begin
         if (issue_grant[i]) begin
           busy[i] <= 1'b0;
-        end  // 写逻辑 (保持原样...)
-        else if (entry_wen[i]) begin
+        end else if (entry_wen[i]) begin
           busy[i]    <= 1'b1;
           op_arr[i]  <= in_op[i];
           dst_arr[i] <= in_dst_tag[i];
+          sb_arr[i]  <= in_sb_id[i];
 
           v1_arr[i]  <= in_v1[i];
           q1_arr[i]  <= in_q1[i];
           r1_arr[i]  <= in_r1[i];
-          // Forwarding Check Src1
           if (!in_r1[i]) begin
             for (k = 0; k < CDB_W; k = k + 1) begin
               if (cdb_valid[k] && (cdb_tag[k] == in_q1[i])) begin
@@ -93,7 +89,6 @@ module reservation_station #(
           v2_arr[i] <= in_v2[i];
           q2_arr[i] <= in_q2[i];
           r2_arr[i] <= in_r2[i];
-          // Forwarding Check Src2
           if (!in_r2[i]) begin
             for (k = 0; k < CDB_W; k = k + 1) begin
               if (cdb_valid[k] && (cdb_tag[k] == in_q2[i])) begin
@@ -102,8 +97,7 @@ module reservation_station #(
               end
             end
           end
-        end  // 监听逻辑
-        else if (busy[i]) begin
+        end else if (busy[i]) begin
           for (k = 0; k < CDB_W; k = k + 1) begin
             if (cdb_valid[k]) begin
               if (!r1_arr[i] && (q1_arr[i] == cdb_tag[k])) begin
@@ -121,25 +115,29 @@ module reservation_station #(
     end
   end
 
-  genvar g;
-  generate
-    for (g = 0; g < RS_DEPTH; g = g + 1) begin : gen_ready
-      assign ready_mask[g] = busy[g] && r1_arr[g] && r2_arr[g];
+  // Load/store ordering: block loads behind older stores.
+  // NOTE: Uses ROB tag numeric compare; assumes no wrap within small windows.
+  always_comb begin
+    for (int m = 0; m < RS_DEPTH; m++) begin
+      logic block_load;
+      block_load = 1'b0;
+      if (busy[m] && op_arr[m].is_load) begin
+        for (int n = 0; n < RS_DEPTH; n++) begin
+          if (busy[n] && op_arr[n].is_store && (dst_arr[n] < dst_arr[m])) begin
+            block_load = 1'b1;
+          end
+        end
+      end
+      ready_mask[m] = busy[m] && r1_arr[m] && r2_arr[m] && !block_load;
     end
-  endgenerate
+  end
 
-
-  // Port 0 (给 ALU 0)
+  // Port 0
   assign out_op_0      = op_arr[sel_idx_0];
   assign out_dst_tag_0 = dst_arr[sel_idx_0];
   assign out_v1_0      = v1_arr[sel_idx_0];
   assign out_v2_0      = v2_arr[sel_idx_0];
-
-  // Port 1 (给 ALU 1)
-  assign out_op_1      = op_arr[sel_idx_1];
-  assign out_dst_tag_1 = dst_arr[sel_idx_1];
-  assign out_v1_1      = v1_arr[sel_idx_1];
-  assign out_v2_1      = v2_arr[sel_idx_1];
+  assign out_sb_id_0   = sb_arr[sel_idx_0];
 
   assign busy_vector   = busy;
 
