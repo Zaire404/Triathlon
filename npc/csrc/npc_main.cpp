@@ -412,13 +412,10 @@ int main(int argc, char** argv) {
       }
     }
 
-    if (top->backend_flush_o || top->dbg_bru_mispred_o) {
-      Snapshot snap =
-          collect_snapshot(top, cycles, total_commits, no_commit_cycles,
-                           last_commit_pc, last_commit_inst, rf[10]);
-      Logger::maybe_log_flush(snap);
-      Logger::maybe_log_bru(snap);
-    }
+    bool need_flush_bru_log = top->backend_flush_o || top->dbg_bru_mispred_o;
+    bool need_periodic_log = Logger::needs_periodic_snapshot();
+    bool need_fe_mismatch_log =
+        Logger::config().fe_trace && top->dbg_fe_valid_o && top->dbg_fe_ready_o;
 
     bool any_commit = false;
     for (int i = 0; i < 4; i++) {
@@ -472,20 +469,25 @@ int main(int argc, char** argv) {
       no_commit_cycles++;
     }
 
-    if (Logger::needs_periodic_snapshot()) {
+    if (need_flush_bru_log || need_periodic_log || need_fe_mismatch_log) {
       Snapshot snap =
           collect_snapshot(top, cycles, total_commits, no_commit_cycles,
                            last_commit_pc, last_commit_inst, rf[10]);
-      Logger::maybe_log_stall(snap);
-      Logger::maybe_log_progress(snap);
-    }
 
-    if (top->dbg_fe_valid_o && top->dbg_fe_ready_o) {
-      Snapshot snap =
-          collect_snapshot(top, cycles, total_commits, no_commit_cycles,
-                           last_commit_pc, last_commit_inst, rf[10]);
-      Logger::maybe_log_fe_mismatch(
-          snap, [&](uint32_t addr) { return mem.mem.read_word(addr); });
+      if (need_flush_bru_log) {
+        Logger::maybe_log_flush(snap);
+        Logger::maybe_log_bru(snap);
+      }
+
+      if (need_periodic_log) {
+        Logger::maybe_log_stall(snap);
+        Logger::maybe_log_progress(snap);
+      }
+
+      if (need_fe_mismatch_log) {
+        Logger::maybe_log_fe_mismatch(
+            snap, [&](uint32_t addr) { return mem.mem.read_word(addr); });
+      }
     }
   }
 
