@@ -1,7 +1,7 @@
 // vsrc/backend/decode/decoder.sv
 // Multi-issue decoder using CVA6-style cast (riscv_pkg)
-// Currently supports RV64I + M (I & M extensions).
-// Other extensions (A/F/D/V, CSR detail, etc) have reserved TODO hooks.
+// Currently supports RV64I + M + Zicsr (I/M/CSR extensions).
+// Other extensions (A/F/D/V, etc) have reserved TODO hooks.
 
 import global_config_pkg::*;
 import config_pkg::*;
@@ -50,7 +50,9 @@ module decoder #(
   localparam logic [6:0] OPCODE_LOAD = 7'b0000011;
   localparam logic [6:0] OPCODE_STORE = 7'b0100011;
   localparam logic [6:0] OPCODE_OP_IMM = 7'b0010011;
+  localparam logic [6:0] OPCODE_OP_IMM_32 = 7'b0011011;  // RV64I W-type imm
   localparam logic [6:0] OPCODE_OP = 7'b0110011;
+  localparam logic [6:0] OPCODE_OP_32 = 7'b0111011;  // RV64I W-type
   localparam logic [6:0] OPCODE_MISC_MEM = 7'b0001111;  // FENCE, FENCE.I
   localparam logic [6:0] OPCODE_SYSTEM = 7'b1110011;  // ECALL/EBREAK/MRET/CSR
 
@@ -198,11 +200,14 @@ module decoder #(
       uop_decoded.is_store  = 1'b0;
       uop_decoded.is_branch = 1'b0;
       uop_decoded.is_jump   = 1'b0;
+      uop_decoded.is_word_op = 1'b0;
       uop_decoded.is_csr    = 1'b0;
       uop_decoded.is_fence  = 1'b0;
       uop_decoded.is_ecall  = 1'b0;
       uop_decoded.is_ebreak = 1'b0;
       uop_decoded.is_mret   = 1'b0;
+      uop_decoded.csr_addr  = 12'h000;
+      uop_decoded.csr_op    = CSR_RW;
 
       // ======================================================
       //           RV64I + RV64M Decode
@@ -335,6 +340,27 @@ module decoder #(
         end
 
         // -------------------------
+        // OP-IMM-32 (RV64I W-type)
+        // -------------------------
+        OPCODE_OP_IMM_32: begin
+          uop_decoded.fu        = FU_ALU;
+          uop_decoded.has_rs1   = 1'b1;
+          uop_decoded.has_rd    = (instr_rtype.rd != '0);
+          uop_decoded.imm       = get_imm_i(instr_union);
+          uop_decoded.is_word_op = 1'b1;
+
+          unique case (funct3_field)
+            3'b000: uop_decoded.alu_op = ALU_ADD;  // ADDIW
+            3'b001: uop_decoded.alu_op = ALU_SLL;  // SLLIW
+            3'b101: begin  // SRLIW / SRAIW
+              if (funct7_field[5]) uop_decoded.alu_op = ALU_SRA;
+              else uop_decoded.alu_op = ALU_SRL;
+            end
+            default: uop_decoded.illegal = 1'b1;
+          endcase
+        end
+
+        // -------------------------
         // OP (R-type ALU + M-extension)
         // -------------------------
         OPCODE_OP: begin
@@ -405,6 +431,28 @@ module decoder #(
         end
 
         // -------------------------
+        // OP-32 (RV64I W-type)
+        // -------------------------
+        OPCODE_OP_32: begin
+          uop_decoded.fu        = FU_ALU;
+          uop_decoded.has_rs1   = 1'b1;
+          uop_decoded.has_rs2   = 1'b1;
+          uop_decoded.has_rd    = (instr_rtype.rd != '0);
+          uop_decoded.is_word_op = 1'b1;
+
+          unique case ({
+            funct7_field, funct3_field
+          })
+            {7'b0000000, 3'b000} : uop_decoded.alu_op = ALU_ADD;  // ADDW
+            {7'b0100000, 3'b000} : uop_decoded.alu_op = ALU_SUB;  // SUBW
+            {7'b0000000, 3'b001} : uop_decoded.alu_op = ALU_SLL;  // SLLW
+            {7'b0000000, 3'b101} : uop_decoded.alu_op = ALU_SRL;  // SRLW
+            {7'b0100000, 3'b101} : uop_decoded.alu_op = ALU_SRA;  // SRAW
+            default: uop_decoded.illegal = 1'b1;
+          endcase
+        end
+
+        // -------------------------
         // Fence / Fence.I
         // -------------------------
         OPCODE_MISC_MEM: begin
@@ -415,29 +463,69 @@ module decoder #(
 
         // -------------------------
         // SYSTEM (ECALL/EBREAK/MRET/CSR...)
-        //   当前只标记 ECALL/EBREAK/MRET，其余 CSR 先算 illegal，
-        //   等你想支持 Zicsr 再扩展 decode_pkg 加 csr_op 等字段。
+        //   支持 ECALL/EBREAK/MRET + Zicsr
         // -------------------------
         OPCODE_SYSTEM: begin
-          // 当前后端未实现 CSR 单元：将系统指令降级为 ALU NOP，
-          // 以保证 ECALL/EBREAK/MRET 可以正常退休（由软件/仿真层处理）。
-          uop_decoded.fu     = FU_ALU;
-          uop_decoded.alu_op = ALU_NOP;
-          uop_decoded.is_csr = 1'b0;
-
           unique case (funct3_field)
             3'b000: begin
+              // 当前后端未实现异常/特权处理：将系统指令降级为 ALU NOP，
+              // 以保证 ECALL/EBREAK/MRET 可以正常退休（由软件/仿真层处理）。
+              uop_decoded.fu     = FU_ALU;
+              uop_decoded.alu_op = ALU_NOP;
+              uop_decoded.is_csr = 1'b0;
               if (instr_itype.imm == 12'h000) uop_decoded.is_ecall = 1'b1;
               else if (instr_itype.imm == 12'h001) uop_decoded.is_ebreak = 1'b1;
               else if (instr_itype.imm == 12'h302) uop_decoded.is_mret = 1'b1;
               else uop_decoded.illegal = 1'b1;
             end
 
-            default: begin
-              // TODO: 真正的 CSR 指令（CSRRW/CSRRS/CSRRC…），以后扩展：
-              //      需要在 decode_pkg::uop_t 中加入 csr_addr / csr_op 等字段。
-              uop_decoded.illegal = 1'b1;
+            3'b001, 3'b010, 3'b011, 3'b101, 3'b110, 3'b111: begin
+              uop_decoded.fu      = FU_CSR;
+              uop_decoded.is_csr  = 1'b1;
+              uop_decoded.csr_addr = instr_itype.imm;
+
+              // CSR 指令不使用 rs2
+              uop_decoded.rs2     = '0;
+              uop_decoded.has_rs2 = 1'b0;
+
+              unique case (funct3_field)
+                3'b001: begin  // CSRRW
+                  uop_decoded.csr_op  = CSR_RW;
+                  uop_decoded.has_rs1 = 1'b1;
+                end
+                3'b010: begin  // CSRRS
+                  uop_decoded.csr_op  = CSR_RS;
+                  uop_decoded.has_rs1 = 1'b1;
+                end
+                3'b011: begin  // CSRRC
+                  uop_decoded.csr_op  = CSR_RC;
+                  uop_decoded.has_rs1 = 1'b1;
+                end
+                3'b101: begin  // CSRRWI
+                  uop_decoded.csr_op  = CSR_RWI;
+                  uop_decoded.has_rs1 = 1'b0;
+                  uop_decoded.rs1     = '0;
+                  uop_decoded.imm     = {{(Cfg.XLEN-5){1'b0}}, instr_itype.rs1};
+                end
+                3'b110: begin  // CSRRSI
+                  uop_decoded.csr_op  = CSR_RSI;
+                  uop_decoded.has_rs1 = 1'b0;
+                  uop_decoded.rs1     = '0;
+                  uop_decoded.imm     = {{(Cfg.XLEN-5){1'b0}}, instr_itype.rs1};
+                end
+                3'b111: begin  // CSRRCI
+                  uop_decoded.csr_op  = CSR_RCI;
+                  uop_decoded.has_rs1 = 1'b0;
+                  uop_decoded.rs1     = '0;
+                  uop_decoded.imm     = {{(Cfg.XLEN-5){1'b0}}, instr_itype.rs1};
+                end
+                default: uop_decoded.illegal = 1'b1;
+              endcase
+
+              uop_decoded.has_rd = (instr_rtype.rd != '0);
             end
+
+            default: uop_decoded.illegal = 1'b1;
           endcase
         end
 

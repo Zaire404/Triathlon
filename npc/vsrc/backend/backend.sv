@@ -41,8 +41,8 @@ module backend #(
   localparam int unsigned SB_DEPTH       = 16;
   localparam int unsigned SB_IDX_WIDTH   = $clog2(SB_DEPTH);
   localparam int unsigned RS_DEPTH       = Cfg.RS_DEPTH;
-  localparam int unsigned WB_WIDTH       = 6;
-  localparam int unsigned NUM_FUS        = 6;  // ALU0, ALU1, BRU, LSU, ALU2, ALU3
+  localparam int unsigned WB_WIDTH       = 7;
+  localparam int unsigned NUM_FUS        = 7;  // ALU0, ALU1, BRU, LSU, ALU2, ALU3, CSR
 
   // =========================================================
   // IBuffer
@@ -506,15 +506,27 @@ module backend #(
   logic lsu_dispatch_r2 [0:3];
   logic [SB_IDX_WIDTH-1:0] lsu_dispatch_sb_id [0:3];
 
+  logic [3:0] csr_dispatch_valid;
+  decode_pkg::uop_t csr_dispatch_op [0:3];
+  logic [ROB_IDX_WIDTH-1:0] csr_dispatch_dst [0:3];
+  logic [Cfg.XLEN-1:0] csr_dispatch_v1 [0:3];
+  logic [ROB_IDX_WIDTH-1:0] csr_dispatch_q1 [0:3];
+  logic csr_dispatch_r1 [0:3];
+  logic [Cfg.XLEN-1:0] csr_dispatch_v2 [0:3];
+  logic [ROB_IDX_WIDTH-1:0] csr_dispatch_q2 [0:3];
+  logic csr_dispatch_r2 [0:3];
+
   always_comb begin
     int alu_k;
     int bru_k;
     int lsu_k;
+    int csr_k;
 
     // init
     alu_dispatch_valid = '0;
     bru_dispatch_valid = '0;
     lsu_dispatch_valid = '0;
+    csr_dispatch_valid = '0;
 
     for (int k = 0; k < 4; k++) begin
       alu_dispatch_op[k] = '0;
@@ -544,11 +556,21 @@ module backend #(
       lsu_dispatch_q2[k] = '0;
       lsu_dispatch_r2[k] = 1'b0;
       lsu_dispatch_sb_id[k] = '0;
+
+      csr_dispatch_op[k] = '0;
+      csr_dispatch_dst[k] = '0;
+      csr_dispatch_v1[k] = '0;
+      csr_dispatch_q1[k] = '0;
+      csr_dispatch_r1[k] = 1'b0;
+      csr_dispatch_v2[k] = '0;
+      csr_dispatch_q2[k] = '0;
+      csr_dispatch_r2[k] = 1'b0;
     end
 
     alu_k = 0;
     bru_k = 0;
     lsu_k = 0;
+    csr_k = 0;
 
     for (int i = 0; i < DISPATCH_WIDTH; i++) begin
       if (issue_valid[i]) begin
@@ -591,6 +613,18 @@ module backend #(
 
             lsu_k++;
           end
+          FU_CSR: begin
+            csr_dispatch_valid[csr_k] = 1'b1;
+            csr_dispatch_op[csr_k]    = dec_uops[i];
+            csr_dispatch_dst[csr_k]   = issue_rd_rob_idx[i];
+            csr_dispatch_v1[csr_k]    = issue_v1[i];
+            csr_dispatch_q1[csr_k]    = issue_q1[i];
+            csr_dispatch_r1[csr_k]    = issue_r1[i];
+            csr_dispatch_v2[csr_k]    = issue_v2[i];
+            csr_dispatch_q2[csr_k]    = issue_q2[i];
+            csr_dispatch_r2[csr_k]    = issue_r2[i];
+            csr_k++;
+          end
           default: begin
             alu_dispatch_valid[alu_k] = 1'b1;
             alu_dispatch_op[alu_k]    = dec_uops[i];
@@ -614,10 +648,12 @@ module backend #(
   logic [$clog2(RS_DEPTH+1)-1:0] alu_free_count;
   logic [$clog2(RS_DEPTH+1)-1:0] bru_free_count;
   logic [$clog2(RS_DEPTH+1)-1:0] lsu_free_count;
+  logic [$clog2(RS_DEPTH+1)-1:0] csr_free_count;
 
   logic alu_issue_ready;
   logic bru_issue_ready;
   logic lsu_issue_ready;
+  logic csr_issue_ready;
 
   // CDB broadcast
   logic [WB_WIDTH-1:0] cdb_valid;
@@ -687,6 +723,8 @@ module backend #(
       .clk  (clk_i),
       .rst_n(rst_ni),
       .flush_i(backend_flush),
+      .head_en_i(1'b0),
+      .head_tag_i('0),
 
       .dispatch_valid(bru_dispatch_valid),
       .dispatch_op   (bru_dispatch_op),
@@ -754,8 +792,45 @@ module backend #(
       .lsu_sb_id(lsu_sb_id)
   );
 
+  issue_single #(
+      .Cfg   (Cfg),
+      .RS_DEPTH(RS_DEPTH),
+      .DATA_W(Cfg.XLEN),
+      .TAG_W (ROB_IDX_WIDTH),
+      .CDB_W (WB_WIDTH)
+  ) u_issue_csr (
+      .clk  (clk_i),
+      .rst_n(rst_ni),
+      .flush_i(backend_flush),
+      .head_en_i(1'b1),
+      .head_tag_i(rob_head_ptr),
 
-  // Backpressure calculation (MDU/CSR not implemented yet)
+      .dispatch_valid(csr_dispatch_valid),
+      .dispatch_op   (csr_dispatch_op),
+      .dispatch_dst  (csr_dispatch_dst),
+      .dispatch_v1   (csr_dispatch_v1),
+      .dispatch_q1   (csr_dispatch_q1),
+      .dispatch_r1   (csr_dispatch_r1),
+      .dispatch_v2   (csr_dispatch_v2),
+      .dispatch_q2   (csr_dispatch_q2),
+      .dispatch_r2   (csr_dispatch_r2),
+
+      .issue_ready (csr_issue_ready),
+      .free_count_o(csr_free_count),
+
+      .cdb_valid(cdb_valid),
+      .cdb_tag  (cdb_tag),
+      .cdb_val  (cdb_val),
+
+      .fu_en (csr_en),
+      .fu_uop(csr_uop),
+      .fu_v1 (csr_v1),
+      .fu_v2 (csr_v2),
+      .fu_dst(csr_dst)
+  );
+
+
+  // Backpressure calculation (MDU not implemented yet)
   logic alu_can_accept;
   logic bru_can_accept;
   logic lsu_can_accept;
@@ -767,7 +842,7 @@ module backend #(
     bru_can_accept = (bru_need_cnt == 0) ? 1'b1 : (bru_free_count >= bru_need_cnt);
     lsu_can_accept = (lsu_need_cnt == 0) ? 1'b1 : (lsu_free_count >= lsu_need_cnt);
     mdu_can_accept = (mdu_need_cnt == 0) ? 1'b1 : 1'b0; // placeholder
-    csr_can_accept = (csr_need_cnt == 0) ? 1'b1 : 1'b0; // placeholder
+    csr_can_accept = (csr_need_cnt == 0) ? 1'b1 : (csr_free_count >= csr_need_cnt);
   end
 
   assign rob_ready_gated = rob_ready & alu_can_accept & bru_can_accept & lsu_can_accept & mdu_can_accept & csr_can_accept;
@@ -979,6 +1054,33 @@ module backend #(
       .wb_ready_i      (1'b1)
   );
 
+  // CSR
+  logic csr_en;
+  decode_pkg::uop_t csr_uop;
+  logic [Cfg.XLEN-1:0] csr_v1, csr_v2;
+  logic [ROB_IDX_WIDTH-1:0] csr_dst;
+
+  logic csr_wb_valid;
+  logic [ROB_IDX_WIDTH-1:0] csr_wb_tag;
+  logic [Cfg.XLEN-1:0] csr_wb_data;
+
+  execute_csr #(
+      .Cfg  (Cfg),
+      .TAG_W(ROB_IDX_WIDTH),
+      .XLEN (Cfg.XLEN)
+  ) u_csr (
+      .clk_i(clk_i),
+      .rst_ni(rst_ni),
+      .csr_valid_i(csr_en),
+      .uop_i       (csr_uop),
+      .rs1_data_i  (csr_v1),
+      .rob_tag_i   (csr_dst),
+
+      .csr_valid_o  (csr_wb_valid),
+      .csr_rob_tag_o(csr_wb_tag),
+      .csr_result_o (csr_wb_data)
+  );
+
   // =========================================================
   // Writeback (CDB)
   // =========================================================
@@ -1037,6 +1139,10 @@ module backend #(
     fu_rob_idx[5]     = alu3_wb_tag;
     fu_is_mispred[5]  = alu3_mispred;
     fu_redirect_pc[5] = alu3_redirect_pc;
+
+    fu_valid[6]       = csr_wb_valid;
+    fu_data[6]        = csr_wb_data;
+    fu_rob_idx[6]     = csr_wb_tag;
   end
 
   logic [WB_WIDTH-1:0]                    wb_valid;

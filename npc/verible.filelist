@@ -3,6 +3,7 @@
 ./vsrc/backend/buffer/store_buffer.sv
 ./vsrc/backend/decode/decoder.sv
 ./vsrc/backend/execute/alu.sv
+./vsrc/backend/execute/csr.sv
 ./vsrc/backend/execute/lsu.sv
 ./vsrc/backend/issue/issue_lsu.sv
 ./vsrc/backend/issue/issue_select.sv

@@ -52,6 +52,15 @@ package decode_pkg;
     LSU_SD
   } lsu_op_e;
 
+  typedef enum logic [2:0] {
+    CSR_RW,
+    CSR_RS,
+    CSR_RC,
+    CSR_RWI,
+    CSR_RSI,
+    CSR_RCI
+  } csr_op_e;
+
   typedef struct packed {
     // 基本信息
     logic valid;
@@ -78,6 +87,7 @@ package decode_pkg;
     logic [Cfg.PLEN-1:0] pc;
 
     // 其它 flag（后面可以扩展）
+    logic is_word_op;
     logic is_load;
     logic is_store;
     logic is_branch;
@@ -87,5 +97,9 @@ package decode_pkg;
     logic is_ecall;
     logic is_ebreak;
     logic is_mret;
+
+    // CSR 相关字段
+    logic [11:0] csr_addr;
+    csr_op_e     csr_op;
   } uop_t;
 endpackage : decode_pkg
