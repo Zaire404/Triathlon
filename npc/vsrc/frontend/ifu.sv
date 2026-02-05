@@ -50,24 +50,41 @@ module ifu #(
   //pc寄存器
   logic [Cfg.PLEN-1:0] pc_reg;
   logic                pcg_stage_valid;
+  // Latch PC for the outstanding ICache request
+  logic [Cfg.PLEN-1:0] req_pc_q;
+
+  wire req_fire = (current_state == S_START) && pcg_stage_valid &&
+                  bpu2ifu_handshake_i.valid && icache2ifu_rsp_handshake_i.ready;
 
   always_ff @(posedge clk) begin
     if (rst) begin
       pc_reg <= 'h80000000;
       pcg_stage_valid <= 1'b1;
-    end else if (flush_i) begin
-      pc_reg <= redirect_pc_i;
-      pcg_stage_valid <= 1'b1;
-    end else if (ifu2bpu_handshake_o.ready && bpu2ifu_handshake_i.valid) begin
-      pc_reg <= bpu2ifu_predicted_pc_i;
-      pcg_stage_valid <= 1'b1;
+      req_pc_q <= 'h80000000;
+    end else begin
+      if (flush_i) begin
+        pc_reg <= redirect_pc_i;
+        pcg_stage_valid <= 1'b1;
+      end else if (ifu2bpu_handshake_o.ready && bpu2ifu_handshake_i.valid) begin
+        pc_reg <= bpu2ifu_predicted_pc_i;
+        pcg_stage_valid <= 1'b1;
+      end
+
+      // Latch the request PC when we issue a fetch group
+      if (flush_i) begin
+        req_pc_q <= redirect_pc_i;
+      end else if (req_fire) begin
+        req_pc_q <= pc_reg;
+      end
     end
+`ifdef TRIATHLON_VERBOSE
     $display("pc_reg: %h", pc_reg);
     $display("ifu2icache_valid; %b", ifu2icache_req_handshake_o.valid);
     $display("ibuffer_readt: %b", ibuffer_ifu_rsp_ready_i);
     $display("ifu_ibuffer_valid; %b", ifu_ibuffer_rsp_valid_o);
     $display("current_state: %d", current_state);
     $display("\n");
+`endif
   end
 
   // 状态转移
@@ -85,7 +102,7 @@ module ifu #(
   //组合逻辑
   assign flush_icache_o = flush_i;
   assign ifu2bpu_pc_o = pc_reg;
-  assign ifu_ibuffer_rsp_pc_o = pc_reg;
+  assign ifu_ibuffer_rsp_pc_o = req_pc_q;
   assign ifu_ibuffer_rsp_data_o = icache2ifu_rsp_data_i;
 
   always_comb begin

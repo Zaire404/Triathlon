@@ -22,6 +22,7 @@ module rename #(
     output logic            [3:0][Cfg.PLEN-1:0] rob_dispatch_pc_o,
     output decode_pkg::fu_e [3:0]               rob_dispatch_fu_type_o,
     output logic            [3:0][         4:0] rob_dispatch_areg_o,
+    output logic            [3:0]               rob_dispatch_has_rd_o,
 
     // [新增] 傳遞 Store 信息給 ROB
     output logic [3:0]                   rob_dispatch_is_store_o,
@@ -32,9 +33,9 @@ module rename #(
     input logic [ROB_IDX_WIDTH-1:0] rob_tail_ptr_i,
 
     // --- To Store Buffer (Allocation Interface) [新增] ---
-    output logic                    sb_alloc_req_o,  // 請求分配 SB Entry
-    input  logic                    sb_alloc_gnt_i,  // SB 允許分配
-    input  logic [SB_IDX_WIDTH-1:0] sb_alloc_id_i,   // 分配到的 SB ID
+    output logic [3:0]              sb_alloc_req_o,  // 請求分配 SB Entry (每条store一项)
+    input  logic                    sb_alloc_ready_i,  // SB 是否可接受本周期所有请求
+    input  logic [3:0][SB_IDX_WIDTH-1:0] sb_alloc_id_i,   // 每条store对应的 SB ID
 
     // --- To Issue Queue / Operand Read Logic ---
     output logic [3:0] issue_valid_o,
@@ -64,10 +65,12 @@ module rename #(
   // 0. Store 檢測與 Flush 屏蔽
   // ---------------------------------------------------------
   logic [3:0] dec_valid_masked;
+  logic [3:0] store_mask;
   logic has_store;
 
   always_comb begin
     has_store = 1'b0;
+    store_mask = '0;
     for (int i = 0; i < 4; i++) begin
       // 如果發生 Flush，屏蔽當前週期的輸入，防止錯誤指令進入 ROB
       dec_valid_masked[i] = dec_valid_i[i] && !flush_i;
@@ -75,6 +78,7 @@ module rename #(
       // 檢查是否有有效的 Store 指令需要分配 SB
       if (dec_valid_masked[i] && dec_uops_i[i].is_store) begin
         has_store = 1'b1;
+        store_mask[i] = 1'b1;
       end
     end
   end
@@ -85,10 +89,10 @@ module rename #(
   // 發射條件：ROB 未滿 AND (沒有 Store指令 OR StoreBuffer 有空位)
   // 注意：這裡簡化假設一週期只能處理 1 條 Store。如果 decode 發來多條 store，
   // sb_alloc 接口需要支持多寬度分配，否則這裡需要更復雜的串行化邏輯。
-  assign rename_ready_o = rob_ready_i && (!has_store || sb_alloc_gnt_i);
+  assign rename_ready_o = rob_ready_i && (!has_store || sb_alloc_ready_i);
 
-  // 向 Store Buffer 發起分配請求
-  assign sb_alloc_req_o = rename_ready_o && has_store;
+  // 向 Store Buffer 發起分配請求（每条 store 一项）
+  assign sb_alloc_req_o = store_mask;
 
   // ---------------------------------------------------------
   // 2. 生成新的 Tags (ROB ID 作為物理寄存器號)
@@ -186,12 +190,13 @@ module rename #(
         rob_dispatch_pc_o[i]       = dec_uops_i[i].pc;
         rob_dispatch_fu_type_o[i]  = dec_uops_i[i].fu;
         rob_dispatch_areg_o[i]     = dec_uops_i[i].rd;
+        rob_dispatch_has_rd_o[i]   = dec_uops_i[i].has_rd;
 
         // Store 信息傳遞
         rob_dispatch_is_store_o[i] = dec_uops_i[i].is_store;
         // 如果是 Store，攜帶分配到的 SB ID；否則為 0
         if (dec_uops_i[i].is_store) begin
-          rob_dispatch_sb_id_o[i] = sb_alloc_id_i;
+          rob_dispatch_sb_id_o[i] = sb_alloc_id_i[i];
         end else begin
           rob_dispatch_sb_id_o[i] = '0;
         end
@@ -218,6 +223,7 @@ module rename #(
         rob_dispatch_pc_o[i]       = '0;
         rob_dispatch_fu_type_o[i]  = decode_pkg::FU_NONE;
         rob_dispatch_areg_o[i]     = '0;
+        rob_dispatch_has_rd_o[i]   = 1'b0;
         rob_dispatch_is_store_o[i] = 1'b0;
         rob_dispatch_sb_id_o[i]    = '0;
 

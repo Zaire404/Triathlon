@@ -88,6 +88,8 @@ module execute_alu #(
         BR_GE:   br_take = ($signed(rs1_data_i) >= $signed(rs2_data_i));
         BR_LTU:  br_take = (rs1_data_i < rs2_data_i);
         BR_GEU:  br_take = (rs1_data_i >= rs2_data_i);
+        BR_JAL,
+        BR_JALR: br_take = 1'b1;
         default: br_take = 1'b0;
       endcase
     end else if (uop_i.is_jump) begin

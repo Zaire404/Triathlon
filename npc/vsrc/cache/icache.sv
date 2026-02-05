@@ -56,6 +56,7 @@ module icache #(
     MISS_WAIT_REFILL
   } ic_state_e;
   ic_state_e state_q, state_d;
+  logic req_killed_q;
 
   // ---------------------------------------------------------------------------
   // Request pipeline registers (one in-flight request)
@@ -401,6 +402,7 @@ module icache #(
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (!rst_ni) begin
       state_q           <= IDLE;
+      req_killed_q      <= 1'b0;
       pc_q              <= '0;
       start_slot_q      <= '0;
       cross_line_q      <= 1'b0;
@@ -420,9 +422,13 @@ module icache #(
       miss_bank_sel_q   <= '0;
     end else begin
       state_q <= state_d;
-      // Simple flush: drop response and go idle
+      // Flush: drop response; mark current request as killed if in-flight
       if (ifu_req_flush_i) begin
-        rsp_valid_q <= 1'b0;
+        rsp_valid_q  <= 1'b0;
+        rsp_instrs_q <= '0;
+        if (state_q != IDLE) begin
+          req_killed_q <= 1'b1;
+        end
       end
 
       unique case (state_q)
@@ -440,31 +446,38 @@ module icache #(
             start_slot_q     <= start_slot_d;
             cross_line_q     <= cross_line_d;
             rsp_valid_q      <= 1'b0;
+            req_killed_q     <= 1'b0;
           end
         end
 
         LOOKUP: begin
           rsp_ready_q <= 1'b0;
-          // Use array outputs + stored expected tag to determine hit/miss
-          if (hit_all) begin
-            rsp_valid_q  <= 1'b1;
-            rsp_instrs_q <= assembled_instrs;
-          end else begin
-            rsp_valid_q <= 1'b0;
-            // [Fix] Capture miss context for the SPECIFIC line that missed
-            if (miss_on_b) begin
-              miss_paddr_q     <= {line_addr_b_q, {OFFSET_WIDTH{1'b0}}};
-              miss_index_q     <= index_b_q;
-              miss_bank_addr_q <= index_b_q[INDEX_WIDTH-1:BANK_SEL_WIDTH];
-              miss_bank_sel_q  <= index_b_q[BANK_SEL_WIDTH-1:0];
+          if (!ifu_req_flush_i) begin
+            // Use array outputs + stored expected tag to determine hit/miss
+            if (hit_all) begin
+              if (!req_killed_q) begin
+                rsp_valid_q  <= 1'b1;
+                rsp_instrs_q <= assembled_instrs;
+              end else begin
+                rsp_valid_q <= 1'b0;
+              end
             end else begin
-              miss_paddr_q     <= {line_addr_a_q, {OFFSET_WIDTH{1'b0}}};
-              miss_index_q     <= index_a_q;
-              miss_bank_addr_q <= index_a_q[INDEX_WIDTH-1:BANK_SEL_WIDTH];
-              miss_bank_sel_q  <= index_a_q[BANK_SEL_WIDTH-1:0];
-            end
+              rsp_valid_q <= 1'b0;
+              // [Fix] Capture miss context for the SPECIFIC line that missed
+              if (miss_on_b) begin
+                miss_paddr_q     <= {line_addr_b_q, {OFFSET_WIDTH{1'b0}}};
+                miss_index_q     <= index_b_q;
+                miss_bank_addr_q <= index_b_q[INDEX_WIDTH-1:BANK_SEL_WIDTH];
+                miss_bank_sel_q  <= index_b_q[BANK_SEL_WIDTH-1:0];
+              end else begin
+                miss_paddr_q     <= {line_addr_a_q, {OFFSET_WIDTH{1'b0}}};
+                miss_index_q     <= index_a_q;
+                miss_bank_addr_q <= index_a_q[INDEX_WIDTH-1:BANK_SEL_WIDTH];
+                miss_bank_sel_q  <= index_a_q[BANK_SEL_WIDTH-1:0];
+              end
 
-            miss_victim_way_q <= victim_way_d;
+              miss_victim_way_q <= victim_way_d;
+            end
           end
         end
 
@@ -480,10 +493,12 @@ module icache #(
         end
       endcase
     end
+`ifdef TRIATHLON_VERBOSE
     $display("ifu2icache_pc: %h", ifu_req_pc_i);
     $display("icache2ifu_valid: %b", ifu_rsp_handshake_o.valid);
     $display("icache2ifu_ready: %b", ifu_rsp_handshake_o.ready);
     $display("icache_current_state: %d", state_q);
+`endif
 
 
   end
@@ -493,41 +508,37 @@ module icache #(
   // ---------------------------------------------------------------------------
   always_comb begin
     state_d = state_q;
-    if (ifu_req_flush_i) begin
-      state_d = IDLE;
-    end else begin
-      unique case (state_q)
-        IDLE: begin
-          if (ifu_req_handshake_i.valid && !ifu_req_flush_i) begin
-            // Next cycle arrays will output data for this request
-            state_d = LOOKUP;
-          end
+    unique case (state_q)
+      IDLE: begin
+        if (ifu_req_handshake_i.valid && !ifu_req_flush_i) begin
+          // Next cycle arrays will output data for this request
+          state_d = LOOKUP;
         end
+      end
 
-        LOOKUP: begin
-          if (hit_all) begin
-            state_d = IDLE;
-          end else begin
-            state_d = MISS_REQ;
-          end
+      LOOKUP: begin
+        if (hit_all) begin
+          state_d = IDLE;
+        end else begin
+          state_d = MISS_REQ;
         end
+      end
 
-        MISS_REQ: begin
-          if (miss_req_valid_o && miss_req_ready_i) begin
-            state_d = MISS_WAIT_REFILL;
-          end
+      MISS_REQ: begin
+        if (miss_req_valid_o && miss_req_ready_i) begin
+          state_d = MISS_WAIT_REFILL;
         end
+      end
 
-        MISS_WAIT_REFILL: begin
-          if (refill_valid_i && refill_ready_o) begin
-            // After refill, re-do lookup for the same PC
-            state_d = LOOKUP;
-          end
+      MISS_WAIT_REFILL: begin
+        if (refill_valid_i && refill_ready_o) begin
+          // After refill, re-do lookup for the same PC
+          state_d = LOOKUP;
         end
+      end
 
-        default: state_d = IDLE;
-      endcase
-    end
+      default: state_d = IDLE;
+    endcase
   end
 
 endmodule : icache

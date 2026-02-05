@@ -14,6 +14,7 @@ vluint64_t sim_time = 0;
 // -------------------------------------------------------------------------
 
 void tick(Vtb_dcache *top, VerilatedVcdC *tfp) {
+  top->flush_i = 0;
   top->clk_i = 0;
   top->eval();
   if (tfp)

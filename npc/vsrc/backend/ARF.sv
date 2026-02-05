@@ -15,10 +15,9 @@ module arf #(
     input logic [COMMIT_WIDTH-1:0][Cfg.XLEN-1:0] wdata_i,
 
     // --- Read Ports (For Issue/Operand Fetch) ---
-    // 假设 Issue 阶段需要读取 ARF (当操作数处于非推测状态时)
-    // 端口数量取决于 Issue 宽度 (如 4-way issue, 最多需要 8 个读端口)
-    input logic [3:0][4:0] raddr_i,
-    output logic [3:0][Cfg.XLEN-1:0] rdata_o
+    // 4-way issue 需要 8 个读端口 (rs1[4] + rs2[4])
+    input logic [7:0][4:0] raddr_i,
+    output logic [7:0][Cfg.XLEN-1:0] rdata_o
 );
 
   // 32 个架构寄存器 (R0-R31)
@@ -26,7 +25,7 @@ module arf #(
 
   // --- 读逻辑 ---
   always_comb begin
-    for (int i = 0; i < 4; i++) begin
+    for (int i = 0; i < 8; i++) begin
       if (raddr_i[i] == 0) rdata_o[i] = '0;
       else rdata_o[i] = regs[raddr_i[i]];
     end

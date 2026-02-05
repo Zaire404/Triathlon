@@ -4,7 +4,8 @@ import decode_pkg::*;
 
 module store_buffer #(
     parameter int unsigned SB_DEPTH = 16,  // Store Buffer 深度
-    parameter int unsigned ROB_IDX_WIDTH = 6
+    parameter int unsigned ROB_IDX_WIDTH = 6,
+    parameter int unsigned COMMIT_WIDTH = 4
 ) (
     input logic clk_i,
     input logic rst_ni,
@@ -12,9 +13,10 @@ module store_buffer #(
     // =======================================================
     // 1. Dispatch (From Rename) - 分配 SB 條目
     // =======================================================
-    input  logic                        alloc_req_i,
-    output logic                        alloc_gnt_o,  // SB 未滿，允許 Dispatch
-    output logic [$clog2(SB_DEPTH)-1:0] alloc_id_o,   // 分配到的 SB ID
+    input logic [3:0] alloc_req_i,
+    output logic alloc_ready_o,  // SB 可接受本周期所有请求
+    output logic [3:0][$clog2(SB_DEPTH)-1:0] alloc_id_o,  // 分配到的 SB ID（每条store）
+    input logic alloc_fire_i,  // 真正执行分配（由上游控制）
 
     // =======================================================
     // 2. Execute (From AGU/ALU) - 填入地址和數據
@@ -25,13 +27,14 @@ module store_buffer #(
     input logic                [        Cfg.PLEN-1:0] ex_addr_i,
     input logic                [        Cfg.XLEN-1:0] ex_data_i,
     input decode_pkg::lsu_op_e                        ex_op_i,
+    input logic                [    ROB_IDX_WIDTH-1:0] ex_rob_idx_i,
 
     // =======================================================
     // 3. Commit (From ROB) - 標記為 "Senior Store"
     // =======================================================
     // ROB 只要發個信號，就不管了，不需要等 D-Cache
-    input logic                        commit_valid_i,
-    input logic [$clog2(SB_DEPTH)-1:0] commit_sb_id_i,
+    input logic [COMMIT_WIDTH-1:0]                       commit_valid_i,
+    input logic [COMMIT_WIDTH-1:0][$clog2(SB_DEPTH)-1:0] commit_sb_id_i,
 
     // =======================================================
     // 4. D-Cache Interface (To L1 D$) - 後台寫入
@@ -46,8 +49,10 @@ module store_buffer #(
     // 5. Load Forwarding (From Load Unit) - 關鍵邏輯
     // =======================================================
     input  logic [Cfg.PLEN-1:0] load_addr_i,
+    input  logic [ROB_IDX_WIDTH-1:0] load_rob_idx_i,
     output logic                load_hit_o,   // 在 SB 中命中且數據有效
     output logic [Cfg.XLEN-1:0] load_data_o,  // 轉發的數據
+    input  logic [ROB_IDX_WIDTH-1:0] rob_head_i,
 
     // =======================================================
     // 6. Control
@@ -65,9 +70,20 @@ module store_buffer #(
     logic [Cfg.PLEN-1:0] addr;
     logic [Cfg.XLEN-1:0] data;
     decode_pkg::lsu_op_e op;
+    logic [ROB_IDX_WIDTH-1:0] rob_tag;
   } sb_entry_t;
 
   sb_entry_t [SB_DEPTH-1:0] mem;
+
+  function automatic logic [ROB_IDX_WIDTH-1:0] rob_age(
+      input logic [ROB_IDX_WIDTH-1:0] idx, input logic [ROB_IDX_WIDTH-1:0] head);
+    logic [ROB_IDX_WIDTH-1:0] diff;
+    begin
+      diff = idx - head;
+      return diff;
+    end
+  endfunction
+
 
   // 指針定義：
   // head_ptr: 指向最舊的條目 (隊頭，負責寫 D-Cache)
@@ -78,24 +94,70 @@ module store_buffer #(
   // 計數器
   logic [$clog2(SB_DEPTH):0] count;
 
+  // --- 辅助信号：本周期将提交的条目 (避免 flush 丢失同周期 commit) ---
+  logic [SB_DEPTH-1:0] commit_set;
+  always_comb begin
+    commit_set = '0;
+    for (int c = 0; c < COMMIT_WIDTH; c++) begin
+      if (commit_valid_i[c]) begin
+        commit_set[commit_sb_id_i[c]] = 1'b1;
+      end
+    end
+  end
+
   // --- 輔助信號：計算已提交的條目數量 ---
   logic [$clog2(SB_DEPTH):0] committed_count;
   always_comb begin
     committed_count = 0;
     for (int i = 0; i < SB_DEPTH; i++) begin
-      if (mem[i].valid && mem[i].committed) begin
+      if (mem[i].valid && (mem[i].committed || commit_set[i])) begin
         committed_count++;
       end
     end
   end
 
-  // --- 分配接口邏輯 ---
-  assign alloc_gnt_o = (count < SB_DEPTH);
-  assign alloc_id_o  = tail_ptr;
+  // --- 分配接口邏輯 (最多 4 条/周期) ---
+  logic [$clog2(SB_DEPTH):0] alloc_count;
+
+  always_comb begin
+    int off;
+    alloc_count = 0;
+    for (int i = 0; i < 4; i++) begin
+      if (alloc_req_i[i]) alloc_count++;
+    end
+    alloc_ready_o = (count + alloc_count <= SB_DEPTH);
+
+    off = 0;
+    for (int i = 0; i < 4; i++) begin
+      if (alloc_req_i[i]) begin
+        alloc_id_o[i] = tail_ptr + $clog2(SB_DEPTH)'(off);
+        off++;
+      end else begin
+        alloc_id_o[i] = '0;
+      end
+    end
+  end
 
   // =======================================================
   // Main Sequential Logic
   // =======================================================
+  // Track whether head entry will be written back this cycle.
+  logic wb_fire;
+  always_comb begin
+    wb_fire = mem[head_ptr].valid && mem[head_ptr].committed &&
+              mem[head_ptr].addr_valid && mem[head_ptr].data_valid &&
+              dcache_req_ready_i;
+  end
+
+  logic [$clog2(SB_DEPTH):0] alloc_num;
+  always_comb begin
+    if (alloc_fire_i && alloc_ready_o) begin
+      alloc_num = alloc_count;
+    end else begin
+      alloc_num = '0;
+    end
+  end
+
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (!rst_ni) begin
       head_ptr <= '0;
@@ -109,6 +171,7 @@ module store_buffer #(
         mem[i].addr       <= '0;
         mem[i].data       <= '0;
         mem[i].op         <= decode_pkg::LSU_LW;
+        mem[i].rob_tag    <= '0;
       end
     end else if (flush_i) begin
       // 【Flush 處理關鍵邏輯】
@@ -124,10 +187,15 @@ module store_buffer #(
 
       // 清除無效條目
       for (int i = 0; i < SB_DEPTH; i++) begin
-        if (mem[i].valid && !mem[i].committed) begin
+        if (commit_set[i]) begin
+          mem[i].committed <= 1'b1;
+        end
+        if (mem[i].valid && !(mem[i].committed || commit_set[i])) begin
           mem[i].valid      <= 1'b0;
+          mem[i].committed  <= 1'b0;
           mem[i].addr_valid <= 1'b0;
           mem[i].data_valid <= 1'b0;
+          mem[i].rob_tag    <= '0;
         end
       end
     end else begin
@@ -139,6 +207,7 @@ module store_buffer #(
         mem[ex_sb_id_i].addr       <= ex_addr_i;
         mem[ex_sb_id_i].data       <= ex_data_i;
         mem[ex_sb_id_i].op         <= ex_op_i;
+        mem[ex_sb_id_i].rob_tag    <= ex_rob_idx_i;
         mem[ex_sb_id_i].addr_valid <= 1'b1;
         mem[ex_sb_id_i].data_valid <= 1'b1;
       end
@@ -147,31 +216,40 @@ module store_buffer #(
       // 2. Allocation (入隊)
       // ------------------------------------
       // 只有在未發生 Flush 時才允許分配，避免舊指令污染
-      if (alloc_req_i && alloc_gnt_o) begin
-        mem[tail_ptr].valid      <= 1'b1;
-        mem[tail_ptr].committed  <= 1'b0;  // 默認為推測狀態
-        mem[tail_ptr].addr_valid <= 1'b0;
-        mem[tail_ptr].data_valid <= 1'b0;
+      if (alloc_fire_i && alloc_ready_o && alloc_count != 0) begin
+        int off;
+        off = 0;
+        for (int i = 0; i < 4; i++) begin
+          if (alloc_req_i[i]) begin
+            logic [$clog2(SB_DEPTH)-1:0] idx;
+            idx = tail_ptr + $clog2(SB_DEPTH)'(off);
+            mem[idx].valid      <= 1'b1;
+            mem[idx].committed  <= 1'b0;  // 默認為推測狀態
+            mem[idx].addr_valid <= 1'b0;
+            mem[idx].data_valid <= 1'b0;
+            mem[idx].rob_tag    <= '0;
+            off++;
+          end
+        end
         // 移動指針
-        tail_ptr                 <= tail_ptr + 1;
-        count                    <= count + 1;
+        tail_ptr <= tail_ptr + $clog2(SB_DEPTH)'(off);
       end
 
       // ------------------------------------
       // 3. Commit (ROB 通知退休)
       // ------------------------------------
-      // 標記為架構狀態，ROB 此時已將指令移除
-      if (commit_valid_i) begin
-        mem[commit_sb_id_i].committed <= 1'b1;
+      // 支持同周期多條 store 退休
+      for (int c = 0; c < COMMIT_WIDTH; c++) begin
+        if (commit_valid_i[c]) begin
+          mem[commit_sb_id_i[c]].committed <= 1'b1;
+        end
       end
 
       // ------------------------------------
       // 4. D-Cache Writeback (出隊)
       // ------------------------------------
       // 條件：隊頭有效 + 已退休 + 地址數據都就緒 + Cache 準備好
-      if (mem[head_ptr].valid && mem[head_ptr].committed && 
-                mem[head_ptr].addr_valid && mem[head_ptr].data_valid && 
-                dcache_req_ready_i) begin
+      if (wb_fire) begin
 
         mem[head_ptr].valid      <= 1'b0;  // 真正釋放 SB 空間
         mem[head_ptr].committed  <= 1'b0;
@@ -179,7 +257,13 @@ module store_buffer #(
         mem[head_ptr].data_valid <= 1'b0;
 
         head_ptr                 <= head_ptr + 1;
-        count                    <= count - 1;
+      end
+
+      // ------------------------------------
+      // 5. Count update (alloc + wb)
+      // ------------------------------------
+      if (alloc_num != 0 || wb_fire) begin
+        count <= count + alloc_num - (wb_fire ? 1 : 0);
       end
     end
   end
@@ -201,10 +285,13 @@ module store_buffer #(
   // =======================================================
   // 策略：從最新分配的條目 (tail-1) 開始向舊條目 (head) 搜索。
   // 找到的第一個地址匹配且有效的 Store 即為正確的數據來源。
+  logic [ROB_IDX_WIDTH-1:0] load_age;
 
   always_comb begin
     load_hit_o  = 1'b0;
     load_data_o = '0;
+
+    load_age = rob_age(load_rob_idx_i, rob_head_i);
 
     // 遍歷整個 SB (邏輯上從 tail-1 到 head)
     for (int i = 0; i < SB_DEPTH; i++) begin
@@ -220,7 +307,8 @@ module store_buffer #(
       if (mem[idx].valid && 
                 mem[idx].addr_valid && 
                 mem[idx].data_valid && 
-                (mem[idx].addr == load_addr_i)) begin
+                (mem[idx].addr == load_addr_i) &&
+                (rob_age(mem[idx].rob_tag, rob_head_i) < load_age)) begin
 
         load_hit_o  = 1'b1;
         load_data_o = mem[idx].data;
@@ -229,6 +317,7 @@ module store_buffer #(
         break;
       end
     end
+
   end
 
 endmodule

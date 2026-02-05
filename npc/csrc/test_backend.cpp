@@ -1,0 +1,386 @@
+#include "Vtb_backend.h"
+#include "verilated.h"
+#include <array>
+#include <cassert>
+#include <cstdint>
+#include <cstdlib>
+#include <functional>
+#include <iostream>
+#include <vector>
+
+#define ANSI_RES_GRN "\x1b[32m"
+#define ANSI_RES_RED "\x1b[31m"
+#define ANSI_RES_RST "\x1b[0m"
+
+static const int INSTR_PER_FETCH = 4;
+static const int NRET = 4;
+static const int XLEN = 32;
+static const uint32_t LINE_BYTES = 32; // DCACHE_LINE_WIDTH=256b -> 32B
+
+// -----------------------------------------------------------------------------
+// Instruction encoders (RV32I)
+// -----------------------------------------------------------------------------
+static inline uint32_t enc_r(uint32_t funct7, uint32_t rs2, uint32_t rs1,
+                             uint32_t funct3, uint32_t rd, uint32_t opcode) {
+  return (funct7 << 25) | (rs2 << 20) | (rs1 << 15) | (funct3 << 12) |
+         (rd << 7) | opcode;
+}
+
+static inline uint32_t enc_i(int32_t imm, uint32_t rs1, uint32_t funct3,
+                             uint32_t rd, uint32_t opcode) {
+  uint32_t imm12 = static_cast<uint32_t>(imm) & 0xFFF;
+  return (imm12 << 20) | (rs1 << 15) | (funct3 << 12) | (rd << 7) | opcode;
+}
+
+static inline uint32_t enc_s(int32_t imm, uint32_t rs2, uint32_t rs1,
+                             uint32_t funct3, uint32_t opcode) {
+  uint32_t imm12 = static_cast<uint32_t>(imm) & 0xFFF;
+  uint32_t imm11_5 = (imm12 >> 5) & 0x7F;
+  uint32_t imm4_0 = imm12 & 0x1F;
+  return (imm11_5 << 25) | (rs2 << 20) | (rs1 << 15) | (funct3 << 12) |
+         (imm4_0 << 7) | opcode;
+}
+
+static inline uint32_t enc_b(int32_t imm, uint32_t rs2, uint32_t rs1,
+                             uint32_t funct3, uint32_t opcode) {
+  uint32_t imm13 = static_cast<uint32_t>(imm) & 0x1FFF; // 13-bit
+  uint32_t bit12 = (imm13 >> 12) & 0x1;
+  uint32_t bit11 = (imm13 >> 11) & 0x1;
+  uint32_t bits10_5 = (imm13 >> 5) & 0x3F;
+  uint32_t bits4_1 = (imm13 >> 1) & 0xF;
+  return (bit12 << 31) | (bits10_5 << 25) | (rs2 << 20) | (rs1 << 15) |
+         (funct3 << 12) | (bits4_1 << 8) | (bit11 << 7) | opcode;
+}
+
+static inline uint32_t insn_addi(uint32_t rd, uint32_t rs1, int32_t imm) {
+  return enc_i(imm, rs1, 0x0, rd, 0x13);
+}
+
+static inline uint32_t insn_add(uint32_t rd, uint32_t rs1, uint32_t rs2) {
+  return enc_r(0x00, rs2, rs1, 0x0, rd, 0x33);
+}
+
+static inline uint32_t insn_lw(uint32_t rd, uint32_t rs1, int32_t imm) {
+  return enc_i(imm, rs1, 0x2, rd, 0x03);
+}
+
+static inline uint32_t insn_sw(uint32_t rs2, uint32_t rs1, int32_t imm) {
+  return enc_s(imm, rs2, rs1, 0x2, 0x23);
+}
+
+static inline uint32_t insn_beq(uint32_t rs1, uint32_t rs2, int32_t imm) {
+  return enc_b(imm, rs2, rs1, 0x0, 0x63);
+}
+
+static inline uint32_t insn_nop() { return insn_addi(0, 0, 0); }
+
+// -----------------------------------------------------------------------------
+// Memory model for D$ miss/refill
+// -----------------------------------------------------------------------------
+struct MemModel {
+  bool pending = false;
+  int delay = 0;
+  uint32_t miss_addr = 0;
+  uint32_t miss_way = 0;
+  uint32_t pattern = 0;
+  bool refill_pulse = false;
+
+  void reset() {
+    pending = false;
+    delay = 0;
+    miss_addr = 0;
+    miss_way = 0;
+    pattern = 0;
+    refill_pulse = false;
+  }
+
+  static uint32_t make_pattern(uint32_t line_addr) {
+    return 0xA5A50000u ^ (line_addr & 0xFFFFu);
+  }
+
+  void drive(Vtb_backend *top) {
+    top->dcache_miss_req_ready_i = 1;
+    top->dcache_wb_req_ready_i = 1;
+
+    if (refill_pulse) {
+      top->dcache_refill_valid_i = 1;
+      top->dcache_refill_paddr_i = miss_addr;
+      top->dcache_refill_way_i = miss_way;
+      for (int i = 0; i < 8; i++) {
+        top->dcache_refill_data_i[i] = pattern;
+      }
+    } else {
+      top->dcache_refill_valid_i = 0;
+      top->dcache_refill_paddr_i = 0;
+      top->dcache_refill_way_i = 0;
+      for (int i = 0; i < 8; i++) {
+        top->dcache_refill_data_i[i] = 0;
+      }
+    }
+  }
+
+  void observe(Vtb_backend *top) {
+    if (refill_pulse) {
+      refill_pulse = false; // one-cycle pulse
+    }
+
+    if (!pending && top->dcache_miss_req_valid_o) {
+      pending = true;
+      delay = 2;
+      miss_addr = top->dcache_miss_req_paddr_o;
+      miss_way = top->dcache_miss_req_victim_way_o;
+      pattern = make_pattern(miss_addr);
+    }
+
+    if (pending) {
+      if (delay > 0) {
+        delay--;
+      } else if (top->dcache_refill_ready_o) {
+        refill_pulse = true;
+        pending = false;
+      }
+    }
+  }
+};
+
+// -----------------------------------------------------------------------------
+// Test helpers
+// -----------------------------------------------------------------------------
+static void tick(Vtb_backend *top, MemModel &mem) {
+  mem.drive(top);
+  top->clk_i = 0;
+  top->eval();
+  top->clk_i = 1;
+  top->eval();
+  mem.observe(top);
+}
+
+static bool tick_sample_frontend_ready(Vtb_backend *top, MemModel &mem) {
+  mem.drive(top);
+  top->clk_i = 0;
+  top->eval();
+  bool ready = top->frontend_ibuf_ready;
+  top->clk_i = 1;
+  top->eval();
+  mem.observe(top);
+  return ready;
+}
+
+static void reset(Vtb_backend *top, MemModel &mem) {
+  top->rst_ni = 0;
+  top->flush_from_backend = 0;
+  top->frontend_ibuf_valid = 0;
+  top->frontend_ibuf_pc = 0;
+  for (int i = 0; i < INSTR_PER_FETCH; i++) top->frontend_ibuf_instrs[i] = 0;
+
+  mem.reset();
+  tick(top, mem);
+  tick(top, mem);
+  top->rst_ni = 1;
+  tick(top, mem);
+}
+
+static void update_commits(Vtb_backend *top, std::array<uint32_t, 32> &rf,
+                           std::vector<uint32_t> &commit_log) {
+  for (int i = 0; i < NRET; i++) {
+    bool valid = (top->commit_valid_o >> i) & 0x1;
+    bool we = (top->commit_we_o >> i) & 0x1;
+    uint32_t rd = (top->commit_areg_o >> (i * 5)) & 0x1F;
+    uint32_t data = top->commit_wdata_o[i];
+    if (valid) {
+      commit_log.push_back(rd);
+      if (we && rd != 0) {
+        rf[rd] = data;
+      }
+    }
+  }
+}
+
+static void send_group(Vtb_backend *top, MemModel &mem,
+                       std::array<uint32_t, 32> &rf,
+                       std::vector<uint32_t> &commit_log,
+                       uint32_t base_pc,
+                       const std::array<uint32_t, 4> &instrs) {
+  bool sent = false;
+  while (!sent) {
+    top->frontend_ibuf_valid = 1;
+    top->frontend_ibuf_pc = base_pc;
+    for (int i = 0; i < INSTR_PER_FETCH; i++) {
+      top->frontend_ibuf_instrs[i] = instrs[i];
+    }
+    bool ready = tick_sample_frontend_ready(top, mem);
+    update_commits(top, rf, commit_log);
+    if (ready) {
+      sent = true;
+    }
+  }
+  top->frontend_ibuf_valid = 0;
+}
+
+static bool run_until(Vtb_backend *top, MemModel &mem,
+                      std::array<uint32_t, 32> &rf,
+                      std::vector<uint32_t> &commit_log,
+                      const std::function<bool()> &pred, int max_cycles) {
+  for (int i = 0; i < max_cycles; i++) {
+    tick(top, mem);
+    update_commits(top, rf, commit_log);
+    if (pred()) return true;
+  }
+  return false;
+}
+
+static void expect(bool cond, const char *msg) {
+  if (!cond) {
+    std::cout << "[ " << ANSI_RES_RED << "FAIL" << ANSI_RES_RST << " ] " << msg << "\n";
+    std::exit(1);
+  }
+  std::cout << "[ " << ANSI_RES_GRN << "PASS" << ANSI_RES_RST << " ] " << msg << "\n";
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+static void test_alu_and_deps(Vtb_backend *top, MemModel &mem) {
+  std::array<uint32_t, 32> rf{};
+  std::vector<uint32_t> commits;
+
+  reset(top, mem);
+
+  std::array<uint32_t, 4> group = {
+      insn_addi(1, 0, 5),      // x1 = 5
+      insn_addi(2, 1, 3),      // x2 = x1 + 3
+      insn_add(3, 1, 2),       // x3 = x1 + x2
+      insn_nop()};
+  send_group(top, mem, rf, commits, 0x8000, group);
+
+  bool ok = run_until(top, mem, rf, commits, [&]() {
+    return (rf[1] == 5 && rf[2] == 8 && rf[3] == 13);
+  }, 200);
+
+  expect(ok, "ALU/RAW dependency commit");
+}
+
+static void test_branch_flush(Vtb_backend *top, MemModel &mem) {
+  std::array<uint32_t, 32> rf{};
+  std::vector<uint32_t> commits;
+
+  reset(top, mem);
+
+  std::array<uint32_t, 4> group = {
+      insn_addi(1, 0, 1),      // x1 = 1
+      insn_beq(0, 0, 8),       // taken, target = pc+8
+      insn_addi(2, 0, 2),      // wrong-path
+      insn_addi(3, 0, 3)       // wrong-path (will re-fetch)
+  };
+  send_group(top, mem, rf, commits, 0x8000, group);
+
+  bool flush_seen = false;
+  bool wrong_commit = false;
+
+  for (int i = 0; i < 200; i++) {
+    tick(top, mem);
+    update_commits(top, rf, commits);
+    if (top->rob_flush_o) flush_seen = true;
+
+    // Any commit to x2/x3 before re-fetch is wrong
+    for (uint32_t rd : commits) {
+      if (rd == 2 || rd == 3) {
+        wrong_commit = true;
+        break;
+      }
+    }
+    commits.clear();
+
+    if (flush_seen) break;
+  }
+
+  expect(flush_seen, "Branch mispred flush asserted");
+  expect(!wrong_commit, "Wrong-path instructions not committed before re-fetch");
+
+  // Re-fetch correct-path instruction at target PC (0x8000 + 12)
+  std::array<uint32_t, 4> group2 = {
+      insn_addi(3, 0, 3),
+      insn_nop(),
+      insn_nop(),
+      insn_nop()};
+  send_group(top, mem, rf, commits, 0x800C, group2);
+
+  bool ok = false;
+  for (int i = 0; i < 200; i++) {
+    tick(top, mem);
+    update_commits(top, rf, commits);
+    if (rf[1] == 1 && rf[2] == 0 && rf[3] == 3) {
+      ok = true;
+      break;
+    }
+  }
+
+  if (!ok) {
+    std::cout << "    [DEBUG] rf1=" << rf[1] << " rf2=" << rf[2] << " rf3=" << rf[3] << std::endl;
+    std::cout << "    [DEBUG] commits:";
+    for (auto rd : commits) std::cout << " x" << rd;
+    std::cout << std::endl;
+  }
+  expect(ok, "Branch flush + correct-path commit");
+}
+
+static void test_store_load_forward(Vtb_backend *top, MemModel &mem) {
+  std::array<uint32_t, 32> rf{};
+  std::vector<uint32_t> commits;
+
+  reset(top, mem);
+
+  std::array<uint32_t, 4> group = {
+      insn_addi(5, 0, 0x7F),   // x5 = 0x7F
+      insn_sw(5, 0, 0),        // MEM[0] = x5
+      insn_lw(6, 0, 0),        // x6 = MEM[0] (forwarded)
+      insn_nop()};
+  send_group(top, mem, rf, commits, 0x9000, group);
+
+  bool ok = run_until(top, mem, rf, commits, [&]() {
+    return rf[6] == 0x7F;
+  }, 300);
+
+  expect(ok, "Store -> Load forwarding");
+}
+
+static void test_load_miss_refill(Vtb_backend *top, MemModel &mem) {
+  std::array<uint32_t, 32> rf{};
+  std::vector<uint32_t> commits;
+
+  reset(top, mem);
+
+  uint32_t addr = 0x100;
+  uint32_t line_addr = addr & ~(LINE_BYTES - 1);
+  uint32_t expected = MemModel::make_pattern(line_addr);
+
+  std::array<uint32_t, 4> group = {
+      insn_lw(10, 0, addr),
+      insn_nop(),
+      insn_nop(),
+      insn_nop()};
+  send_group(top, mem, rf, commits, 0xA000, group);
+
+  bool ok = run_until(top, mem, rf, commits, [&]() {
+    return rf[10] == expected;
+  }, 400);
+
+  expect(ok, "Load miss -> refill -> commit");
+}
+
+int main(int argc, char **argv) {
+  Verilated::commandArgs(argc, argv);
+  Vtb_backend *top = new Vtb_backend;
+  MemModel mem;
+
+  std::cout << "--- [START] Backend Verification ---" << std::endl;
+
+  test_alu_and_deps(top, mem);
+  test_branch_flush(top, mem);
+  test_store_load_forward(top, mem);
+  test_load_miss_refill(top, mem);
+
+  std::cout << ANSI_RES_GRN << "--- [ALL BACKEND TESTS PASSED] ---" << ANSI_RES_RST << std::endl;
+  delete top;
+  return 0;
+}

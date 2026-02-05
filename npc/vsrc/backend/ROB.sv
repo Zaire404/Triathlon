@@ -8,6 +8,7 @@ module rob #(
     parameter int unsigned DISPATCH_WIDTH = Cfg.INSTR_PER_FETCH,
     parameter int unsigned COMMIT_WIDTH = Cfg.NRET,
     parameter int unsigned WB_WIDTH = 4,
+    parameter int unsigned QUERY_WIDTH = DISPATCH_WIDTH * 2,
     // [新增] Store Buffer 参数
     parameter int unsigned SB_DEPTH = 16,
     parameter int unsigned SB_IDX_WIDTH = $clog2(SB_DEPTH)
@@ -22,6 +23,7 @@ module rob #(
     input logic            [DISPATCH_WIDTH-1:0][Cfg.PLEN-1:0] dispatch_pc_i,
     input decode_pkg::fu_e [DISPATCH_WIDTH-1:0]               dispatch_fu_type_i,
     input logic            [DISPATCH_WIDTH-1:0][         4:0] dispatch_areg_i,
+    input logic            [DISPATCH_WIDTH-1:0]               dispatch_has_rd_i,
 
     // [新增] 接收 Store Buffer ID
     // 只有当指令是 Store 时，这个信号才有效；否则忽略
@@ -67,8 +69,16 @@ module rob #(
     output logic [Cfg.PLEN-1:0] flush_pc_o,
     output logic [4:0] flush_cause_o,
 
+    // =========================================================
+    // 4. Operand Query (To Issue/Rename)
+    // =========================================================
+    input  logic [QUERY_WIDTH-1:0][$clog2(ROB_DEPTH)-1:0] query_rob_idx_i,
+    output logic [QUERY_WIDTH-1:0]                         query_ready_o,
+    output logic [QUERY_WIDTH-1:0][Cfg.XLEN-1:0]           query_data_o,
+
     output logic rob_empty_o,
-    output logic rob_full_o
+    output logic rob_full_o,
+    output logic [$clog2(ROB_DEPTH)-1:0] rob_head_o
 );
   localparam int unsigned PTR_WIDTH = $clog2(ROB_DEPTH);
 
@@ -85,6 +95,7 @@ module rob #(
     logic [Cfg.PLEN-1:0] redirect_pc;
     decode_pkg::fu_e fu_type;
     logic [4:0] areg;
+    logic has_rd;
     logic [Cfg.XLEN-1:0] data;
     logic [Cfg.PLEN-1:0] pc;
 
@@ -177,6 +188,19 @@ module rob #(
             flush_pc_o    = rob_ram[idx].pc;
             flush_cause_o = rob_ram[idx].ecause;
           end else if (rob_ram[idx].is_mispred) begin
+            // 分支/跳转误预测：先退休该指令，再触发 flush
+            commit_valid_o[i] = 1'b1;
+            commit_pc_o[i]    = rob_ram[idx].pc;
+
+            commit_areg_o[i]  = rob_ram[idx].areg;
+            commit_wdata_o[i] = rob_ram[idx].data;
+            if (rob_ram[idx].has_rd && rob_ram[idx].areg != 0) begin
+              commit_we_o[i] = 1'b1;
+            end
+
+            commit_is_store_o[i] = rob_ram[idx].is_store;
+            commit_sb_id_o[i]    = rob_ram[idx].sb_id;
+
             stop_commit = 1'b1;
             flush_o     = 1'b1;
             flush_pc_o  = rob_ram[idx].redirect_pc;
@@ -187,7 +211,7 @@ module rob #(
 
             commit_areg_o[i]  = rob_ram[idx].areg;
             commit_wdata_o[i] = rob_ram[idx].data;
-            if (rob_ram[idx].areg != 0) begin
+            if (rob_ram[idx].has_rd && rob_ram[idx].areg != 0) begin
               commit_we_o[i] = 1'b1;
             end
 
@@ -201,6 +225,16 @@ module rob #(
       end else begin
         stop_commit = 1'b1;
       end
+    end
+  end
+
+  // =========================================================
+  // Operand Query (Combinational)
+  // =========================================================
+  always_comb begin
+    for (int q = 0; q < QUERY_WIDTH; q++) begin
+      query_ready_o[q] = rob_ram[query_rob_idx_i[q]].complete;
+      query_data_o[q]  = rob_ram[query_rob_idx_i[q]].data;
     end
   end
 
@@ -221,6 +255,8 @@ module rob #(
   end
   assign tail_ptr_d = tail_ptr_q + PTR_WIDTH'(dispatch_cnt);
   assign head_ptr_d = head_ptr_q + PTR_WIDTH'(commit_cnt);
+
+  assign rob_head_o = head_ptr_q;
   assign count_d    = count_q + dispatch_cnt - commit_cnt;
 
   // ... Sequential Logic ...
@@ -252,6 +288,7 @@ module rob #(
             rob_ram[w_idx].ecause      <= '0;
             rob_ram[w_idx].fu_type     <= dispatch_fu_type_i[i];
             rob_ram[w_idx].areg        <= dispatch_areg_i[i];
+            rob_ram[w_idx].has_rd      <= dispatch_has_rd_i[i];
             rob_ram[w_idx].pc          <= dispatch_pc_i[i];
 
             // [新增] 保存 SB ID

@@ -10,6 +10,7 @@ module tb_issue #(
 ) (
     input wire clk,
     input wire rst_n,
+    input wire flush_i,
 
     // Dispatch 通道
     input wire              [       3:0] dispatch_valid,
@@ -25,6 +26,7 @@ module tb_issue #(
     input wire                           dispatch_r2   [0:3],
 
     output wire issue_ready,
+    output wire [$clog2(RS_DEPTH+1)-1:0] free_count_o,
 
     // CDB 通道
     input wire [       3:0] cdb_valid,
@@ -52,6 +54,7 @@ module tb_issue #(
   ) u_issue (
       .clk  (clk),
       .rst_n(rst_n),
+      .flush_i(flush_i),
 
       .dispatch_valid(dispatch_valid),
       .dispatch_op   (dispatch_op),     // 类型匹配：uop_t
@@ -64,6 +67,7 @@ module tb_issue #(
       .dispatch_r2   (dispatch_r2),
 
       .issue_ready(issue_ready),
+      .free_count_o(free_count_o),
 
       .cdb_valid(cdb_valid),
       .cdb_tag  (cdb_tag),

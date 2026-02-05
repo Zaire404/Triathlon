@@ -5,6 +5,7 @@ import decode_pkg::*;
 module tb_dcache (
     input logic clk_i,
     input logic rst_ni,
+    input logic flush_i,
 
     // Load Port
     input  logic                                                  ld_req_valid_i,

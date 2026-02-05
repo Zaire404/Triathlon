@@ -10,6 +10,7 @@ module dcache_axi_wrapper #(
 ) (
     input logic clk_i,
     input logic rst_ni,
+    input logic flush_i,
 
     // ================= LSU load interface =================
     input  logic                               ld_req_valid_i,
@@ -118,6 +119,7 @@ module dcache_axi_wrapper #(
   ) u_dcache (
       .clk_i (clk_i),
       .rst_ni(rst_ni),
+      .flush_i(flush_i),
 
       .ld_req_valid_i(ld_req_valid_i),
       .ld_req_ready_o(ld_req_ready_o),
