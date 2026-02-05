@@ -15,6 +15,7 @@ namespace {
 
 constexpr uint32_t kPmemBase = 0x80000000u;
 constexpr uint32_t kEbreakInsn = 0x00100073u;
+constexpr uint32_t kSerialPort = 0xA00003F8u;
 
 struct SimArgs {
   std::string img_path;
@@ -26,6 +27,7 @@ struct SimArgs {
   bool bru_trace = false;
   bool stall_trace = false;
   uint64_t stall_threshold = 200;
+  uint64_t progress_interval = 0;
 };
 
 static bool parse_u64(const std::string &s, uint64_t &out) {
@@ -103,6 +105,24 @@ static SimArgs parse_args(int argc, char **argv) {
       uint64_t v = 0;
       if (parse_u64(arg.substr(std::string("--stall-trace=").size()), v)) {
         args.stall_threshold = v;
+      }
+      continue;
+    }
+    if (arg == "--progress") {
+      args.progress_interval = 1000000;
+      if (i + 1 < argc && argv[i + 1][0] != '-') {
+        uint64_t v = 0;
+        if (parse_u64(argv[i + 1], v)) {
+          args.progress_interval = v;
+          i++;
+        }
+      }
+      continue;
+    }
+    if (arg.rfind("--progress=", 0) == 0) {
+      uint64_t v = 0;
+      if (parse_u64(arg.substr(std::string("--progress=").size()), v)) {
+        args.progress_interval = v;
       }
       continue;
     }
@@ -340,7 +360,8 @@ int main(int argc, char **argv) {
   if (args.img_path.empty()) {
     std::cerr << "Usage: " << argv[0]
               << " <IMG> [--max-cycles N] [--trace [vcd]] [--commit-trace]"
-              << " [--bru-trace] [--fe-trace] [--stall-trace [N]]\n";
+              << " [--bru-trace] [--fe-trace] [--stall-trace [N]]"
+              << " [--progress [N]]\n";
     return 1;
   }
 
@@ -364,8 +385,20 @@ int main(int argc, char **argv) {
 
   std::array<uint32_t, 32> rf{};
   uint64_t no_commit_cycles = 0;
+  uint64_t total_commits = 0;
+  uint32_t last_commit_pc = 0;
+  uint32_t last_commit_inst = 0;
   for (uint64_t cycles = 0; cycles < args.max_cycles; cycles++) {
     tick(top, mem, tfp, sim_time);
+
+    if (top->dbg_sb_dcache_req_valid_o && top->dbg_sb_dcache_req_ready_o) {
+      uint32_t addr = top->dbg_sb_dcache_req_addr_o;
+      if (addr == kSerialPort) {
+        uint8_t ch =
+            static_cast<uint8_t>(top->dbg_sb_dcache_req_data_o & 0xFFu);
+        std::cout << static_cast<char>(ch) << std::flush;
+      }
+    }
 
     if ((args.commit_trace || args.bru_trace) && top->backend_flush_o) {
       std::ios::fmtflags f(std::cout.flags());
@@ -390,6 +423,7 @@ int main(int argc, char **argv) {
       bool valid = (top->commit_valid_o >> i) & 0x1;
       if (!valid) continue;
       any_commit = true;
+      total_commits++;
 
       bool we = (top->commit_we_o >> i) & 0x1;
       uint32_t rd = (top->commit_areg_o >> (i * 5)) & 0x1F;
@@ -400,6 +434,8 @@ int main(int argc, char **argv) {
 
       uint32_t pc = top->commit_pc_o[i];
       uint32_t inst = mem.mem.read_word(pc);
+      last_commit_pc = pc;
+      last_commit_inst = inst;
       if (args.commit_trace) {
         std::ios::fmtflags f(std::cout.flags());
         std::cout << "[commit] cycle=" << cycles
@@ -417,6 +453,11 @@ int main(int argc, char **argv) {
         uint32_t code = rf[10];
         if (code == 0) {
           std::cout << "HIT GOOD TRAP\n";
+          double ipc = cycles ? static_cast<double>(total_commits) / static_cast<double>(cycles) : 0.0;
+          double cpi = total_commits ? static_cast<double>(cycles) / static_cast<double>(total_commits) : 0.0;
+          std::cout << "IPC=" << ipc << " CPI=" << cpi
+                    << " cycles=" << cycles
+                    << " commits=" << total_commits << "\n";
           if (tfp) tfp->close();
           delete top;
           return 0;
@@ -450,6 +491,25 @@ int main(int argc, char **argv) {
                   << top->dbg_lsu_ld_req_addr_o
                   << " lsu_rsp(v/r)=" << std::dec << static_cast<int>(top->dbg_lsu_ld_rsp_valid_o)
                   << "/" << static_cast<int>(top->dbg_lsu_ld_rsp_ready_o)
+                  << " lsu_rs(b/r)=0x" << std::hex
+                  << static_cast<uint32_t>(top->dbg_lsu_rs_busy_o) << "/0x"
+                  << static_cast<uint32_t>(top->dbg_lsu_rs_ready_o)
+                  << " lsu_rs_head(v/idx/dst)=" << std::dec
+                  << static_cast<int>(top->dbg_lsu_rs_head_valid_o) << "/0x"
+                  << std::hex << static_cast<uint32_t>(top->dbg_lsu_rs_head_idx_o)
+                  << "/0x" << static_cast<uint32_t>(top->dbg_lsu_rs_head_dst_o)
+                  << " lsu_rs_head(rs1r/rs2r/has1/has2)=" << std::dec
+                  << static_cast<int>(top->dbg_lsu_rs_head_r1_ready_o) << "/"
+                  << static_cast<int>(top->dbg_lsu_rs_head_r2_ready_o) << "/"
+                  << static_cast<int>(top->dbg_lsu_rs_head_has_rs1_o) << "/"
+                  << static_cast<int>(top->dbg_lsu_rs_head_has_rs2_o)
+                  << " lsu_rs_head(q1/q2/sb)=0x" << std::hex
+                  << static_cast<uint32_t>(top->dbg_lsu_rs_head_q1_o) << "/0x"
+                  << static_cast<uint32_t>(top->dbg_lsu_rs_head_q2_o) << "/0x"
+                  << static_cast<uint32_t>(top->dbg_lsu_rs_head_sb_id_o)
+                  << " lsu_rs_head(ld/st)=" << std::dec
+                  << static_cast<int>(top->dbg_lsu_rs_head_is_load_o) << "/"
+                  << static_cast<int>(top->dbg_lsu_rs_head_is_store_o)
                   << " sb_alloc(req/ready/fire)=0x" << std::hex
                   << static_cast<uint32_t>(top->dbg_sb_alloc_req_o)
                   << std::dec << "/" << static_cast<int>(top->dbg_sb_alloc_ready_o) << "/"
@@ -472,6 +532,17 @@ int main(int argc, char **argv) {
                   << "/0x" << top->dbg_rob_head_pc_o
                   << std::dec
                   << " rob_cnt=" << static_cast<uint32_t>(top->dbg_rob_count_o)
+                  << " rob_ptr(h/t)=0x" << std::hex
+                  << static_cast<uint32_t>(top->dbg_rob_head_ptr_o)
+                  << "/0x" << static_cast<uint32_t>(top->dbg_rob_tail_ptr_o)
+                  << std::dec
+                  << " rob_q2(v/idx/fu/comp/st/pc)=" << std::dec
+                  << static_cast<int>(top->dbg_rob_q2_valid_o) << "/0x"
+                  << std::hex << static_cast<uint32_t>(top->dbg_rob_q2_idx_o)
+                  << "/0x" << static_cast<uint32_t>(top->dbg_rob_q2_fu_o)
+                  << std::dec << "/" << static_cast<int>(top->dbg_rob_q2_complete_o)
+                  << "/" << static_cast<int>(top->dbg_rob_q2_is_store_o)
+                  << "/0x" << std::hex << static_cast<uint32_t>(top->dbg_rob_q2_pc_o)
                   << " sb(cnt/h/t)=0x" << std::hex
                   << static_cast<uint32_t>(top->dbg_sb_count_o)
                   << "/0x" << static_cast<uint32_t>(top->dbg_sb_head_ptr_o)
@@ -486,6 +557,83 @@ int main(int argc, char **argv) {
                   << std::dec << "\n";
         std::cout.flags(f);
       }
+    }
+
+    if (args.progress_interval > 0 && cycles != 0 &&
+        (cycles % args.progress_interval == 0)) {
+      std::ios::fmtflags f(std::cout.flags());
+      std::cout << "[progress] cycle=" << cycles
+                << " commits=" << total_commits
+                << " no_commit=" << no_commit_cycles
+                << " last_pc=0x" << std::hex << last_commit_pc
+                << " last_inst=0x" << last_commit_inst
+                << " a0=0x" << rf[10]
+                << " rob_head(pc/comp/is_store/fu)=0x" << top->dbg_rob_head_pc_o
+                << "/" << std::dec
+                << static_cast<int>(top->dbg_rob_head_complete_o) << "/"
+                << static_cast<int>(top->dbg_rob_head_is_store_o) << "/0x"
+                << std::hex << static_cast<uint32_t>(top->dbg_rob_head_fu_o)
+                << " rob_cnt=" << std::dec
+                << static_cast<uint32_t>(top->dbg_rob_count_o)
+                << " rob_ptr(h/t)=0x" << std::hex
+                << static_cast<uint32_t>(top->dbg_rob_head_ptr_o)
+                << "/0x" << static_cast<uint32_t>(top->dbg_rob_tail_ptr_o)
+                << std::dec
+                << " rob_q2(v/idx/fu/comp/st/pc)=" << std::dec
+                << static_cast<int>(top->dbg_rob_q2_valid_o) << "/0x"
+                << std::hex << static_cast<uint32_t>(top->dbg_rob_q2_idx_o)
+                << "/0x" << static_cast<uint32_t>(top->dbg_rob_q2_fu_o)
+                << std::dec << "/" << static_cast<int>(top->dbg_rob_q2_complete_o)
+                << "/" << static_cast<int>(top->dbg_rob_q2_is_store_o)
+                << "/0x" << std::hex << static_cast<uint32_t>(top->dbg_rob_q2_pc_o)
+                << " sb(cnt/h/t)=0x" << std::hex
+                << static_cast<uint32_t>(top->dbg_sb_count_o)
+                << "/0x" << static_cast<uint32_t>(top->dbg_sb_head_ptr_o)
+                << "/0x" << static_cast<uint32_t>(top->dbg_sb_tail_ptr_o)
+                << " sb_head(v/c/a/d/addr)=" << std::dec
+                << static_cast<int>(top->dbg_sb_head_valid_o) << "/"
+                << static_cast<int>(top->dbg_sb_head_committed_o) << "/"
+                << static_cast<int>(top->dbg_sb_head_addr_valid_o) << "/"
+                << static_cast<int>(top->dbg_sb_head_data_valid_o) << "/0x"
+                << std::hex << top->dbg_sb_head_addr_o
+                << " sb_dcache(v/r/addr)= " << std::dec
+                << static_cast<int>(top->dbg_sb_dcache_req_valid_o) << "/"
+                << static_cast<int>(top->dbg_sb_dcache_req_ready_o) << "/0x"
+                << std::hex << top->dbg_sb_dcache_req_addr_o
+                << " lsu_issue(v/r)=" << std::dec
+                << static_cast<int>(top->dbg_lsu_issue_valid_o) << "/"
+                << static_cast<int>(top->dbg_lsu_req_ready_o)
+                << " lsu_issue_ready=" << static_cast<int>(top->dbg_lsu_issue_ready_o)
+                << " lsu_free=" << static_cast<uint32_t>(top->dbg_lsu_free_count_o)
+                << " lsu_rs(b/r)=0x" << std::hex
+                << static_cast<uint32_t>(top->dbg_lsu_rs_busy_o) << "/0x"
+                << static_cast<uint32_t>(top->dbg_lsu_rs_ready_o)
+                << " lsu_rs_head(v/idx/dst)=" << std::dec
+                << static_cast<int>(top->dbg_lsu_rs_head_valid_o) << "/0x"
+                << std::hex << static_cast<uint32_t>(top->dbg_lsu_rs_head_idx_o)
+                << "/0x" << static_cast<uint32_t>(top->dbg_lsu_rs_head_dst_o)
+                << " lsu_rs_head(rs1r/rs2r/has1/has2)=" << std::dec
+                << static_cast<int>(top->dbg_lsu_rs_head_r1_ready_o) << "/"
+                << static_cast<int>(top->dbg_lsu_rs_head_r2_ready_o) << "/"
+                << static_cast<int>(top->dbg_lsu_rs_head_has_rs1_o) << "/"
+                << static_cast<int>(top->dbg_lsu_rs_head_has_rs2_o)
+                << " lsu_rs_head(q1/q2/sb)=0x" << std::hex
+                << static_cast<uint32_t>(top->dbg_lsu_rs_head_q1_o) << "/0x"
+                << static_cast<uint32_t>(top->dbg_lsu_rs_head_q2_o) << "/0x"
+                << static_cast<uint32_t>(top->dbg_lsu_rs_head_sb_id_o)
+                << " lsu_rs_head(ld/st)=" << std::dec
+                << static_cast<int>(top->dbg_lsu_rs_head_is_load_o) << "/"
+                << static_cast<int>(top->dbg_lsu_rs_head_is_store_o)
+                << " lsu_ld(v/r/rsp)="
+                << static_cast<int>(top->dbg_lsu_ld_req_valid_o) << "/"
+                << static_cast<int>(top->dbg_lsu_ld_req_ready_o) << "/"
+                << static_cast<int>(top->dbg_lsu_ld_rsp_valid_o)
+                << " flush=" << static_cast<int>(top->backend_flush_o)
+                << " dc_miss(v/r)="
+                << static_cast<int>(top->dcache_miss_req_valid_o) << "/"
+                << static_cast<int>(top->dcache_miss_req_ready_i)
+                << std::dec << "\n";
+      std::cout.flags(f);
     }
 
     if (args.fe_trace && top->dbg_fe_valid_o && top->dbg_fe_ready_o) {
