@@ -40,6 +40,7 @@ module execute_csr #(
   logic [XLEN-1:0] csr_write_val;
   logic [XLEN-1:0] csr_src;
   logic csr_write_en;
+  logic csr_write_req;
   logic csr_addr_valid;
 
   // CSR read mux
@@ -60,41 +61,50 @@ module execute_csr #(
 
   // CSR source value
   always_comb begin
-    csr_src = rs1_data_i;
     unique case (uop_i.csr_op)
-      CSR_RWI, CSR_RSI, CSR_RCI: begin
-        csr_src = {{(XLEN-5){1'b0}}, uop_i.imm[4:0]};
-      end
+      CSR_RWI, CSR_RSI, CSR_RCI: csr_src = uop_i.imm;
       default: csr_src = rs1_data_i;
     endcase
   end
 
   // CSR write semantics
   always_comb begin
+    csr_write_req = 1'b0;
     csr_write_en  = 1'b0;
     csr_write_val = csr_read_val;
 
     unique case (uop_i.csr_op)
       CSR_RW, CSR_RWI: begin
-        csr_write_en  = 1'b1;
+        csr_write_req = 1'b1;
         csr_write_val = csr_src;
       end
       CSR_RS, CSR_RSI: begin
-        if (csr_src != '0) begin
-          csr_write_en = 1'b1;
-        end
+        csr_write_req = 1'b1;
         csr_write_val = csr_read_val | csr_src;
       end
       CSR_RC, CSR_RCI: begin
-        if (csr_src != '0) begin
-          csr_write_en = 1'b1;
-        end
+        csr_write_req = 1'b1;
         csr_write_val = csr_read_val & ~csr_src;
       end
       default: begin
-        csr_write_en  = 1'b0;
+        csr_write_req = 1'b0;
         csr_write_val = csr_read_val;
       end
+    endcase
+
+    // RISC-V rule: CSRRS/CSRRC only write when rs1 != x0,
+    // CSRRSI/CSRRCI only write when zimm != 0
+    unique case (uop_i.csr_op)
+      CSR_RS, CSR_RC: begin
+        csr_write_en = csr_write_req && (uop_i.rs1 != 0);
+      end
+      CSR_RSI, CSR_RCI: begin
+        csr_write_en = csr_write_req && (uop_i.imm[4:0] != 0);
+      end
+      CSR_RW, CSR_RWI: begin
+        csr_write_en = csr_write_req;
+      end
+      default: csr_write_en = 1'b0;
     endcase
 
     csr_write_en = csr_write_en && csr_addr_valid;
