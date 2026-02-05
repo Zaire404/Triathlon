@@ -1,15 +1,20 @@
-#include "Vtb_triathlon.h"
-#include "verilated.h"
-#include "verilated_vcd_c.h"
+#include <fmt/format.h>
 
 #include <array>
 #include <cstdint>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+#include "Vtb_triathlon.h"
+#include "logger/logger.h"
+#include "logger/snapshot.h"
+#include "verilated.h"
+#include "verilated_vcd_c.h"
 
 namespace {
 
@@ -30,7 +35,7 @@ struct SimArgs {
   uint64_t progress_interval = 0;
 };
 
-static bool parse_u64(const std::string &s, uint64_t &out) {
+static bool parse_u64(const std::string& s, uint64_t& out) {
   try {
     size_t idx = 0;
     out = std::stoull(s, &idx, 0);
@@ -40,7 +45,7 @@ static bool parse_u64(const std::string &s, uint64_t &out) {
   }
 }
 
-static SimArgs parse_args(int argc, char **argv) {
+static SimArgs parse_args(int argc, char** argv) {
   SimArgs args;
   for (int i = 1; i < argc; i++) {
     std::string arg = argv[i];
@@ -137,9 +142,7 @@ static SimArgs parse_args(int argc, char **argv) {
 struct UnifiedMem {
   std::unordered_map<uint32_t, uint32_t> words;
 
-  void write_word(uint32_t addr, uint32_t data) {
-    words[addr & ~0x3u] = data;
-  }
+  void write_word(uint32_t addr, uint32_t data) { words[addr & ~0x3u] = data; }
 
   uint32_t read_word(uint32_t addr) const {
     auto it = words.find(addr & ~0x3u);
@@ -147,19 +150,19 @@ struct UnifiedMem {
     return it->second;
   }
 
-  void fill_line(uint32_t line_addr, std::array<uint32_t, 8> &line) const {
+  void fill_line(uint32_t line_addr, std::array<uint32_t, 8>& line) const {
     for (int i = 0; i < 8; i++) {
       line[i] = read_word(line_addr + 4u * static_cast<uint32_t>(i));
     }
   }
 
-  void write_line(uint32_t line_addr, const std::array<uint32_t, 8> &line) {
+  void write_line(uint32_t line_addr, const std::array<uint32_t, 8>& line) {
     for (int i = 0; i < 8; i++) {
       write_word(line_addr + 4u * static_cast<uint32_t>(i), line[i]);
     }
   }
 
-  bool load_binary(const std::string &path, uint32_t base) {
+  bool load_binary(const std::string& path, uint32_t base) {
     std::ifstream ifs(path, std::ios::binary);
     if (!ifs) {
       std::cerr << "Failed to open IMG: " << path << "\n";
@@ -187,7 +190,7 @@ struct ICacheModel {
   uint32_t miss_way = 0;
   bool refill_pulse = false;
   std::array<uint32_t, 8> line_words{};
-  UnifiedMem *mem = nullptr;
+  UnifiedMem* mem = nullptr;
 
   void reset() {
     pending = false;
@@ -197,7 +200,7 @@ struct ICacheModel {
     refill_pulse = false;
   }
 
-  void drive(Vtb_triathlon *top) {
+  void drive(Vtb_triathlon* top) {
     top->icache_miss_req_ready_i = 1;
     if (refill_pulse) {
       top->icache_refill_valid_i = 1;
@@ -212,7 +215,7 @@ struct ICacheModel {
     }
   }
 
-  void observe(Vtb_triathlon *top) {
+  void observe(Vtb_triathlon* top) {
     if (!top->rst_ni) {
       reset();
       return;
@@ -248,7 +251,7 @@ struct DCacheModel {
   uint32_t miss_way = 0;
   bool refill_pulse = false;
   std::array<uint32_t, 8> line_words{};
-  UnifiedMem *mem = nullptr;
+  UnifiedMem* mem = nullptr;
 
   void reset() {
     pending = false;
@@ -258,7 +261,7 @@ struct DCacheModel {
     refill_pulse = false;
   }
 
-  void drive(Vtb_triathlon *top) {
+  void drive(Vtb_triathlon* top) {
     top->dcache_miss_req_ready_i = 1;
     top->dcache_wb_req_ready_i = 1;
     if (refill_pulse) {
@@ -274,7 +277,7 @@ struct DCacheModel {
     }
   }
 
-  void observe(Vtb_triathlon *top) {
+  void observe(Vtb_triathlon* top) {
     if (!top->rst_ni) {
       reset();
       return;
@@ -319,19 +322,19 @@ struct MemSystem {
     dcache.reset();
   }
 
-  void drive(Vtb_triathlon *top) {
+  void drive(Vtb_triathlon* top) {
     icache.drive(top);
     dcache.drive(top);
   }
 
-  void observe(Vtb_triathlon *top) {
+  void observe(Vtb_triathlon* top) {
     icache.observe(top);
     dcache.observe(top);
   }
 };
 
-static void tick(Vtb_triathlon *top, MemSystem &mem, VerilatedVcdC *tfp,
-                 vluint64_t &sim_time) {
+static void tick(Vtb_triathlon* top, MemSystem& mem, VerilatedVcdC* tfp,
+                 vluint64_t& sim_time) {
   mem.drive(top);
   top->clk_i = 0;
   top->eval();
@@ -342,8 +345,8 @@ static void tick(Vtb_triathlon *top, MemSystem &mem, VerilatedVcdC *tfp,
   mem.observe(top);
 }
 
-static void reset(Vtb_triathlon *top, MemSystem &mem, VerilatedVcdC *tfp,
-                  vluint64_t &sim_time) {
+static void reset(Vtb_triathlon* top, MemSystem& mem, VerilatedVcdC* tfp,
+                  vluint64_t& sim_time) {
   top->rst_ni = 0;
   mem.reset();
   for (int i = 0; i < 5; i++) tick(top, mem, tfp, sim_time);
@@ -353,7 +356,7 @@ static void reset(Vtb_triathlon *top, MemSystem &mem, VerilatedVcdC *tfp,
 
 }  // namespace
 
-int main(int argc, char **argv) {
+int main(int argc, char** argv) {
   Verilated::commandArgs(argc, argv);
   SimArgs args = parse_args(argc, argv);
 
@@ -365,13 +368,22 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  LogConfig log_config{};
+  log_config.commit_trace = args.commit_trace;
+  log_config.fe_trace = args.fe_trace;
+  log_config.bru_trace = args.bru_trace;
+  log_config.stall_trace = args.stall_trace;
+  log_config.stall_threshold = args.stall_threshold;
+  log_config.progress_interval = args.progress_interval;
+  Logger::init(log_config);
+
   MemSystem mem;
   if (!mem.mem.load_binary(args.img_path, kPmemBase)) return 1;
   mem.icache.mem = &mem.mem;
   mem.dcache.mem = &mem.mem;
 
-  auto *top = new Vtb_triathlon;
-  VerilatedVcdC *tfp = nullptr;
+  auto* top = new Vtb_triathlon;
+  VerilatedVcdC* tfp = nullptr;
   vluint64_t sim_time = 0;
 
   if (args.trace) {
@@ -400,23 +412,10 @@ int main(int argc, char **argv) {
       }
     }
 
-    if ((args.commit_trace || args.bru_trace) && top->backend_flush_o) {
-      std::ios::fmtflags f(std::cout.flags());
-      std::cout << "[flush ] cycle=" << cycles
-                << " redirect_pc=0x" << std::hex << top->backend_redirect_pc_o
-                << std::dec << "\n";
-      if (top->dbg_bru_mispred_o) {
-        std::cout << "[bru   ] cycle=" << cycles
-                  << " valid=" << static_cast<int>(top->dbg_bru_valid_o)
-                  << " pc=0x" << std::hex << top->dbg_bru_pc_o
-                  << " imm=0x" << static_cast<uint32_t>(top->dbg_bru_imm_o)
-                  << " op=" << std::dec << static_cast<int>(top->dbg_bru_op_o)
-                  << " is_jump=" << static_cast<int>(top->dbg_bru_is_jump_o)
-                  << " is_branch=" << static_cast<int>(top->dbg_bru_is_branch_o)
-                  << std::dec << "\n";
-      }
-      std::cout.flags(f);
-    }
+    bool need_flush_bru_log = top->backend_flush_o || top->dbg_bru_mispred_o;
+    bool need_periodic_log = Logger::needs_periodic_snapshot();
+    bool need_fe_mismatch_log =
+        Logger::config().fe_trace && top->dbg_fe_valid_o && top->dbg_fe_ready_o;
 
     bool any_commit = false;
     for (int i = 0; i < 4; i++) {
@@ -436,35 +435,30 @@ int main(int argc, char **argv) {
       uint32_t inst = mem.mem.read_word(pc);
       last_commit_pc = pc;
       last_commit_inst = inst;
-      if (args.commit_trace) {
-        std::ios::fmtflags f(std::cout.flags());
-        std::cout << "[commit] cycle=" << cycles
-                  << " slot=" << i
-                  << " pc=0x" << std::hex << pc
-                  << " inst=0x" << inst
-                  << " we=" << std::dec << we
-                  << " rd=x" << rd
-                  << " data=0x" << std::hex << data
-                  << " a0=0x" << rf[10]
-                  << std::dec << "\n";
-        std::cout.flags(f);
-      }
+      Logger::log_commit(cycles, i, pc, inst, we, rd, data, rf[10]);
       if (inst == kEbreakInsn) {
         uint32_t code = rf[10];
         if (code == 0) {
-          std::cout << "HIT GOOD TRAP\n";
-          double ipc = cycles ? static_cast<double>(total_commits) / static_cast<double>(cycles) : 0.0;
-          double cpi = total_commits ? static_cast<double>(cycles) / static_cast<double>(total_commits) : 0.0;
-          std::cout << "IPC=" << ipc << " CPI=" << cpi
-                    << " cycles=" << cycles
-                    << " commits=" << total_commits << "\n";
+          Logger::log_info("HIT GOOD TRAP");
+          Snapshot snap =
+              collect_snapshot(top, cycles, total_commits, no_commit_cycles,
+                               last_commit_pc, last_commit_inst, rf[10]);
+          double ipc = cycles ? static_cast<double>(total_commits) /
+                                    static_cast<double>(cycles)
+                              : 0.0;
+          double cpi = total_commits ? static_cast<double>(cycles) /
+                                           static_cast<double>(total_commits)
+                                     : 0.0;
+          Logger::log_perf(snap, ipc, cpi);
           if (tfp) tfp->close();
           delete top;
+          Logger::shutdown();
           return 0;
         }
-        std::cout << "HIT BAD TRAP (code=" << code << ")\n";
+        Logger::log_warn(fmt::format("HIT BAD TRAP (code={})", code));
         if (tfp) tfp->close();
         delete top;
+        Logger::shutdown();
         return 1;
       }
     }
@@ -473,204 +467,34 @@ int main(int argc, char **argv) {
       no_commit_cycles = 0;
     } else {
       no_commit_cycles++;
-      if (args.stall_trace && args.stall_threshold > 0 &&
-          (no_commit_cycles == args.stall_threshold ||
-           (no_commit_cycles > args.stall_threshold &&
-            no_commit_cycles % args.stall_threshold == 0))) {
-        std::ios::fmtflags f(std::cout.flags());
-        std::cout << "[stall ] cycle=" << cycles
-                  << " no_commit=" << no_commit_cycles
-                  << " fe(v/r/pc)=" << static_cast<int>(top->dbg_fe_valid_o) << "/"
-                  << static_cast<int>(top->dbg_fe_ready_o) << "/0x" << std::hex
-                  << top->dbg_fe_pc_o
-                  << " dec(v/r)=" << std::dec << static_cast<int>(top->dbg_dec_valid_o) << "/"
-                  << static_cast<int>(top->dbg_dec_ready_o)
-                  << " rob_ready=" << static_cast<int>(top->dbg_rob_ready_o)
-                  << " lsu_ld(v/r/addr)=" << static_cast<int>(top->dbg_lsu_ld_req_valid_o) << "/"
-                  << static_cast<int>(top->dbg_lsu_ld_req_ready_o) << "/0x" << std::hex
-                  << top->dbg_lsu_ld_req_addr_o
-                  << " lsu_rsp(v/r)=" << std::dec << static_cast<int>(top->dbg_lsu_ld_rsp_valid_o)
-                  << "/" << static_cast<int>(top->dbg_lsu_ld_rsp_ready_o)
-                  << " lsu_rs(b/r)=0x" << std::hex
-                  << static_cast<uint32_t>(top->dbg_lsu_rs_busy_o) << "/0x"
-                  << static_cast<uint32_t>(top->dbg_lsu_rs_ready_o)
-                  << " lsu_rs_head(v/idx/dst)=" << std::dec
-                  << static_cast<int>(top->dbg_lsu_rs_head_valid_o) << "/0x"
-                  << std::hex << static_cast<uint32_t>(top->dbg_lsu_rs_head_idx_o)
-                  << "/0x" << static_cast<uint32_t>(top->dbg_lsu_rs_head_dst_o)
-                  << " lsu_rs_head(rs1r/rs2r/has1/has2)=" << std::dec
-                  << static_cast<int>(top->dbg_lsu_rs_head_r1_ready_o) << "/"
-                  << static_cast<int>(top->dbg_lsu_rs_head_r2_ready_o) << "/"
-                  << static_cast<int>(top->dbg_lsu_rs_head_has_rs1_o) << "/"
-                  << static_cast<int>(top->dbg_lsu_rs_head_has_rs2_o)
-                  << " lsu_rs_head(q1/q2/sb)=0x" << std::hex
-                  << static_cast<uint32_t>(top->dbg_lsu_rs_head_q1_o) << "/0x"
-                  << static_cast<uint32_t>(top->dbg_lsu_rs_head_q2_o) << "/0x"
-                  << static_cast<uint32_t>(top->dbg_lsu_rs_head_sb_id_o)
-                  << " lsu_rs_head(ld/st)=" << std::dec
-                  << static_cast<int>(top->dbg_lsu_rs_head_is_load_o) << "/"
-                  << static_cast<int>(top->dbg_lsu_rs_head_is_store_o)
-                  << " sb_alloc(req/ready/fire)=0x" << std::hex
-                  << static_cast<uint32_t>(top->dbg_sb_alloc_req_o)
-                  << std::dec << "/" << static_cast<int>(top->dbg_sb_alloc_ready_o) << "/"
-                  << static_cast<int>(top->dbg_sb_alloc_fire_o)
-                  << " sb_dcache(v/r/addr)=" << static_cast<int>(top->dbg_sb_dcache_req_valid_o)
-                  << "/" << static_cast<int>(top->dbg_sb_dcache_req_ready_o) << "/0x"
-                  << std::hex << top->dbg_sb_dcache_req_addr_o
-                  << " ic_miss(v/r)=" << std::dec
-                  << static_cast<int>(top->icache_miss_req_valid_o) << "/"
-                  << static_cast<int>(top->icache_miss_req_ready_i)
-                  << " dc_miss(v/r)=" << static_cast<int>(top->dcache_miss_req_valid_o) << "/"
-                  << static_cast<int>(top->dcache_miss_req_ready_i)
-                  << " flush=" << static_cast<int>(top->backend_flush_o)
-                  << " rdir=0x" << std::hex << top->backend_redirect_pc_o
-                  << std::dec
-                  << " rob_head(fu/comp/is_store/pc)=0x" << std::hex
-                  << static_cast<uint32_t>(top->dbg_rob_head_fu_o)
-                  << "/" << static_cast<int>(top->dbg_rob_head_complete_o)
-                  << "/" << static_cast<int>(top->dbg_rob_head_is_store_o)
-                  << "/0x" << top->dbg_rob_head_pc_o
-                  << std::dec
-                  << " rob_cnt=" << static_cast<uint32_t>(top->dbg_rob_count_o)
-                  << " rob_ptr(h/t)=0x" << std::hex
-                  << static_cast<uint32_t>(top->dbg_rob_head_ptr_o)
-                  << "/0x" << static_cast<uint32_t>(top->dbg_rob_tail_ptr_o)
-                  << std::dec
-                  << " rob_q2(v/idx/fu/comp/st/pc)=" << std::dec
-                  << static_cast<int>(top->dbg_rob_q2_valid_o) << "/0x"
-                  << std::hex << static_cast<uint32_t>(top->dbg_rob_q2_idx_o)
-                  << "/0x" << static_cast<uint32_t>(top->dbg_rob_q2_fu_o)
-                  << std::dec << "/" << static_cast<int>(top->dbg_rob_q2_complete_o)
-                  << "/" << static_cast<int>(top->dbg_rob_q2_is_store_o)
-                  << "/0x" << std::hex << static_cast<uint32_t>(top->dbg_rob_q2_pc_o)
-                  << " sb(cnt/h/t)=0x" << std::hex
-                  << static_cast<uint32_t>(top->dbg_sb_count_o)
-                  << "/0x" << static_cast<uint32_t>(top->dbg_sb_head_ptr_o)
-                  << "/0x" << static_cast<uint32_t>(top->dbg_sb_tail_ptr_o)
-                  << std::dec
-                  << " sb_head(v/c/a/d/addr)="
-                  << static_cast<int>(top->dbg_sb_head_valid_o) << "/"
-                  << static_cast<int>(top->dbg_sb_head_committed_o) << "/"
-                  << static_cast<int>(top->dbg_sb_head_addr_valid_o) << "/"
-                  << static_cast<int>(top->dbg_sb_head_data_valid_o) << "/0x"
-                  << std::hex << top->dbg_sb_head_addr_o
-                  << std::dec << "\n";
-        std::cout.flags(f);
-      }
     }
 
-    if (args.progress_interval > 0 && cycles != 0 &&
-        (cycles % args.progress_interval == 0)) {
-      std::ios::fmtflags f(std::cout.flags());
-      std::cout << "[progress] cycle=" << cycles
-                << " commits=" << total_commits
-                << " no_commit=" << no_commit_cycles
-                << " last_pc=0x" << std::hex << last_commit_pc
-                << " last_inst=0x" << last_commit_inst
-                << " a0=0x" << rf[10]
-                << " rob_head(pc/comp/is_store/fu)=0x" << top->dbg_rob_head_pc_o
-                << "/" << std::dec
-                << static_cast<int>(top->dbg_rob_head_complete_o) << "/"
-                << static_cast<int>(top->dbg_rob_head_is_store_o) << "/0x"
-                << std::hex << static_cast<uint32_t>(top->dbg_rob_head_fu_o)
-                << " rob_cnt=" << std::dec
-                << static_cast<uint32_t>(top->dbg_rob_count_o)
-                << " rob_ptr(h/t)=0x" << std::hex
-                << static_cast<uint32_t>(top->dbg_rob_head_ptr_o)
-                << "/0x" << static_cast<uint32_t>(top->dbg_rob_tail_ptr_o)
-                << std::dec
-                << " rob_q2(v/idx/fu/comp/st/pc)=" << std::dec
-                << static_cast<int>(top->dbg_rob_q2_valid_o) << "/0x"
-                << std::hex << static_cast<uint32_t>(top->dbg_rob_q2_idx_o)
-                << "/0x" << static_cast<uint32_t>(top->dbg_rob_q2_fu_o)
-                << std::dec << "/" << static_cast<int>(top->dbg_rob_q2_complete_o)
-                << "/" << static_cast<int>(top->dbg_rob_q2_is_store_o)
-                << "/0x" << std::hex << static_cast<uint32_t>(top->dbg_rob_q2_pc_o)
-                << " sb(cnt/h/t)=0x" << std::hex
-                << static_cast<uint32_t>(top->dbg_sb_count_o)
-                << "/0x" << static_cast<uint32_t>(top->dbg_sb_head_ptr_o)
-                << "/0x" << static_cast<uint32_t>(top->dbg_sb_tail_ptr_o)
-                << " sb_head(v/c/a/d/addr)=" << std::dec
-                << static_cast<int>(top->dbg_sb_head_valid_o) << "/"
-                << static_cast<int>(top->dbg_sb_head_committed_o) << "/"
-                << static_cast<int>(top->dbg_sb_head_addr_valid_o) << "/"
-                << static_cast<int>(top->dbg_sb_head_data_valid_o) << "/0x"
-                << std::hex << top->dbg_sb_head_addr_o
-                << " sb_dcache(v/r/addr)= " << std::dec
-                << static_cast<int>(top->dbg_sb_dcache_req_valid_o) << "/"
-                << static_cast<int>(top->dbg_sb_dcache_req_ready_o) << "/0x"
-                << std::hex << top->dbg_sb_dcache_req_addr_o
-                << " lsu_issue(v/r)=" << std::dec
-                << static_cast<int>(top->dbg_lsu_issue_valid_o) << "/"
-                << static_cast<int>(top->dbg_lsu_req_ready_o)
-                << " lsu_issue_ready=" << static_cast<int>(top->dbg_lsu_issue_ready_o)
-                << " lsu_free=" << static_cast<uint32_t>(top->dbg_lsu_free_count_o)
-                << " lsu_rs(b/r)=0x" << std::hex
-                << static_cast<uint32_t>(top->dbg_lsu_rs_busy_o) << "/0x"
-                << static_cast<uint32_t>(top->dbg_lsu_rs_ready_o)
-                << " lsu_rs_head(v/idx/dst)=" << std::dec
-                << static_cast<int>(top->dbg_lsu_rs_head_valid_o) << "/0x"
-                << std::hex << static_cast<uint32_t>(top->dbg_lsu_rs_head_idx_o)
-                << "/0x" << static_cast<uint32_t>(top->dbg_lsu_rs_head_dst_o)
-                << " lsu_rs_head(rs1r/rs2r/has1/has2)=" << std::dec
-                << static_cast<int>(top->dbg_lsu_rs_head_r1_ready_o) << "/"
-                << static_cast<int>(top->dbg_lsu_rs_head_r2_ready_o) << "/"
-                << static_cast<int>(top->dbg_lsu_rs_head_has_rs1_o) << "/"
-                << static_cast<int>(top->dbg_lsu_rs_head_has_rs2_o)
-                << " lsu_rs_head(q1/q2/sb)=0x" << std::hex
-                << static_cast<uint32_t>(top->dbg_lsu_rs_head_q1_o) << "/0x"
-                << static_cast<uint32_t>(top->dbg_lsu_rs_head_q2_o) << "/0x"
-                << static_cast<uint32_t>(top->dbg_lsu_rs_head_sb_id_o)
-                << " lsu_rs_head(ld/st)=" << std::dec
-                << static_cast<int>(top->dbg_lsu_rs_head_is_load_o) << "/"
-                << static_cast<int>(top->dbg_lsu_rs_head_is_store_o)
-                << " lsu_ld(v/r/rsp)="
-                << static_cast<int>(top->dbg_lsu_ld_req_valid_o) << "/"
-                << static_cast<int>(top->dbg_lsu_ld_req_ready_o) << "/"
-                << static_cast<int>(top->dbg_lsu_ld_rsp_valid_o)
-                << " flush=" << static_cast<int>(top->backend_flush_o)
-                << " dc_miss(v/r)="
-                << static_cast<int>(top->dcache_miss_req_valid_o) << "/"
-                << static_cast<int>(top->dcache_miss_req_ready_i)
-                << std::dec << "\n";
-      std::cout.flags(f);
-    }
+    if (need_flush_bru_log || need_periodic_log || need_fe_mismatch_log) {
+      Snapshot snap =
+          collect_snapshot(top, cycles, total_commits, no_commit_cycles,
+                           last_commit_pc, last_commit_inst, rf[10]);
 
-    if (args.fe_trace && top->dbg_fe_valid_o && top->dbg_fe_ready_o) {
-      uint32_t base_pc = top->dbg_fe_pc_o;
-      uint32_t mismatch_mask = 0;
-      std::array<uint32_t, 4> fe_instrs{};
-      std::array<uint32_t, 4> mem_instrs{};
-      for (int i = 0; i < 4; i++) {
-        fe_instrs[i] = top->dbg_fe_instrs_o[i];
-        mem_instrs[i] = mem.mem.read_word(base_pc + static_cast<uint32_t>(i * 4));
-        if (fe_instrs[i] != mem_instrs[i]) {
-          mismatch_mask |= (1u << i);
-        }
+      if (need_flush_bru_log) {
+        Logger::maybe_log_flush(snap);
+        Logger::maybe_log_bru(snap);
       }
-      if (mismatch_mask != 0) {
-        std::ios::fmtflags f(std::cout.flags());
-        std::cout << "[fe   ] cycle=" << cycles
-                  << " pc=0x" << std::hex << base_pc
-                  << " mismatch=0x" << mismatch_mask
-                  << " fe={";
-        for (int i = 0; i < 4; i++) {
-          if (i) std::cout << ",";
-          std::cout << "0x" << fe_instrs[i];
-        }
-        std::cout << "} mem={";
-        for (int i = 0; i < 4; i++) {
-          if (i) std::cout << ",";
-          std::cout << "0x" << mem_instrs[i];
-        }
-        std::cout << "}" << std::dec << "\n";
-        std::cout.flags(f);
+
+      if (need_periodic_log) {
+        Logger::maybe_log_stall(snap);
+        Logger::maybe_log_progress(snap);
+      }
+
+      if (need_fe_mismatch_log) {
+        Logger::maybe_log_fe_mismatch(
+            snap, [&](uint32_t addr) { return mem.mem.read_word(addr); });
       }
     }
   }
 
-  std::cerr << "TIMEOUT after " << args.max_cycles << " cycles\n";
+  Logger::log_warn(fmt::format("TIMEOUT after {} cycles", args.max_cycles));
+
   if (tfp) tfp->close();
   delete top;
+  Logger::shutdown();
   return 1;
 }

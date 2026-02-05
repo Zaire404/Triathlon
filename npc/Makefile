@@ -56,6 +56,8 @@ SIM_MAIN ?= $(firstword $(wildcard \
 	$(abspath ./csrc/main.cc) \
 	$(abspath ./csrc/main.c)))
 SIM_SRCS ?=
+SIM_SRCS += $(abspath ./csrc/logger/logger.cpp) \
+	$(abspath ./csrc/logger/snapshot.cpp)
 
 VSRCS = $(PKG_VSRCS) $(DESIGN_VSRCS) $(TOP_SV)
 CSRCS = $(SIM_MAIN) $(SIM_SRCS) $(SRC_AUTO_BIND)
@@ -70,8 +72,8 @@ IMG ?=
 ARGS ?=
 NPC_EXE := $(strip $(ARGS) $(DIFFTEST) $(IMG))
 INCFLAGS = $(addprefix -I, $(INC_PATH))
-CXXFLAGS += $(INCFLAGS) -I$(abspath ./include) -DTOP_NAME="\"V$(TOPNAME)\"" -g -std=c++17
-LDFLAGS += -lreadline -ldl -pie $(LLVM_LIBS)
+CXXFLAGS += $(INCFLAGS) -I$(abspath ./include) -I$(abspath ./csrc) -DTOP_NAME="\"V$(TOPNAME)\"" -g -std=c++17
+LDFLAGS += -lreadline -ldl -pie $(LLVM_LIBS) -lfmt
 
 NEED_CHECKS := $(filter-out clean clean-all help,$(MAKECMDGOALS))
 ifneq ($(NEED_CHECKS),)
