@@ -17,8 +17,12 @@ module execute_csr #(
 
     output logic            csr_valid_o,
     output logic [TAG_W-1:0] csr_rob_tag_o,
-    output logic [XLEN-1:0] csr_result_o
+    output logic [XLEN-1:0] csr_result_o,
+    output logic            csr_exception_o,
+    output logic [4:0]       csr_ecause_o
 );
+
+  localparam logic [4:0] EXC_ILLEGAL_INSTR = 5'd2;
 
   localparam logic [11:0] CSR_MSTATUS = 12'h300;
   localparam logic [11:0] CSR_MTVEC   = 12'h305;
@@ -115,8 +119,10 @@ module execute_csr #(
     end
   end
 
-  assign csr_valid_o   = csr_valid_i && uop_i.is_csr;
-  assign csr_rob_tag_o = rob_tag_i;
-  assign csr_result_o  = csr_read_val;
+  assign csr_valid_o     = csr_valid_i && uop_i.is_csr;
+  assign csr_rob_tag_o   = rob_tag_i;
+  assign csr_result_o    = csr_read_val;
+  assign csr_exception_o = csr_valid_i && uop_i.is_csr && !csr_addr_valid;
+  assign csr_ecause_o    = csr_exception_o ? EXC_ILLEGAL_INSTR : '0;
 
 endmodule

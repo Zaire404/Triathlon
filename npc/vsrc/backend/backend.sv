@@ -1063,6 +1063,8 @@ module backend #(
   logic csr_wb_valid;
   logic [ROB_IDX_WIDTH-1:0] csr_wb_tag;
   logic [Cfg.XLEN-1:0] csr_wb_data;
+  logic csr_wb_exception;
+  logic [4:0] csr_wb_ecause;
 
   execute_csr #(
       .Cfg  (Cfg),
@@ -1078,7 +1080,9 @@ module backend #(
 
       .csr_valid_o  (csr_wb_valid),
       .csr_rob_tag_o(csr_wb_tag),
-      .csr_result_o (csr_wb_data)
+      .csr_result_o (csr_wb_data),
+      .csr_exception_o(csr_wb_exception),
+      .csr_ecause_o   (csr_wb_ecause)
   );
 
   // =========================================================
@@ -1143,6 +1147,8 @@ module backend #(
     fu_valid[6]       = csr_wb_valid;
     fu_data[6]        = csr_wb_data;
     fu_rob_idx[6]     = csr_wb_tag;
+    fu_exception[6]   = csr_wb_exception;
+    fu_ecause[6]      = csr_wb_ecause;
   end
 
   logic [WB_WIDTH-1:0]                    wb_valid;
