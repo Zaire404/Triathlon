@@ -4,7 +4,8 @@ module issue #(
     parameter config_pkg::cfg_t Cfg = config_pkg::EmptyCfg,
     parameter RS_DEPTH = Cfg.RS_DEPTH,
     parameter DATA_W   = Cfg.XLEN,
-    parameter TAG_W    = 6
+    parameter TAG_W    = 6,
+    parameter CDB_W    = 4
 ) (
     input wire clk,
     input wire rst_n,
@@ -26,9 +27,9 @@ module issue #(
     output logic [$clog2(RS_DEPTH+1)-1:0] free_count_o,
 
     // 来自 CDB 的广播 (给 RS 监听用)
-    input wire [       3:0] cdb_valid,
-    input wire [ TAG_W-1:0] cdb_tag  [0:3],
-    input wire [DATA_W-1:0] cdb_val  [0:3],
+    input wire [ CDB_W-1:0] cdb_valid,
+    input wire [ TAG_W-1:0] cdb_tag  [0:CDB_W-1],
+    input wire [DATA_W-1:0] cdb_val  [0:CDB_W-1],
 
     // ALU 0 接口
     output wire                           alu0_en,
@@ -42,7 +43,21 @@ module issue #(
     output decode_pkg::uop_t              alu1_uop,
     output wire              [DATA_W-1:0] alu1_v1,
     output wire              [DATA_W-1:0] alu1_v2,
-    output wire              [ TAG_W-1:0] alu1_dst
+    output wire              [ TAG_W-1:0] alu1_dst,
+
+    // ALU 2 接口
+    output wire                           alu2_en,
+    output decode_pkg::uop_t              alu2_uop,
+    output wire              [DATA_W-1:0] alu2_v1,
+    output wire              [DATA_W-1:0] alu2_v2,
+    output wire              [ TAG_W-1:0] alu2_dst,
+
+    // ALU 3 接口
+    output wire                           alu3_en,
+    output decode_pkg::uop_t              alu3_uop,
+    output wire              [DATA_W-1:0] alu3_v1,
+    output wire              [DATA_W-1:0] alu3_v2,
+    output wire              [ TAG_W-1:0] alu3_dst
 );
   wire full_stall;
   assign issue_ready = ~full_stall;
@@ -58,14 +73,20 @@ module issue #(
   // C. Select Logic -> ALU Mux 的选择信号
   wire [$clog2(RS_DEPTH)-1:0] alu0_sel;
   wire [$clog2(RS_DEPTH)-1:0] alu1_sel;
-  localparam int ISSUE_WIDTH = 2;
+  wire [$clog2(RS_DEPTH)-1:0] alu2_sel;
+  wire [$clog2(RS_DEPTH)-1:0] alu3_sel;
+  localparam int ISSUE_WIDTH = 4;
   wire [ISSUE_WIDTH-1:0] issue_valid;
   wire [$clog2(RS_DEPTH)-1:0] issue_rs_idx[0:ISSUE_WIDTH-1];
 
   assign alu0_en  = issue_valid[0];
   assign alu1_en  = issue_valid[1];
+  assign alu2_en  = issue_valid[2];
+  assign alu3_en  = issue_valid[3];
   assign alu0_sel = issue_rs_idx[0];
   assign alu1_sel = issue_rs_idx[1];
+  assign alu2_sel = issue_rs_idx[2];
+  assign alu3_sel = issue_rs_idx[3];
 
   // D. Crossbar <-> RS 输入数据线 (16组宽总线)
   // 这些是在 always_comb 里被驱动的
@@ -150,7 +171,8 @@ module issue #(
   end
 
   reservation_station #(
-      .Cfg(Cfg)
+      .Cfg(Cfg),
+      .CDB_W(CDB_W)
   ) u_rs (
       .clk(clk),
       .rst_n(rst_n),
@@ -188,7 +210,19 @@ module issue #(
       .out_op_1     (alu1_uop),  // <--- 修改这里
       .out_v1_1     (alu1_v1),
       .out_v2_1     (alu1_v2),
-      .out_dst_tag_1(alu1_dst)
+      .out_dst_tag_1(alu1_dst),
+
+      .sel_idx_2    (alu2_sel),
+      .out_op_2     (alu2_uop),
+      .out_v1_2     (alu2_v1),
+      .out_v2_2     (alu2_v2),
+      .out_dst_tag_2(alu2_dst),
+
+      .sel_idx_3    (alu3_sel),
+      .out_op_3     (alu3_uop),
+      .out_v1_3     (alu3_v1),
+      .out_v2_3     (alu3_v2),
+      .out_dst_tag_3(alu3_dst)
   );
 
   // ==========================================

@@ -41,8 +41,8 @@ module backend #(
   localparam int unsigned SB_DEPTH       = 16;
   localparam int unsigned SB_IDX_WIDTH   = $clog2(SB_DEPTH);
   localparam int unsigned RS_DEPTH       = Cfg.RS_DEPTH;
-  localparam int unsigned WB_WIDTH       = 4;
-  localparam int unsigned NUM_FUS        = 4;  // ALU0, ALU1, BRU, LSU
+  localparam int unsigned WB_WIDTH       = 6;
+  localparam int unsigned NUM_FUS        = 6;  // ALU0, ALU1, BRU, LSU, ALU2, ALU3
 
   // =========================================================
   // IBuffer
@@ -620,15 +620,16 @@ module backend #(
   logic lsu_issue_ready;
 
   // CDB broadcast
-  logic [3:0] cdb_valid;
-  logic [ROB_IDX_WIDTH-1:0] cdb_tag [0:3];
-  logic [Cfg.XLEN-1:0] cdb_val [0:3];
+  logic [WB_WIDTH-1:0] cdb_valid;
+  logic [ROB_IDX_WIDTH-1:0] cdb_tag [0:WB_WIDTH-1];
+  logic [Cfg.XLEN-1:0] cdb_val [0:WB_WIDTH-1];
 
   issue #(
       .Cfg   (Cfg),
       .RS_DEPTH(RS_DEPTH),
       .DATA_W(Cfg.XLEN),
-      .TAG_W (ROB_IDX_WIDTH)
+      .TAG_W (ROB_IDX_WIDTH),
+      .CDB_W (WB_WIDTH)
   ) u_issue_alu (
       .clk  (clk_i),
       .rst_n(rst_ni),
@@ -661,14 +662,27 @@ module backend #(
       .alu1_uop(alu1_uop),
       .alu1_v1 (alu1_v1),
       .alu1_v2 (alu1_v2),
-      .alu1_dst(alu1_dst)
+      .alu1_dst(alu1_dst),
+
+      .alu2_en (alu2_en),
+      .alu2_uop(alu2_uop),
+      .alu2_v1 (alu2_v1),
+      .alu2_v2 (alu2_v2),
+      .alu2_dst(alu2_dst),
+
+      .alu3_en (alu3_en),
+      .alu3_uop(alu3_uop),
+      .alu3_v1 (alu3_v1),
+      .alu3_v2 (alu3_v2),
+      .alu3_dst(alu3_dst)
   );
 
   issue_single #(
       .Cfg   (Cfg),
       .RS_DEPTH(RS_DEPTH),
       .DATA_W(Cfg.XLEN),
-      .TAG_W (ROB_IDX_WIDTH)
+      .TAG_W (ROB_IDX_WIDTH),
+      .CDB_W (WB_WIDTH)
   ) u_issue_bru (
       .clk  (clk_i),
       .rst_n(rst_ni),
@@ -703,6 +717,7 @@ module backend #(
       .RS_DEPTH(RS_DEPTH),
       .DATA_W(Cfg.XLEN),
       .TAG_W (ROB_IDX_WIDTH),
+      .CDB_W (WB_WIDTH),
       .SB_W  (SB_IDX_WIDTH)
   ) u_issue_lsu (
       .clk  (clk_i),
@@ -760,16 +775,16 @@ module backend #(
   // =========================================================
   // Execute Units
   // =========================================================
-  logic alu0_en, alu1_en;
-  decode_pkg::uop_t alu0_uop, alu1_uop;
-  logic [Cfg.XLEN-1:0] alu0_v1, alu0_v2, alu1_v1, alu1_v2;
-  logic [ROB_IDX_WIDTH-1:0] alu0_dst, alu1_dst;
+  logic alu0_en, alu1_en, alu2_en, alu3_en;
+  decode_pkg::uop_t alu0_uop, alu1_uop, alu2_uop, alu3_uop;
+  logic [Cfg.XLEN-1:0] alu0_v1, alu0_v2, alu1_v1, alu1_v2, alu2_v1, alu2_v2, alu3_v1, alu3_v2;
+  logic [ROB_IDX_WIDTH-1:0] alu0_dst, alu1_dst, alu2_dst, alu3_dst;
 
-  logic alu0_wb_valid, alu1_wb_valid;
-  logic [ROB_IDX_WIDTH-1:0] alu0_wb_tag, alu1_wb_tag;
-  logic [Cfg.XLEN-1:0] alu0_wb_data, alu1_wb_data;
-  logic alu0_mispred, alu1_mispred;
-  logic [Cfg.PLEN-1:0] alu0_redirect_pc, alu1_redirect_pc;
+  logic alu0_wb_valid, alu1_wb_valid, alu2_wb_valid, alu3_wb_valid;
+  logic [ROB_IDX_WIDTH-1:0] alu0_wb_tag, alu1_wb_tag, alu2_wb_tag, alu3_wb_tag;
+  logic [Cfg.XLEN-1:0] alu0_wb_data, alu1_wb_data, alu2_wb_data, alu3_wb_data;
+  logic alu0_mispred, alu1_mispred, alu2_mispred, alu3_mispred;
+  logic [Cfg.PLEN-1:0] alu0_redirect_pc, alu1_redirect_pc, alu2_redirect_pc, alu3_redirect_pc;
 
   execute_alu #(
       .Cfg  (Cfg),
@@ -811,6 +826,48 @@ module backend #(
       .alu_result_o    (alu1_wb_data),
       .alu_is_mispred_o(alu1_mispred),
       .alu_redirect_pc_o(alu1_redirect_pc)
+  );
+
+  execute_alu #(
+      .Cfg  (Cfg),
+      .TAG_W(ROB_IDX_WIDTH),
+      .XLEN (Cfg.XLEN),
+      .PC_W (Cfg.PLEN)
+  ) u_alu2 (
+      .clk_i(clk_i),
+      .rst_ni(rst_ni),
+      .alu_valid_i(alu2_en),
+      .uop_i      (alu2_uop),
+      .rs1_data_i (alu2_v1),
+      .rs2_data_i (alu2_v2),
+      .rob_tag_i  (alu2_dst),
+
+      .alu_valid_o     (alu2_wb_valid),
+      .alu_rob_tag_o   (alu2_wb_tag),
+      .alu_result_o    (alu2_wb_data),
+      .alu_is_mispred_o(alu2_mispred),
+      .alu_redirect_pc_o(alu2_redirect_pc)
+  );
+
+  execute_alu #(
+      .Cfg  (Cfg),
+      .TAG_W(ROB_IDX_WIDTH),
+      .XLEN (Cfg.XLEN),
+      .PC_W (Cfg.PLEN)
+  ) u_alu3 (
+      .clk_i(clk_i),
+      .rst_ni(rst_ni),
+      .alu_valid_i(alu3_en),
+      .uop_i      (alu3_uop),
+      .rs1_data_i (alu3_v1),
+      .rs2_data_i (alu3_v2),
+      .rob_tag_i  (alu3_dst),
+
+      .alu_valid_o     (alu3_wb_valid),
+      .alu_rob_tag_o   (alu3_wb_tag),
+      .alu_result_o    (alu3_wb_data),
+      .alu_is_mispred_o(alu3_mispred),
+      .alu_redirect_pc_o(alu3_redirect_pc)
   );
 
   // BRU
@@ -968,6 +1025,18 @@ module backend #(
     fu_ecause[3]      = lsu_wb_ecause;
     fu_is_mispred[3]  = lsu_wb_is_mispred;
     fu_redirect_pc[3] = lsu_wb_redirect_pc;
+
+    fu_valid[4]       = alu2_wb_valid;
+    fu_data[4]        = alu2_wb_data;
+    fu_rob_idx[4]     = alu2_wb_tag;
+    fu_is_mispred[4]  = alu2_mispred;
+    fu_redirect_pc[4] = alu2_redirect_pc;
+
+    fu_valid[5]       = alu3_wb_valid;
+    fu_data[5]        = alu3_wb_data;
+    fu_rob_idx[5]     = alu3_wb_tag;
+    fu_is_mispred[5]  = alu3_mispred;
+    fu_redirect_pc[5] = alu3_redirect_pc;
   end
 
   logic [WB_WIDTH-1:0]                    wb_valid;

@@ -43,7 +43,21 @@ module reservation_station #(
     output decode_pkg::uop_t   out_op_1,
     output logic [   TAG_W-1:0] out_dst_tag_1,
     output logic [  DATA_W-1:0] out_v1_1,
-    output logic [  DATA_W-1:0] out_v2_1
+    output logic [  DATA_W-1:0] out_v2_1,
+
+    // ALU 2 读取通道
+    input  wire  [RS_IDX_W-1:0] sel_idx_2,
+    output decode_pkg::uop_t   out_op_2,
+    output logic [   TAG_W-1:0] out_dst_tag_2,
+    output logic [  DATA_W-1:0] out_v1_2,
+    output logic [  DATA_W-1:0] out_v2_2,
+
+    // ALU 3 读取通道
+    input  wire  [RS_IDX_W-1:0] sel_idx_3,
+    output decode_pkg::uop_t   out_op_3,
+    output logic [   TAG_W-1:0] out_dst_tag_3,
+    output logic [  DATA_W-1:0] out_v1_3,
+    output logic [  DATA_W-1:0] out_v2_3
 );
 
   // RS 存储阵列
@@ -140,6 +154,18 @@ module reservation_station #(
   assign out_dst_tag_1 = dst_arr[sel_idx_1];
   assign out_v1_1      = v1_arr[sel_idx_1];
   assign out_v2_1      = v2_arr[sel_idx_1];
+
+  // Port 2 (给 ALU 2)
+  assign out_op_2      = op_arr[sel_idx_2];
+  assign out_dst_tag_2 = dst_arr[sel_idx_2];
+  assign out_v1_2      = v1_arr[sel_idx_2];
+  assign out_v2_2      = v2_arr[sel_idx_2];
+
+  // Port 3 (给 ALU 3)
+  assign out_op_3      = op_arr[sel_idx_3];
+  assign out_dst_tag_3 = dst_arr[sel_idx_3];
+  assign out_v1_3      = v1_arr[sel_idx_3];
+  assign out_v2_3      = v2_arr[sel_idx_3];
 
   assign busy_vector   = busy;
 

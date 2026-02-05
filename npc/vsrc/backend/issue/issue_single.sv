@@ -5,7 +5,8 @@ module issue_single #(
     parameter config_pkg::cfg_t Cfg = config_pkg::EmptyCfg,
     parameter RS_DEPTH = Cfg.RS_DEPTH,
     parameter DATA_W   = Cfg.XLEN,
-    parameter TAG_W    = 6
+    parameter TAG_W    = 6,
+    parameter CDB_W    = 4
 ) (
     input wire clk,
     input wire rst_n,
@@ -27,9 +28,9 @@ module issue_single #(
     output logic [$clog2(RS_DEPTH+1)-1:0] free_count_o,
 
     // 来自 CDB 的广播 (给 RS 监听用)
-    input wire [       3:0] cdb_valid,
-    input wire [ TAG_W-1:0] cdb_tag  [0:3],
-    input wire [DATA_W-1:0] cdb_val  [0:3],
+    input wire [ CDB_W-1:0] cdb_valid,
+    input wire [ TAG_W-1:0] cdb_tag  [0:CDB_W-1],
+    input wire [DATA_W-1:0] cdb_val  [0:CDB_W-1],
 
     // FU 接口 (单发射)
     output wire                           fu_en,
@@ -112,7 +113,7 @@ module issue_single #(
       .Cfg(Cfg),
       .DATA_W(DATA_W),
       .TAG_W (TAG_W),
-      .CDB_W (4)
+      .CDB_W (CDB_W)
   ) u_rs (
       .clk  (clk),
       .rst_n(rst_n),
@@ -150,7 +151,19 @@ module issue_single #(
       .out_op_1     (),
       .out_v1_1     (),
       .out_v2_1     (),
-      .out_dst_tag_1()
+      .out_dst_tag_1(),
+
+      .sel_idx_2    ('0),
+      .out_op_2     (),
+      .out_v1_2     (),
+      .out_v2_2     (),
+      .out_dst_tag_2(),
+
+      .sel_idx_3    ('0),
+      .out_op_3     (),
+      .out_v1_3     (),
+      .out_v2_3     (),
+      .out_dst_tag_3()
   );
 
   // ==========================================
