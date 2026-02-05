@@ -60,6 +60,12 @@ module issue_lsu #(
 
   // C. Select Logic -> LSU
   wire [$clog2(RS_DEPTH)-1:0] lsu_sel;
+  localparam int ISSUE_WIDTH = 1;
+  wire [ISSUE_WIDTH-1:0] issue_valid;
+  wire [$clog2(RS_DEPTH)-1:0] issue_rs_idx[0:ISSUE_WIDTH-1];
+
+  assign lsu_en  = issue_valid[0];
+  assign lsu_sel = issue_rs_idx[0];
 
   // D. Crossbar inputs
   decode_pkg::uop_t rs_in_op[0:RS_DEPTH-1];
@@ -150,13 +156,14 @@ module issue_lsu #(
       .out_sb_id_0  (lsu_sb_id)
   );
 
-  select_logic_1 #(
-      .Cfg(Cfg)
+  issue_select #(
+      .Cfg(Cfg),
+      .ISSUE_WIDTH(ISSUE_WIDTH)
   ) u_select (
       .ready_mask      (rs_ready_wires & {RS_DEPTH{fu_ready_i}}),
       .issue_grant_mask(grant_mask_wires),
-      .fu_valid        (lsu_en),
-      .fu_rs_idx       (lsu_sel)
+      .issue_valid     (issue_valid),
+      .issue_rs_idx    (issue_rs_idx)
   );
 
   // Free count for backpressure

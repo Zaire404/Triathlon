@@ -1,4 +1,4 @@
-// vsrc/backend/store_buffer.sv
+// vsrc/backend/buffer/store_buffer.sv
 import config_pkg::*;
 import decode_pkg::*;
 
@@ -27,7 +27,7 @@ module store_buffer #(
     input logic                [        Cfg.PLEN-1:0] ex_addr_i,
     input logic                [        Cfg.XLEN-1:0] ex_data_i,
     input decode_pkg::lsu_op_e                        ex_op_i,
-    input logic                [    ROB_IDX_WIDTH-1:0] ex_rob_idx_i,
+    input logic                [   ROB_IDX_WIDTH-1:0] ex_rob_idx_i,
 
     // =======================================================
     // 3. Commit (From ROB) - 標記為 "Senior Store"
@@ -48,10 +48,10 @@ module store_buffer #(
     // =======================================================
     // 5. Load Forwarding (From Load Unit) - 關鍵邏輯
     // =======================================================
-    input  logic [Cfg.PLEN-1:0] load_addr_i,
+    input  logic [     Cfg.PLEN-1:0] load_addr_i,
     input  logic [ROB_IDX_WIDTH-1:0] load_rob_idx_i,
-    output logic                load_hit_o,   // 在 SB 中命中且數據有效
-    output logic [Cfg.XLEN-1:0] load_data_o,  // 轉發的數據
+    output logic                     load_hit_o,      // 在 SB 中命中且數據有效
+    output logic [     Cfg.XLEN-1:0] load_data_o,     // 轉發的數據
     input  logic [ROB_IDX_WIDTH-1:0] rob_head_i,
 
     // =======================================================
@@ -75,8 +75,8 @@ module store_buffer #(
 
   sb_entry_t [SB_DEPTH-1:0] mem;
 
-  function automatic logic [ROB_IDX_WIDTH-1:0] rob_age(
-      input logic [ROB_IDX_WIDTH-1:0] idx, input logic [ROB_IDX_WIDTH-1:0] head);
+  function automatic logic [ROB_IDX_WIDTH-1:0] rob_age(input logic [ROB_IDX_WIDTH-1:0] idx,
+                                                       input logic [ROB_IDX_WIDTH-1:0] head);
     logic [ROB_IDX_WIDTH-1:0] diff;
     begin
       diff = idx - head;
@@ -288,7 +288,7 @@ module store_buffer #(
   logic [ROB_IDX_WIDTH-1:0] load_age;
 
   always_comb begin
-    load_hit_o  = 1'b0;
+    load_hit_o = 1'b0;
     load_data_o = '0;
 
     load_age = rob_age(load_rob_idx_i, rob_head_i);
@@ -308,7 +308,9 @@ module store_buffer #(
                 mem[idx].addr_valid && 
                 mem[idx].data_valid && 
                 (mem[idx].addr == load_addr_i) &&
-                (rob_age(mem[idx].rob_tag, rob_head_i) < load_age)) begin
+                (rob_age(
+              mem[idx].rob_tag, rob_head_i
+          ) < load_age)) begin
 
         load_hit_o  = 1'b1;
         load_data_o = mem[idx].data;

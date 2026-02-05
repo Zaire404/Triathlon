@@ -1,4 +1,4 @@
-// vsrc/frontend/decoder.sv
+// vsrc/backend/decode/decoder.sv
 // Multi-issue decoder using CVA6-style cast (riscv_pkg)
 // Currently supports RV64I + M (I & M extensions).
 // Other extensions (A/F/D/V, CSR detail, etc) have reserved TODO hooks.

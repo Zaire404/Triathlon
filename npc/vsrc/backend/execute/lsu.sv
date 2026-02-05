@@ -1,4 +1,4 @@
-// vsrc/backend/lsu.sv
+// vsrc/backend/execute/lsu.sv
 import config_pkg::*;
 import decode_pkg::*;
 
@@ -8,73 +8,73 @@ import decode_pkg::*;
 // - Stores: write address/data into Store Buffer, then complete in ROB
 // - Single in-flight load, no load queue
 module lsu #(
-    parameter config_pkg::cfg_t Cfg = config_pkg::EmptyCfg,
+    parameter config_pkg::cfg_t Cfg           = config_pkg::EmptyCfg,
     parameter int unsigned      ROB_IDX_WIDTH = 6,
-    parameter int unsigned      SB_DEPTH = 16,
-    parameter int unsigned      SB_IDX_WIDTH = $clog2(SB_DEPTH)
+    parameter int unsigned      SB_DEPTH      = 16,
+    parameter int unsigned      SB_IDX_WIDTH  = $clog2(SB_DEPTH)
 ) (
-    input  logic clk_i,
-    input  logic rst_ni,
-    input  logic flush_i,
+    input logic clk_i,
+    input logic rst_ni,
+    input logic flush_i,
 
     // =========================================================
     // 1) Request from Issue/Execute
     // =========================================================
-    input  logic                         req_valid_i,
-    output logic                         req_ready_o,
-    input  decode_pkg::uop_t             uop_i,
-    input  logic             [Cfg.XLEN-1:0] rs1_data_i,
-    input  logic             [Cfg.XLEN-1:0] rs2_data_i,
-    input  logic [ROB_IDX_WIDTH-1:0]     rob_tag_i,
-    input  logic [SB_IDX_WIDTH-1:0]      sb_id_i,
+    input  logic                                 req_valid_i,
+    output logic                                 req_ready_o,
+    input  decode_pkg::uop_t                     uop_i,
+    input  logic             [     Cfg.XLEN-1:0] rs1_data_i,
+    input  logic             [     Cfg.XLEN-1:0] rs2_data_i,
+    input  logic             [ROB_IDX_WIDTH-1:0] rob_tag_i,
+    input  logic             [ SB_IDX_WIDTH-1:0] sb_id_i,
 
     // =========================================================
     // 2) Store Buffer interface (execute fill)
     // =========================================================
-    output logic                         sb_ex_valid_o,
-    output logic [SB_IDX_WIDTH-1:0]      sb_ex_sb_id_o,
-    output logic [Cfg.PLEN-1:0]          sb_ex_addr_o,
-    output logic [Cfg.XLEN-1:0]          sb_ex_data_o,
-    output decode_pkg::lsu_op_e          sb_ex_op_o,
-    output logic [ROB_IDX_WIDTH-1:0]     sb_ex_rob_idx_o,
+    output logic                                    sb_ex_valid_o,
+    output logic                [ SB_IDX_WIDTH-1:0] sb_ex_sb_id_o,
+    output logic                [     Cfg.PLEN-1:0] sb_ex_addr_o,
+    output logic                [     Cfg.XLEN-1:0] sb_ex_data_o,
+    output decode_pkg::lsu_op_e                     sb_ex_op_o,
+    output logic                [ROB_IDX_WIDTH-1:0] sb_ex_rob_idx_o,
 
     // Store-to-Load Forwarding (query)
-    output logic [Cfg.PLEN-1:0]          sb_load_addr_o,
-    output logic [ROB_IDX_WIDTH-1:0]     sb_load_rob_idx_o,
-    input  logic                        sb_load_hit_i,
-    input  logic [Cfg.XLEN-1:0]          sb_load_data_i,
+    output logic [     Cfg.PLEN-1:0] sb_load_addr_o,
+    output logic [ROB_IDX_WIDTH-1:0] sb_load_rob_idx_o,
+    input  logic                     sb_load_hit_i,
+    input  logic [     Cfg.XLEN-1:0] sb_load_data_i,
 
     // =========================================================
     // 3) D-Cache Load interface
     // =========================================================
-    output logic                         ld_req_valid_o,
-    input  logic                         ld_req_ready_i,
-    output logic [Cfg.PLEN-1:0]           ld_req_addr_o,
-    output decode_pkg::lsu_op_e           ld_req_op_o,
+    output logic                               ld_req_valid_o,
+    input  logic                               ld_req_ready_i,
+    output logic                [Cfg.PLEN-1:0] ld_req_addr_o,
+    output decode_pkg::lsu_op_e                ld_req_op_o,
 
-    input  logic                         ld_rsp_valid_i,
-    output logic                         ld_rsp_ready_o,
-    input  logic [Cfg.XLEN-1:0]           ld_rsp_data_i,
-    input  logic                         ld_rsp_err_i,
+    input  logic                ld_rsp_valid_i,
+    output logic                ld_rsp_ready_o,
+    input  logic [Cfg.XLEN-1:0] ld_rsp_data_i,
+    input  logic                ld_rsp_err_i,
 
     // =========================================================
     // 4) Writeback to ROB/CDB
     // =========================================================
-    output logic                         wb_valid_o,
-    output logic [ROB_IDX_WIDTH-1:0]      wb_rob_idx_o,
-    output logic [Cfg.XLEN-1:0]           wb_data_o,
-    output logic                         wb_exception_o,
-    output logic [4:0]                    wb_ecause_o,
-    output logic                         wb_is_mispred_o,
-    output logic [Cfg.PLEN-1:0]           wb_redirect_pc_o,
-    input  logic                         wb_ready_i
+    output logic                     wb_valid_o,
+    output logic [ROB_IDX_WIDTH-1:0] wb_rob_idx_o,
+    output logic [     Cfg.XLEN-1:0] wb_data_o,
+    output logic                     wb_exception_o,
+    output logic [              4:0] wb_ecause_o,
+    output logic                     wb_is_mispred_o,
+    output logic [     Cfg.PLEN-1:0] wb_redirect_pc_o,
+    input  logic                     wb_ready_i
 );
 
   // ---------------------------------------------------------
   // Exception cause (RISC-V standard)
   // ---------------------------------------------------------
   localparam logic [4:0] EXC_LD_ADDR_MISALIGNED = 5'd4;
-  localparam logic [4:0] EXC_LD_ACCESS_FAULT    = 5'd5;
+  localparam logic [4:0] EXC_LD_ACCESS_FAULT = 5'd5;
   localparam logic [4:0] EXC_ST_ADDR_MISALIGNED = 5'd6;
 
   // ---------------------------------------------------------
@@ -99,14 +99,14 @@ module lsu #(
       extract_fwd = '0;
       unique case (op)
         LSU_LB: begin
-          sign       = data[7];
+          sign        = data[7];
           extract_fwd = {{(Cfg.XLEN - 8) {sign}}, data[7:0]};
         end
         LSU_LBU: begin
           extract_fwd = {{(Cfg.XLEN - 8) {1'b0}}, data[7:0]};
         end
         LSU_LH: begin
-          sign       = data[15];
+          sign        = data[15];
           extract_fwd = {{(Cfg.XLEN - 16) {sign}}, data[15:0]};
         end
         LSU_LHU: begin
@@ -116,7 +116,7 @@ module lsu #(
           if (Cfg.XLEN == 32) begin
             extract_fwd = data[31:0];
           end else begin
-            sign       = data[31];
+            sign        = data[31];
             extract_fwd = {{(Cfg.XLEN - 32) {sign}}, data[31:0]};
           end
         end
@@ -145,14 +145,14 @@ module lsu #(
   logic misaligned;
   logic [Cfg.XLEN-1:0] fwd_data;
 
-  assign is_load  = uop_i.is_load;
-  assign is_store = uop_i.is_store;
+  assign is_load       = uop_i.is_load;
+  assign is_store      = uop_i.is_store;
 
   assign eff_addr_xlen = rs1_data_i + uop_i.imm;
   assign eff_addr      = eff_addr_xlen[Cfg.PLEN-1:0];
   assign misaligned    = is_misaligned(uop_i.lsu_op, eff_addr);
 
-  assign fwd_data = extract_fwd(sb_load_data_i, uop_i.lsu_op);
+  assign fwd_data      = extract_fwd(sb_load_data_i, uop_i.lsu_op);
 
   // ---------------------------------------------------------
   // State machine
@@ -167,15 +167,15 @@ module lsu #(
   lsu_state_e state_q, state_d;
 
   // In-flight load request
-  logic [Cfg.PLEN-1:0]      req_addr_q;
-  decode_pkg::lsu_op_e      req_op_q;
-  logic [ROB_IDX_WIDTH-1:0] req_tag_q;
+  logic                [     Cfg.PLEN-1:0] req_addr_q;
+  decode_pkg::lsu_op_e                     req_op_q;
+  logic                [ROB_IDX_WIDTH-1:0] req_tag_q;
 
   // Response holding regs
-  logic [Cfg.XLEN-1:0]      resp_data_q;
-  logic                     resp_exc_q;
-  logic [4:0]               resp_ecause_q;
-  logic [ROB_IDX_WIDTH-1:0] resp_tag_q;
+  logic                [     Cfg.XLEN-1:0] resp_data_q;
+  logic                                    resp_exc_q;
+  logic                [              4:0] resp_ecause_q;
+  logic                [ROB_IDX_WIDTH-1:0] resp_tag_q;
 
   // ---------------------------------------------------------
   // Output defaults
@@ -185,9 +185,9 @@ module lsu #(
   // Store buffer execute write (pulse when accepting a store)
   assign sb_ex_valid_o = (state_q == S_IDLE) && req_valid_i && req_ready_o && is_store && !misaligned;
   assign sb_ex_sb_id_o = sb_id_i;
-  assign sb_ex_addr_o  = eff_addr;
-  assign sb_ex_data_o  = rs2_data_i;
-  assign sb_ex_op_o    = uop_i.lsu_op;
+  assign sb_ex_addr_o = eff_addr;
+  assign sb_ex_data_o = rs2_data_i;
+  assign sb_ex_op_o = uop_i.lsu_op;
   assign sb_ex_rob_idx_o = rob_tag_i;
 
   // Store-buffer forwarding address (only meaningful for incoming load)
@@ -196,18 +196,18 @@ module lsu #(
 
   // D-Cache load port
   assign ld_req_valid_o = (state_q == S_LD_REQ);
-  assign ld_req_addr_o  = req_addr_q;
-  assign ld_req_op_o    = req_op_q;
+  assign ld_req_addr_o = req_addr_q;
+  assign ld_req_op_o = req_op_q;
 
   assign ld_rsp_ready_o = (state_q == S_LD_RSP);
 
   // Writeback (to CDB/ROB)
-  assign wb_valid_o       = (state_q == S_RESP);
-  assign wb_rob_idx_o     = resp_tag_q;
-  assign wb_data_o        = resp_data_q;
-  assign wb_exception_o   = resp_exc_q;
-  assign wb_ecause_o      = resp_ecause_q;
-  assign wb_is_mispred_o  = 1'b0;
+  assign wb_valid_o = (state_q == S_RESP);
+  assign wb_rob_idx_o = resp_tag_q;
+  assign wb_data_o = resp_data_q;
+  assign wb_exception_o = resp_exc_q;
+  assign wb_ecause_o = resp_ecause_q;
+  assign wb_is_mispred_o = 1'b0;
   assign wb_redirect_pc_o = '0;
 
   // ---------------------------------------------------------

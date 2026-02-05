@@ -58,6 +58,14 @@ module issue #(
   // C. Select Logic -> ALU Mux 的选择信号
   wire [$clog2(RS_DEPTH)-1:0] alu0_sel;
   wire [$clog2(RS_DEPTH)-1:0] alu1_sel;
+  localparam int ISSUE_WIDTH = 2;
+  wire [ISSUE_WIDTH-1:0] issue_valid;
+  wire [$clog2(RS_DEPTH)-1:0] issue_rs_idx[0:ISSUE_WIDTH-1];
+
+  assign alu0_en  = issue_valid[0];
+  assign alu1_en  = issue_valid[1];
+  assign alu0_sel = issue_rs_idx[0];
+  assign alu1_sel = issue_rs_idx[1];
 
   // D. Crossbar <-> RS 输入数据线 (16组宽总线)
   // 这些是在 always_comb 里被驱动的
@@ -144,7 +152,7 @@ module issue #(
   reservation_station #(
       .Cfg(Cfg)
   ) u_rs (
-      .clk  (clk),
+      .clk(clk),
       .rst_n(rst_n),
       .flush_i(flush_i),
 
@@ -184,21 +192,16 @@ module issue #(
   );
 
   // ==========================================
-  // 模块 3: 选择逻辑 (Select Logic)
+  // 模块 3: 选择逻辑 (Issue Select)
   // ==========================================
-  select_logic #(
-      .Cfg(Cfg)
+  issue_select #(
+      .Cfg(Cfg),
+      .ISSUE_WIDTH(ISSUE_WIDTH)
   ) u_select (
       .ready_mask      (rs_ready_wires),
       .issue_grant_mask(grant_mask_wires),
-
-      // 控制 ALU 0
-      .alu0_valid (alu0_en),
-      .alu0_rs_idx(alu0_sel),
-
-      // 控制 ALU 1
-      .alu1_valid (alu1_en),
-      .alu1_rs_idx(alu1_sel)
+      .issue_valid     (issue_valid),
+      .issue_rs_idx    (issue_rs_idx)
   );
 
   // Free count for backpressure

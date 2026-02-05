@@ -1,4 +1,4 @@
-// vsrc/backend/rat.sv
+// vsrc/backend/rename/rat.sv
 // 适用于 Data-in-ROB 架构的 Speculative RAT
 import config_pkg::*;
 

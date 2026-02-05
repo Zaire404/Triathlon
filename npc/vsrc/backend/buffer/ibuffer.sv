@@ -1,4 +1,4 @@
-// vsrc/backend/ibuffer.sv
+// vsrc/backend/buffer/ibuffer.sv
 module ibuffer #(
     parameter config_pkg::cfg_t Cfg          = config_pkg::EmptyCfg,
     // IBuffer 深度（存多少“单条指令”条目，而不是 fetch group 数）
