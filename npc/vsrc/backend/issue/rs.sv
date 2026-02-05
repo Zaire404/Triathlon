@@ -171,7 +171,9 @@ module reservation_station #(
   genvar g;
   generate
     for (g = 0; g < RS_DEPTH; g = g + 1) begin : gen_ready
-      assign ready_mask[g] = busy[g] && r1_arr[g] && r2_arr[g] &&
+      wire r1_ready = op_arr[g].has_rs1 ? r1_arr[g] : 1'b1;
+      wire r2_ready = op_arr[g].has_rs2 ? r2_arr[g] : 1'b1;
+      assign ready_mask[g] = busy[g] && r1_ready && r2_ready &&
           (!head_en_i || (dst_arr[g] == head_tag_i));
     end
   endgenerate

@@ -106,7 +106,8 @@ module rename #(
       new_tags[i]  = (rob_tail_ptr_i + i) % ROB_DEPTH;
 
       // 只有寫有效寄存器 (rd != 0) 才更新 RAT
-      alloc_req[i] = dec_valid_masked[i] && dec_uops_i[i].has_rd && (dec_uops_i[i].rd != 0);
+      alloc_req[i] = rename_ready_o && dec_valid_masked[i] && dec_uops_i[i].has_rd &&
+                     (dec_uops_i[i].rd != 0);
     end
   end
 

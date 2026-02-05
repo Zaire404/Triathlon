@@ -173,7 +173,10 @@ module reservation_station_lsu #(
           end
         end
       end
-      ready_mask[m] = busy[m] && r1_arr[m] && r2_arr[m] && !block_load;
+      ready_mask[m] = busy[m] &&
+                      (op_arr[m].has_rs1 ? r1_arr[m] : 1'b1) &&
+                      (op_arr[m].has_rs2 ? r2_arr[m] : 1'b1) &&
+                      !block_load;
     end
   end
 
