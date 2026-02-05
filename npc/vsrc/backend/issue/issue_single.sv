@@ -52,6 +52,12 @@ module issue_single #(
 
   // C. Select Logic -> FU 选择信号
   wire [$clog2(RS_DEPTH)-1:0] fu_sel;
+  localparam int ISSUE_WIDTH = 1;
+  wire [ISSUE_WIDTH-1:0] issue_valid;
+  wire [$clog2(RS_DEPTH)-1:0] issue_rs_idx[0:ISSUE_WIDTH-1];
+
+  assign fu_en  = issue_valid[0];
+  assign fu_sel = issue_rs_idx[0];
 
   // D. Crossbar <-> RS 输入数据线
   decode_pkg::uop_t rs_in_op[0:RS_DEPTH-1];
@@ -148,15 +154,16 @@ module issue_single #(
   );
 
   // ==========================================
-  // 模块 3: 选择逻辑 (Select Logic)
+  // 模块 3: 选择逻辑 (Issue Select)
   // ==========================================
-  select_logic_1 #(
-      .Cfg(Cfg)
+  issue_select #(
+      .Cfg(Cfg),
+      .ISSUE_WIDTH(ISSUE_WIDTH)
   ) u_select (
       .ready_mask      (rs_ready_wires),
       .issue_grant_mask(grant_mask_wires),
-      .fu_valid        (fu_en),
-      .fu_rs_idx       (fu_sel)
+      .issue_valid     (issue_valid),
+      .issue_rs_idx    (issue_rs_idx)
   );
 
   // Free count for backpressure

@@ -1,4 +1,4 @@
-// vsrc/backend/ROB.sv
+// vsrc/backend/retire/rob.sv
 import config_pkg::*;
 import decode_pkg::*;
 
@@ -73,8 +73,8 @@ module rob #(
     // 4. Operand Query (To Issue/Rename)
     // =========================================================
     input  logic [QUERY_WIDTH-1:0][$clog2(ROB_DEPTH)-1:0] query_rob_idx_i,
-    output logic [QUERY_WIDTH-1:0]                         query_ready_o,
-    output logic [QUERY_WIDTH-1:0][Cfg.XLEN-1:0]           query_data_o,
+    output logic [QUERY_WIDTH-1:0]                        query_ready_o,
+    output logic [QUERY_WIDTH-1:0][         Cfg.XLEN-1:0] query_data_o,
 
     output logic rob_empty_o,
     output logic rob_full_o,
@@ -201,9 +201,9 @@ module rob #(
             commit_is_store_o[i] = rob_ram[idx].is_store;
             commit_sb_id_o[i]    = rob_ram[idx].sb_id;
 
-            stop_commit = 1'b1;
-            flush_o     = 1'b1;
-            flush_pc_o  = rob_ram[idx].redirect_pc;
+            stop_commit          = 1'b1;
+            flush_o              = 1'b1;
+            flush_pc_o           = rob_ram[idx].redirect_pc;
           end else begin
             // 正常退休
             commit_valid_o[i] = 1'b1;

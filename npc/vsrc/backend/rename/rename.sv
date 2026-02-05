@@ -1,4 +1,4 @@
-// vsrc/backend/rename.sv
+// vsrc/backend/rename/rename.sv
 import config_pkg::*;
 import decode_pkg::*;
 
@@ -33,9 +33,9 @@ module rename #(
     input logic [ROB_IDX_WIDTH-1:0] rob_tail_ptr_i,
 
     // --- To Store Buffer (Allocation Interface) [新增] ---
-    output logic [3:0]              sb_alloc_req_o,  // 請求分配 SB Entry (每条store一项)
-    input  logic                    sb_alloc_ready_i,  // SB 是否可接受本周期所有请求
-    input  logic [3:0][SB_IDX_WIDTH-1:0] sb_alloc_id_i,   // 每条store对应的 SB ID
+    output logic [3:0] sb_alloc_req_o,  // 請求分配 SB Entry (每条store一项)
+    input logic sb_alloc_ready_i,  // SB 是否可接受本周期所有请求
+    input logic [3:0][SB_IDX_WIDTH-1:0] sb_alloc_id_i,  // 每条store对应的 SB ID
 
     // --- To Issue Queue / Operand Read Logic ---
     output logic [3:0] issue_valid_o,
@@ -69,7 +69,7 @@ module rename #(
   logic has_store;
 
   always_comb begin
-    has_store = 1'b0;
+    has_store  = 1'b0;
     store_mask = '0;
     for (int i = 0; i < 4; i++) begin
       // 如果發生 Flush，屏蔽當前週期的輸入，防止錯誤指令進入 ROB

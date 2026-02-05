@@ -1,4 +1,4 @@
-// vsrc/backend/arf.sv
+// vsrc/backend/regfile/arf.sv
 import config_pkg::*;
 
 module arf #(

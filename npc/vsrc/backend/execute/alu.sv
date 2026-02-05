@@ -1,4 +1,4 @@
-// vsrc/backend/execute_alu.sv
+// vsrc/backend/execute/alu.sv
 import config_pkg::*;
 import decode_pkg::*;
 
@@ -82,14 +82,13 @@ module execute_alu #(
     br_take = 1'b0;
     if (uop_i.is_branch) begin
       unique case (uop_i.br_op)
-        BR_EQ:   br_take = (rs1_data_i == rs2_data_i);
-        BR_NE:   br_take = (rs1_data_i != rs2_data_i);
-        BR_LT:   br_take = ($signed(rs1_data_i) < $signed(rs2_data_i));
-        BR_GE:   br_take = ($signed(rs1_data_i) >= $signed(rs2_data_i));
-        BR_LTU:  br_take = (rs1_data_i < rs2_data_i);
-        BR_GEU:  br_take = (rs1_data_i >= rs2_data_i);
-        BR_JAL,
-        BR_JALR: br_take = 1'b1;
+        BR_EQ: br_take = (rs1_data_i == rs2_data_i);
+        BR_NE: br_take = (rs1_data_i != rs2_data_i);
+        BR_LT: br_take = ($signed(rs1_data_i) < $signed(rs2_data_i));
+        BR_GE: br_take = ($signed(rs1_data_i) >= $signed(rs2_data_i));
+        BR_LTU: br_take = (rs1_data_i < rs2_data_i);
+        BR_GEU: br_take = (rs1_data_i >= rs2_data_i);
+        BR_JAL, BR_JALR: br_take = 1'b1;
         default: br_take = 1'b0;
       endcase
     end else if (uop_i.is_jump) begin
