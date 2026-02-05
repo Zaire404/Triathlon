@@ -12,6 +12,9 @@ module issue_single #(
     input wire rst_n,
     input wire flush_i,
 
+    input wire head_en_i,
+    input wire [ TAG_W-1:0] head_tag_i,
+
     input wire                   [       3:0] dispatch_valid,
     input wire decode_pkg::uop_t              dispatch_op   [0:3],
     input wire                   [ TAG_W-1:0] dispatch_dst  [0:3],
@@ -118,6 +121,8 @@ module issue_single #(
       .clk  (clk),
       .rst_n(rst_n),
       .flush_i(flush_i),
+      .head_en_i(head_en_i),
+      .head_tag_i(head_tag_i),
 
       // 写端口
       .entry_wen (alloc_wen),

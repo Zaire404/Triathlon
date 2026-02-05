@@ -59,60 +59,94 @@ module reservation_station_lsu #(
 
   reg               [   SB_W-1:0]  sb_arr [0:RS_DEPTH-1];
 
-  integer i, k;
-  always @(posedge clk or negedge rst_n) begin
+  logic             [RS_DEPTH-1:0] busy_d;
+  decode_pkg::uop_t                op_arr_d [0:RS_DEPTH-1];
+  logic             [   TAG_W-1:0] dst_arr_d[0:RS_DEPTH-1];
+  logic             [  DATA_W-1:0] v1_arr_d [0:RS_DEPTH-1];
+  logic             [   TAG_W-1:0] q1_arr_d [0:RS_DEPTH-1];
+  logic                            r1_arr_d [0:RS_DEPTH-1];
+  logic             [  DATA_W-1:0] v2_arr_d [0:RS_DEPTH-1];
+  logic             [   TAG_W-1:0] q2_arr_d [0:RS_DEPTH-1];
+  logic                            r2_arr_d [0:RS_DEPTH-1];
+  logic             [   SB_W-1:0]  sb_arr_d [0:RS_DEPTH-1];
+
+  always_comb begin
+    busy_d   = busy;
+    op_arr_d = op_arr;
+    dst_arr_d = dst_arr;
+    v1_arr_d = v1_arr;
+    q1_arr_d = q1_arr;
+    r1_arr_d = r1_arr;
+    v2_arr_d = v2_arr;
+    q2_arr_d = q2_arr;
+    r2_arr_d = r2_arr;
+    sb_arr_d = sb_arr;
+
+    for (int i = 0; i < RS_DEPTH; i++) begin
+      if (issue_grant[i]) begin
+        busy_d[i] = 1'b0;
+      end else if (entry_wen[i]) begin
+        busy_d[i]    = 1'b1;
+        op_arr_d[i]  = in_op[i];
+        dst_arr_d[i] = in_dst_tag[i];
+        sb_arr_d[i]  = in_sb_id[i];
+
+        v1_arr_d[i]  = in_v1[i];
+        q1_arr_d[i]  = in_q1[i];
+        r1_arr_d[i]  = in_r1[i];
+        if (!in_r1[i]) begin
+          for (int k = 0; k < CDB_W; k++) begin
+            if (cdb_valid[k] && (cdb_tag[k] == in_q1[i])) begin
+              v1_arr_d[i] = cdb_value[k];
+              r1_arr_d[i] = 1'b1;
+            end
+          end
+        end
+
+        v2_arr_d[i] = in_v2[i];
+        q2_arr_d[i] = in_q2[i];
+        r2_arr_d[i] = in_r2[i];
+        if (!in_r2[i]) begin
+          for (int k = 0; k < CDB_W; k++) begin
+            if (cdb_valid[k] && (cdb_tag[k] == in_q2[i])) begin
+              v2_arr_d[i] = cdb_value[k];
+              r2_arr_d[i] = 1'b1;
+            end
+          end
+        end
+      end else if (busy[i]) begin
+        for (int k = 0; k < CDB_W; k++) begin
+          if (cdb_valid[k]) begin
+            if (!r1_arr[i] && (q1_arr[i] == cdb_tag[k])) begin
+              v1_arr_d[i] = cdb_value[k];
+              r1_arr_d[i] = 1'b1;
+            end
+            if (!r2_arr[i] && (q2_arr[i] == cdb_tag[k])) begin
+              v2_arr_d[i] = cdb_value[k];
+              r2_arr_d[i] = 1'b1;
+            end
+          end
+        end
+      end
+    end
+  end
+
+  always_ff @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       busy <= {RS_DEPTH{1'b0}};
     end else if (flush_i) begin
       busy <= {RS_DEPTH{1'b0}};
     end else begin
-      for (i = 0; i < RS_DEPTH; i = i + 1) begin
-        if (issue_grant[i]) begin
-          busy[i] <= 1'b0;
-        end else if (entry_wen[i]) begin
-          busy[i]    <= 1'b1;
-          op_arr[i]  <= in_op[i];
-          dst_arr[i] <= in_dst_tag[i];
-          sb_arr[i]  <= in_sb_id[i];
-
-          v1_arr[i]  <= in_v1[i];
-          q1_arr[i]  <= in_q1[i];
-          r1_arr[i]  <= in_r1[i];
-          if (!in_r1[i]) begin
-            for (k = 0; k < CDB_W; k = k + 1) begin
-              if (cdb_valid[k] && (cdb_tag[k] == in_q1[i])) begin
-                v1_arr[i] <= cdb_value[k];
-                r1_arr[i] <= 1'b1;
-              end
-            end
-          end
-
-          v2_arr[i] <= in_v2[i];
-          q2_arr[i] <= in_q2[i];
-          r2_arr[i] <= in_r2[i];
-          if (!in_r2[i]) begin
-            for (k = 0; k < CDB_W; k = k + 1) begin
-              if (cdb_valid[k] && (cdb_tag[k] == in_q2[i])) begin
-                v2_arr[i] <= cdb_value[k];
-                r2_arr[i] <= 1'b1;
-              end
-            end
-          end
-        end else if (busy[i]) begin
-          for (k = 0; k < CDB_W; k = k + 1) begin
-            if (cdb_valid[k]) begin
-              if (!r1_arr[i] && (q1_arr[i] == cdb_tag[k])) begin
-                v1_arr[i] <= cdb_value[k];
-                r1_arr[i] <= 1'b1;
-              end
-              if (!r2_arr[i] && (q2_arr[i] == cdb_tag[k])) begin
-                v2_arr[i] <= cdb_value[k];
-                r2_arr[i] <= 1'b1;
-              end
-            end
-          end
-        end
-      end
+      busy   <= busy_d;
+      op_arr <= op_arr_d;
+      dst_arr <= dst_arr_d;
+      v1_arr <= v1_arr_d;
+      q1_arr <= q1_arr_d;
+      r1_arr <= r1_arr_d;
+      v2_arr <= v2_arr_d;
+      q2_arr <= q2_arr_d;
+      r2_arr <= r2_arr_d;
+      sb_arr <= sb_arr_d;
     end
   end
 

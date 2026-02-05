@@ -177,6 +177,8 @@ module issue #(
       .clk(clk),
       .rst_n(rst_n),
       .flush_i(flush_i),
+      .head_en_i(1'b0),
+      .head_tag_i('0),
 
       // 写端口 (连接 Crossbar 的结果)
       .entry_wen (alloc_wen),

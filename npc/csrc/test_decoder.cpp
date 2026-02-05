@@ -314,6 +314,33 @@ GoldenInfo decode_reference(uint32_t inst, uint32_t pc) {
     break;
 
   // -------------------------
+  // OP-IMM-32 (RV64I W-Type)
+  // -------------------------
+  case 0x1B:
+    info.fu_type = FU_ALU;
+    info.has_rs1 = true;
+    info.has_rd = (rd != 0);
+    info.imm = sext((inst >> 20), 12);
+    switch (funct3) {
+    case 0:
+      info.alu_op = ALU_ADD; // ADDIW
+      break;
+    case 1:
+      info.alu_op = ALU_SLL; // SLLIW
+      break;
+    case 5:
+      if ((inst >> 30) & 1)
+        info.alu_op = ALU_SRA; // SRAIW
+      else
+        info.alu_op = ALU_SRL; // SRLIW
+      break;
+    default:
+      info.illegal = true;
+      break;
+    }
+    break;
+
+  // -------------------------
   // OP (R-Type)
   // -------------------------
   case 0x33:
@@ -388,12 +415,53 @@ GoldenInfo decode_reference(uint32_t inst, uint32_t pc) {
     break;
 
   // -------------------------
+  // OP-32 (RV64I W-Type)
+  // -------------------------
+  case 0x3B:
+    info.fu_type = FU_ALU;
+    info.has_rs1 = true;
+    info.has_rs2 = true;
+    info.has_rd = (rd != 0);
+
+    if (funct7 == 0x00) {
+      switch (funct3) {
+      case 0:
+        info.alu_op = ALU_ADD; // ADDW
+        break;
+      case 1:
+        info.alu_op = ALU_SLL; // SLLW
+        break;
+      case 5:
+        info.alu_op = ALU_SRL; // SRLW
+        break;
+      default:
+        info.illegal = true;
+        break;
+      }
+    } else if (funct7 == 0x20) {
+      switch (funct3) {
+      case 0:
+        info.alu_op = ALU_SUB; // SUBW
+        break;
+      case 5:
+        info.alu_op = ALU_SRA; // SRAW
+        break;
+      default:
+        info.illegal = true;
+        break;
+      }
+    } else {
+      info.illegal = true;
+    }
+    break;
+
+  // -------------------------
   // SYSTEM (CSR)
   // -------------------------
   case 0x73:
-    info.fu_type = FU_CSR;
-    info.is_csr = true;
     if (funct3 == 0) {
+      info.fu_type = FU_ALU;
+      info.is_csr = false;
       // PRIV 指令: ECALL, EBREAK, MRET
       // 必须严格检查立即数，以匹配 decoder.sv 的行为
       uint32_t sys_imm = (inst >> 20) & 0xFFF;
@@ -403,15 +471,18 @@ GoldenInfo decode_reference(uint32_t inst, uint32_t pc) {
       } else {
         info.illegal = true; // 其他情况非法
       }
+    } else if (funct3 == 1 || funct3 == 2 || funct3 == 3 || funct3 == 5 ||
+               funct3 == 6 || funct3 == 7) {
+      info.fu_type = FU_CSR;
+      info.is_csr = true;
+      info.has_rd = (rd != 0);
+      if (funct3 == 1 || funct3 == 2 || funct3 == 3) {
+        info.has_rs1 = true;
+      } else {
+        info.has_rs1 = false; // 立即数形式
+      }
     } else {
-      // CSRRW, CSRRS, CSRRC, etc.
-      // 为了匹配当前 decoder.sv 的实现（尚未支持 CSR），这里必须标记为
-      // illegal
       info.illegal = true;
-
-      // 等硬件实现了 CSR 再恢复下面的代码
-      // info.has_rs1 = true;
-      // info.has_rd = (rd != 0);
     }
     break;
 

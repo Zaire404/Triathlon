@@ -46,26 +46,45 @@ module execute_alu #(
 
   // --- 2. 算术与逻辑核心 ---
   logic [XLEN-1:0] alu_res;
+  logic [31:0]     alu_res_w;
+  logic [31:0]     op_a_w;
+  logic [31:0]     op_b_w;
 
   always_comb begin
     alu_res = '0;
-    unique case (uop_i.alu_op)
-      ALU_ADD:   alu_res = op_a + op_b;
-      ALU_SUB:   alu_res = op_a - op_b;
-      ALU_LUI:   alu_res = uop_i.imm;
-      ALU_AUIPC: alu_res = op_a + op_b;
-      ALU_AND:   alu_res = op_a & op_b;
-      ALU_OR:    alu_res = op_a | op_b;
-      ALU_XOR:   alu_res = op_a ^ op_b;
-      // [改进] 移位操作数位宽使用 SHAMT_W 截断，避免硬编码 [4:0]
-      ALU_SLL:   alu_res = op_a <<  op_b[SHAMT_W-1:0];
-      ALU_SRL:   alu_res = op_a >>  op_b[SHAMT_W-1:0];
-      ALU_SRA:   alu_res = $signed(op_a) >>> op_b[SHAMT_W-1:0];
-      // [改进] 比较结果使用 XLEN'(1) 适配位宽
-      ALU_SLT:   alu_res = ($signed(op_a) < $signed(op_b)) ? XLEN'(1) : '0;
-      ALU_SLTU:  alu_res = (op_a < op_b) ? XLEN'(1) : '0;
-      default:   alu_res = '0;
-    endcase
+    alu_res_w = '0;
+    op_a_w = op_a[31:0];
+    op_b_w = op_b[31:0];
+
+    if (uop_i.is_word_op) begin
+      unique case (uop_i.alu_op)
+        ALU_ADD:   alu_res_w = op_a_w + op_b_w;
+        ALU_SUB:   alu_res_w = op_a_w - op_b_w;
+        ALU_SLL:   alu_res_w = op_a_w << op_b_w[4:0];
+        ALU_SRL:   alu_res_w = op_a_w >> op_b_w[4:0];
+        ALU_SRA:   alu_res_w = $signed(op_a_w) >>> op_b_w[4:0];
+        default:   alu_res_w = '0;
+      endcase
+      alu_res = {{(XLEN-32){alu_res_w[31]}}, alu_res_w};
+    end else begin
+      unique case (uop_i.alu_op)
+        ALU_ADD:   alu_res = op_a + op_b;
+        ALU_SUB:   alu_res = op_a - op_b;
+        ALU_LUI:   alu_res = uop_i.imm;
+        ALU_AUIPC: alu_res = op_a + op_b;
+        ALU_AND:   alu_res = op_a & op_b;
+        ALU_OR:    alu_res = op_a | op_b;
+        ALU_XOR:   alu_res = op_a ^ op_b;
+        // [改进] 移位操作数位宽使用 SHAMT_W 截断，避免硬编码 [4:0]
+        ALU_SLL:   alu_res = op_a << op_b[SHAMT_W-1:0];
+        ALU_SRL:   alu_res = op_a >> op_b[SHAMT_W-1:0];
+        ALU_SRA:   alu_res = $signed(op_a) >>> op_b[SHAMT_W-1:0];
+        // [改进] 比较结果使用 XLEN'(1) 适配位宽
+        ALU_SLT:   alu_res = ($signed(op_a) < $signed(op_b)) ? XLEN'(1) : '0;
+        ALU_SLTU:  alu_res = (op_a < op_b) ? XLEN'(1) : '0;
+        default:   alu_res = '0;
+      endcase
+    end
   end
 
   // --- 3. 跳转与分支处理 ---
