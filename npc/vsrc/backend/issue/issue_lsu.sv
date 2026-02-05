@@ -6,6 +6,7 @@ module issue_lsu #(
     parameter RS_DEPTH = Cfg.RS_DEPTH,
     parameter DATA_W   = Cfg.XLEN,
     parameter TAG_W    = 6,
+    parameter CDB_W    = 4,
     parameter SB_W     = 4
 ) (
     input wire clk,
@@ -34,9 +35,9 @@ module issue_lsu #(
     output logic [$clog2(RS_DEPTH+1)-1:0] free_count_o,
 
     // CDB
-    input wire [       3:0] cdb_valid,
-    input wire [ TAG_W-1:0] cdb_tag  [0:3],
-    input wire [DATA_W-1:0] cdb_val  [0:3],
+    input wire [ CDB_W-1:0] cdb_valid,
+    input wire [ TAG_W-1:0] cdb_tag  [0:CDB_W-1],
+    input wire [DATA_W-1:0] cdb_val  [0:CDB_W-1],
 
     // LSU 输出
     output wire                           lsu_en,
@@ -120,7 +121,7 @@ module issue_lsu #(
       .Cfg   (Cfg),
       .DATA_W(DATA_W),
       .TAG_W (TAG_W),
-      .CDB_W (4),
+      .CDB_W (CDB_W),
       .SB_W  (SB_W)
   ) u_rs (
       .clk  (clk),

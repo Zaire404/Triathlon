@@ -45,7 +45,21 @@ module tb_issue #(
     output decode_pkg::uop_t alu1_uop,  // [修复] 类型改为 uop_t，名称改为 alu1_uop
     output wire [DATA_W-1:0] alu1_v1,
     output wire [DATA_W-1:0] alu1_v2,
-    output wire [TAG_W-1:0] alu1_dst
+    output wire [TAG_W-1:0] alu1_dst,
+
+    // ALU 2 输出
+    output wire alu2_en,
+    output decode_pkg::uop_t alu2_uop,
+    output wire [DATA_W-1:0] alu2_v1,
+    output wire [DATA_W-1:0] alu2_v2,
+    output wire [TAG_W-1:0] alu2_dst,
+
+    // ALU 3 输出
+    output wire alu3_en,
+    output decode_pkg::uop_t alu3_uop,
+    output wire [DATA_W-1:0] alu3_v1,
+    output wire [DATA_W-1:0] alu3_v2,
+    output wire [TAG_W-1:0] alu3_dst
 );
 
   // 实例化被测模块 (DUT)
@@ -83,7 +97,19 @@ module tb_issue #(
       .alu1_uop(alu1_uop),  // [修复] 连接到 tb 的 alu1_uop
       .alu1_v1 (alu1_v1),
       .alu1_v2 (alu1_v2),
-      .alu1_dst(alu1_dst)
+      .alu1_dst(alu1_dst),
+
+      .alu2_en (alu2_en),
+      .alu2_uop(alu2_uop),
+      .alu2_v1 (alu2_v1),
+      .alu2_v2 (alu2_v2),
+      .alu2_dst(alu2_dst),
+
+      .alu3_en (alu3_en),
+      .alu3_uop(alu3_uop),
+      .alu3_v1 (alu3_v1),
+      .alu3_v2 (alu3_v2),
+      .alu3_dst(alu3_dst)
   );
 
 endmodule
