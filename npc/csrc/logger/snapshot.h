@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 
 struct Snapshot {
@@ -13,6 +14,9 @@ struct Snapshot {
   uint8_t dbg_fe_valid = 0;
   uint8_t dbg_fe_ready = 0;
   uint32_t dbg_fe_pc = 0;
+  std::array<uint32_t, 4> dbg_fe_instrs{};
+  std::array<uint32_t, 4> mem_fe_instrs{};
+  uint32_t fe_mismatch_mask = 0;
 
   uint8_t dbg_dec_valid = 0;
   uint8_t dbg_dec_ready = 0;
@@ -59,6 +63,14 @@ struct Snapshot {
 
   uint8_t backend_flush = 0;
   uint32_t backend_redirect_pc = 0;
+
+  uint8_t dbg_bru_valid = 0;
+  uint8_t dbg_bru_mispred = 0;
+  uint32_t dbg_bru_pc = 0;
+  uint32_t dbg_bru_imm = 0;
+  uint32_t dbg_bru_op = 0;
+  uint8_t dbg_bru_is_jump = 0;
+  uint8_t dbg_bru_is_branch = 0;
 
   uint32_t dbg_rob_head_fu = 0;
   uint8_t dbg_rob_head_complete = 0;

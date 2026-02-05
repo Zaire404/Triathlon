@@ -3,6 +3,7 @@
 #include <iomanip>
 #include <sstream>
 
+#include <fmt/format.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 
@@ -105,6 +106,100 @@ void Logger::log_perf(const Snapshot &snap, double ipc, double cpi) {
 void Logger::log_info(const std::string &msg) { spdlog::info("{}", msg); }
 
 void Logger::log_warn(const std::string &msg) { spdlog::warn("{}", msg); }
+
+bool Logger::needs_periodic_snapshot() {
+  return g_config.stall_trace || g_config.progress_interval > 0;
+}
+
+void Logger::log_flush(uint64_t cycle, uint32_t redirect_pc) {
+  spdlog::info("[flush ] cycle={} redirect_pc=0x{:x}", cycle, redirect_pc);
+}
+
+void Logger::log_bru(const Snapshot &snap) {
+  spdlog::info(
+      "[bru   ] cycle={} valid={} pc=0x{:x} imm=0x{:x} op={} is_jump={} "
+      "is_branch={}",
+      snap.cycles,
+      static_cast<int>(snap.dbg_bru_valid),
+      snap.dbg_bru_pc,
+      snap.dbg_bru_imm,
+      snap.dbg_bru_op,
+      static_cast<int>(snap.dbg_bru_is_jump),
+      static_cast<int>(snap.dbg_bru_is_branch));
+}
+
+void Logger::log_fe_mismatch(const Snapshot &snap) {
+  std::string fe_str = fmt::format(
+      "0x{:x},0x{:x},0x{:x},0x{:x}",
+      snap.dbg_fe_instrs[0],
+      snap.dbg_fe_instrs[1],
+      snap.dbg_fe_instrs[2],
+      snap.dbg_fe_instrs[3]);
+  std::string mem_str = fmt::format(
+      "0x{:x},0x{:x},0x{:x},0x{:x}",
+      snap.mem_fe_instrs[0],
+      snap.mem_fe_instrs[1],
+      snap.mem_fe_instrs[2],
+      snap.mem_fe_instrs[3]);
+  spdlog::info(
+      "[fe   ] cycle={} pc=0x{:x} mismatch=0x{:x} fe={{{}}} mem={{{}}}",
+      snap.cycles,
+      snap.dbg_fe_pc,
+      snap.fe_mismatch_mask,
+      fe_str,
+      mem_str);
+}
+
+void Logger::maybe_log_flush(const Snapshot &snap) {
+  if (!snap.backend_flush) return;
+  if (!(g_config.commit_trace || g_config.bru_trace)) return;
+  log_flush(snap.cycles, snap.backend_redirect_pc);
+}
+
+void Logger::maybe_log_bru(const Snapshot &snap) {
+  if (!g_config.bru_trace) return;
+  if (!snap.backend_flush || !snap.dbg_bru_mispred) return;
+  log_bru(snap);
+}
+
+void Logger::maybe_log_fe_mismatch(
+    const Snapshot &snap,
+    const std::function<uint32_t(uint32_t)> &read_word) {
+  if (!g_config.fe_trace) return;
+  if (!snap.dbg_fe_valid || !snap.dbg_fe_ready) return;
+  std::array<uint32_t, 4> mem_instrs{};
+  uint32_t mismatch_mask = 0;
+  for (int i = 0; i < 4; i++) {
+    uint32_t addr = snap.dbg_fe_pc + static_cast<uint32_t>(i * 4);
+    mem_instrs[i] = read_word(addr);
+    if (snap.dbg_fe_instrs[i] != mem_instrs[i]) {
+      mismatch_mask |= (1u << i);
+    }
+  }
+  if (mismatch_mask == 0) return;
+  Snapshot fe_snap = snap;
+  fe_snap.mem_fe_instrs = mem_instrs;
+  fe_snap.fe_mismatch_mask = mismatch_mask;
+  log_fe_mismatch(fe_snap);
+}
+
+void Logger::maybe_log_stall(const Snapshot &snap) {
+  if (!g_config.stall_trace) return;
+  if (g_config.stall_threshold == 0) return;
+  if (snap.no_commit_cycles < g_config.stall_threshold) return;
+  if (snap.no_commit_cycles != g_config.stall_threshold &&
+      (snap.no_commit_cycles % g_config.stall_threshold) != 0) {
+    return;
+  }
+  log_stall(snap);
+}
+
+void Logger::maybe_log_progress(const Snapshot &snap) {
+  if (g_config.progress_interval == 0) return;
+  if (snap.cycles == 0) return;
+  if ((snap.cycles % g_config.progress_interval) != 0) return;
+  log_progress(snap);
+}
 
 std::string Logger::format_stall(const Snapshot &snap) {
   std::ostringstream oss;

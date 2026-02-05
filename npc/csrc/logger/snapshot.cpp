@@ -20,6 +20,9 @@ Snapshot collect_snapshot(const Vtb_triathlon *top,
   snap.dbg_fe_valid = static_cast<uint8_t>(top->dbg_fe_valid_o);
   snap.dbg_fe_ready = static_cast<uint8_t>(top->dbg_fe_ready_o);
   snap.dbg_fe_pc = static_cast<uint32_t>(top->dbg_fe_pc_o);
+  for (int i = 0; i < 4; i++) {
+    snap.dbg_fe_instrs[i] = static_cast<uint32_t>(top->dbg_fe_instrs_o[i]);
+  }
 
   snap.dbg_dec_valid = static_cast<uint8_t>(top->dbg_dec_valid_o);
   snap.dbg_dec_ready = static_cast<uint8_t>(top->dbg_dec_ready_o);
@@ -66,6 +69,13 @@ Snapshot collect_snapshot(const Vtb_triathlon *top,
 
   snap.backend_flush = static_cast<uint8_t>(top->backend_flush_o);
   snap.backend_redirect_pc = static_cast<uint32_t>(top->backend_redirect_pc_o);
+  snap.dbg_bru_valid = static_cast<uint8_t>(top->dbg_bru_valid_o);
+  snap.dbg_bru_mispred = static_cast<uint8_t>(top->dbg_bru_mispred_o);
+  snap.dbg_bru_pc = static_cast<uint32_t>(top->dbg_bru_pc_o);
+  snap.dbg_bru_imm = static_cast<uint32_t>(top->dbg_bru_imm_o);
+  snap.dbg_bru_op = static_cast<uint32_t>(top->dbg_bru_op_o);
+  snap.dbg_bru_is_jump = static_cast<uint8_t>(top->dbg_bru_is_jump_o);
+  snap.dbg_bru_is_branch = static_cast<uint8_t>(top->dbg_bru_is_branch_o);
 
   snap.dbg_rob_head_fu = static_cast<uint32_t>(top->dbg_rob_head_fu_o);
   snap.dbg_rob_head_complete = static_cast<uint8_t>(top->dbg_rob_head_complete_o);

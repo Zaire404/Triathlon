@@ -1,6 +1,8 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
+#include <functional>
 #include <string>
 
 #include "logger/snapshot.h"
@@ -32,6 +34,17 @@ class Logger {
   static void log_perf(const Snapshot &snap, double ipc, double cpi);
   static void log_info(const std::string &msg);
   static void log_warn(const std::string &msg);
+  static void log_flush(uint64_t cycle, uint32_t redirect_pc);
+  static void log_bru(const Snapshot &snap);
+  static void log_fe_mismatch(const Snapshot &snap);
+  static void maybe_log_flush(const Snapshot &snap);
+  static void maybe_log_bru(const Snapshot &snap);
+  static void maybe_log_fe_mismatch(
+      const Snapshot &snap,
+      const std::function<uint32_t(uint32_t)> &read_word);
+  static void maybe_log_stall(const Snapshot &snap);
+  static void maybe_log_progress(const Snapshot &snap);
+  static bool needs_periodic_snapshot();
 
   static const LogConfig &config();
 
