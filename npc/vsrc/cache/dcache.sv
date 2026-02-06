@@ -188,10 +188,19 @@ module dcache #(
   logic [Cfg.PLEN-1:0] sel_addr;
   decode_pkg::lsu_op_e sel_op;
   logic [Cfg.XLEN-1:0] sel_wdata;
+  logic resp_accept;
+  logic lookup_pipe_ready;
+  logic pre_sel_valid;
+  logic [Cfg.PLEN-1:0] pre_sel_addr;
+  logic lookup_resp_valid;
+  logic [Cfg.XLEN-1:0] lookup_resp_data;
+  logic lookup_resp_err;
 
-  // Ready/accept policy: blocking cache; accept new req only in IDLE.
+  // Ready/accept policy: blocking cache; allow pipelined load hits in LOOKUP.
   always_comb begin
-    ld_req_ready_o = (state_q == S_IDLE) && !flush_i;
+    resp_accept = (state_q == S_RESP) && ld_rsp_ready_i && !flush_i;
+    lookup_pipe_ready = lookup_resp_valid && ld_rsp_ready_i && !flush_i;
+    ld_req_ready_o = ((state_q == S_IDLE) || resp_accept || lookup_pipe_ready) && !flush_i;
     st_req_ready_o = (state_q == S_IDLE) && !ld_req_valid_i && !flush_i;  // load wins if same cycle
 
     sel_is_load    = 1'b0;
@@ -200,7 +209,18 @@ module dcache #(
     sel_op         = decode_pkg::LSU_LW;
     sel_wdata      = '0;
 
+    pre_sel_valid  = 1'b0;
+    pre_sel_addr   = '0;
+
     if (!flush_i) begin
+      if (ld_req_valid_i) begin
+        pre_sel_valid = 1'b1;
+        pre_sel_addr  = ld_req_addr_i;
+      end else if (st_req_valid_i) begin
+        pre_sel_valid = 1'b1;
+        pre_sel_addr  = st_req_addr_i;
+      end
+
       if (ld_req_valid_i && ld_req_ready_o) begin
         sel_is_load = 1'b1;
         sel_addr    = ld_req_addr_i;
@@ -231,10 +251,30 @@ module dcache #(
   assign sel_tag       = sel_line_addr[INDEX_WIDTH+:TAG_WIDTH];
   assign sel_byte_off  = sel_addr[OFFSET_WIDTH-1:0];
 
+  logic [LINE_ADDR_WIDTH-1:0] ld_line_addr;
+  logic [    INDEX_WIDTH-1:0] ld_index;
+  assign ld_line_addr = ld_req_addr_i[Cfg.PLEN-1:OFFSET_WIDTH];
+  assign ld_index     = ld_line_addr[INDEX_WIDTH-1:0];
+
+  logic [LINE_ADDR_WIDTH-1:0] pre_sel_line_addr;
+  logic [    INDEX_WIDTH-1:0] pre_sel_index;
+  assign pre_sel_line_addr = pre_sel_addr[Cfg.PLEN-1:OFFSET_WIDTH];
+  assign pre_sel_index     = pre_sel_line_addr[INDEX_WIDTH-1:0];
+
   logic [SETS_PER_BANK_WIDTH-1:0] sel_bank_addr;
   logic [     BANK_SEL_WIDTH-1:0] sel_bank_sel;
   assign sel_bank_addr = sel_index[INDEX_WIDTH-1:BANK_SEL_WIDTH];
   assign sel_bank_sel  = sel_index[BANK_SEL_WIDTH-1:0];
+
+  logic [SETS_PER_BANK_WIDTH-1:0] ld_bank_addr;
+  logic [     BANK_SEL_WIDTH-1:0] ld_bank_sel;
+  assign ld_bank_addr = ld_index[INDEX_WIDTH-1:BANK_SEL_WIDTH];
+  assign ld_bank_sel  = ld_index[BANK_SEL_WIDTH-1:0];
+
+  logic [SETS_PER_BANK_WIDTH-1:0] pre_sel_bank_addr;
+  logic [     BANK_SEL_WIDTH-1:0] pre_sel_bank_sel;
+  assign pre_sel_bank_addr = pre_sel_index[INDEX_WIDTH-1:BANK_SEL_WIDTH];
+  assign pre_sel_bank_sel  = pre_sel_index[BANK_SEL_WIDTH-1:0];
 
   // ---------------------------------------------------------------------------
   // Cache arrays
@@ -445,9 +485,14 @@ module dcache #(
     r_bank_sel  = req_bank_sel_q;
 
     // In IDLE, when we accept a request, use the selected request address
-    if (state_q == S_IDLE && accept_req) begin
-      r_bank_addr = sel_bank_addr;
-      r_bank_sel  = sel_bank_sel;
+    if ((state_q == S_IDLE || state_q == S_RESP) && pre_sel_valid) begin
+      r_bank_addr = pre_sel_bank_addr;
+      r_bank_sel  = pre_sel_bank_sel;
+    end
+
+    if (state_q == S_LOOKUP && ld_req_valid_i && ld_rsp_ready_i && !flush_i) begin
+      r_bank_addr = ld_bank_addr;
+      r_bank_sel  = ld_bank_sel;
     end
 
     // During store-hit update, force read A to same bank/address as the write
@@ -475,6 +520,11 @@ module dcache #(
     end
   end
 
+  assign lookup_resp_valid =
+      (state_q == S_LOOKUP) && hit && !req_is_store_q && !req_err_q;
+  assign lookup_resp_data = extract_load(hit_line, req_byte_off_q, req_op_q);
+  assign lookup_resp_err  = 1'b0;
+
   // ---------------------------------------------------------------------------
   // Default assignments for write port and memory interface
   // ---------------------------------------------------------------------------
@@ -501,11 +551,17 @@ module dcache #(
     wb_req_data_o         = victim_line_q;
 
     // Load response outputs
-    ld_rsp_valid_o        = (state_q == S_RESP);
-    ld_rsp_data_o         = rsp_data_q;
-    ld_rsp_err_o          = rsp_err_q;
+    ld_rsp_valid_o        = 1'b0;
+    ld_rsp_data_o         = '0;
+    ld_rsp_err_o          = 1'b0;
 
     unique case (state_q)
+      S_RESP: begin
+        ld_rsp_valid_o = 1'b1;
+        ld_rsp_data_o  = rsp_data_q;
+        ld_rsp_err_o   = rsp_err_q;
+      end
+
       S_STORE_WRITE: begin
         // Write back the merged line to the hit way and mark dirty.
         we_way_mask                  = '0;
@@ -549,6 +605,12 @@ module dcache #(
       end
     endcase
 
+    if (lookup_resp_valid) begin
+      ld_rsp_valid_o = 1'b1;
+      ld_rsp_data_o  = lookup_resp_data;
+      ld_rsp_err_o   = lookup_resp_err;
+    end
+
     // On flush, suppress handshakes/responses.
     if (flush_i && !(state_q != S_IDLE && req_is_store_q)) begin
       miss_req_valid_o = 1'b0;
@@ -582,8 +644,17 @@ module dcache #(
             state_d = S_IDLE;
           end
         end else if (hit) begin
-          if (req_is_store_q) state_d = S_STORE_WRITE;
-          else state_d = S_RESP;
+          if (req_is_store_q) begin
+            state_d = S_STORE_WRITE;
+          end else if (ld_rsp_ready_i) begin
+            if (accept_req) begin
+              state_d = S_LOOKUP;
+            end else begin
+              state_d = S_IDLE;
+            end
+          end else begin
+            state_d = S_RESP;
+          end
         end else begin
           // Miss path
           if (victim_valid_q && victim_dirty_q) state_d = S_WB_REQ;
@@ -617,7 +688,11 @@ module dcache #(
 
       S_RESP: begin
         if (ld_rsp_valid_o && ld_rsp_ready_i) begin
-          state_d = S_IDLE;
+          if (ld_req_valid_i && ld_req_ready_o) begin
+            state_d = S_LOOKUP;
+          end else begin
+            state_d = S_IDLE;
+          end
         end
       end
 
@@ -719,7 +794,9 @@ module dcache #(
       // ----------------------------------------------------------
       // Accept new request
       // ----------------------------------------------------------
-      if (state_q == S_IDLE && accept_req) begin
+      if ((state_q == S_IDLE && accept_req) ||
+          (state_q == S_RESP && resp_accept && accept_req) ||
+          (state_q == S_LOOKUP && accept_req)) begin
         req_is_store_q  <= sel_is_store;
         req_addr_q      <= sel_addr;
         req_op_q        <= sel_op;
