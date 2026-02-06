@@ -80,8 +80,85 @@ void Logger::log_progress(const Snapshot& snap) {
 }
 
 void Logger::log_perf(const Snapshot& snap, double ipc, double cpi) {
-  spdlog::info("IPC={} CPI={} cycles={} commits={}", ipc, cpi, snap.cycles,
-               snap.total_commits);
+  uint64_t cycles = snap.perf_cycles ? snap.perf_cycles : snap.cycles;
+  uint64_t commit_instrs =
+      snap.perf_commit_instrs ? snap.perf_commit_instrs : snap.total_commits;
+  uint64_t commit_cycles = snap.perf_commit_cycles;
+  uint64_t nocommit_cycles = snap.perf_nocommit_cycles;
+  auto pct = [&](uint64_t v) -> double {
+    if (cycles == 0) return 0.0;
+    return 100.0 * static_cast<double>(v) / static_cast<double>(cycles);
+  };
+
+  spdlog::info(
+      "IPC={} CPI={} cycles={} commit_instrs={} commit_cycles={} "
+      "no_commit_cycles={}",
+      ipc, cpi, cycles, commit_instrs, commit_cycles, nocommit_cycles);
+  spdlog::info(
+      "stall cycles (not exclusive) fe_empty={}({:.1f}%) fe_stall={}({:.1f}%) "
+      "dec_stall={}({:.1f}%) rob_full={}({:.1f}%) "
+      "issue_full={}({:.1f}%) sb_full={}({:.1f}%) ic_miss={}({:.1f}%) "
+      "dc_miss={}({:.1f}%) flush={}({:.1f}%)",
+      snap.perf_fe_empty_cycles, pct(snap.perf_fe_empty_cycles),
+      snap.perf_fe_stall_cycles, pct(snap.perf_fe_stall_cycles),
+      snap.perf_dec_stall_cycles, pct(snap.perf_dec_stall_cycles),
+      snap.perf_rob_full_cycles, pct(snap.perf_rob_full_cycles),
+      snap.perf_issue_full_cycles, pct(snap.perf_issue_full_cycles),
+      snap.perf_sb_full_cycles, pct(snap.perf_sb_full_cycles),
+      snap.perf_icache_miss_cycles, pct(snap.perf_icache_miss_cycles),
+      snap.perf_dcache_miss_cycles, pct(snap.perf_dcache_miss_cycles),
+      snap.perf_flush_cycles, pct(snap.perf_flush_cycles));
+  spdlog::info(
+      "issueq full (per-fu) alu={}({:.1f}%) bru={}({:.1f}%) "
+      "lsu={}({:.1f}%) csr={}({:.1f}%)",
+      snap.perf_alu_full_cycles, pct(snap.perf_alu_full_cycles),
+      snap.perf_bru_full_cycles, pct(snap.perf_bru_full_cycles),
+      snap.perf_lsu_full_cycles, pct(snap.perf_lsu_full_cycles),
+      snap.perf_csr_full_cycles, pct(snap.perf_csr_full_cycles));
+  spdlog::info(
+      "miss reqs icache={} dcache={} miss_bp_cycles icache={}({:.1f}%) "
+      "dcache={}({:.1f}%)",
+      snap.perf_icache_miss_reqs, snap.perf_dcache_miss_reqs,
+      snap.perf_icache_miss_cycles, pct(snap.perf_icache_miss_cycles),
+      snap.perf_dcache_miss_cycles, pct(snap.perf_dcache_miss_cycles));
+  spdlog::info(
+      "ifu state cycles start={}({:.1f}%) wait_icache={}({:.1f}%) "
+      "wait_ibuf={}({:.1f}%)",
+      snap.perf_ifu_start_cycles, pct(snap.perf_ifu_start_cycles),
+      snap.perf_ifu_wait_icache_cycles,
+      pct(snap.perf_ifu_wait_icache_cycles),
+      snap.perf_ifu_wait_ibuf_cycles, pct(snap.perf_ifu_wait_ibuf_cycles));
+  spdlog::info(
+      "icache state cycles idle={}({:.1f}%) lookup={}({:.1f}%) "
+      "miss_req={}({:.1f}%) wait_refill={}({:.1f}%)",
+      snap.perf_icache_idle_cycles, pct(snap.perf_icache_idle_cycles),
+      snap.perf_icache_lookup_cycles, pct(snap.perf_icache_lookup_cycles),
+      snap.perf_icache_miss_req_cycles,
+      pct(snap.perf_icache_miss_req_cycles),
+      snap.perf_icache_wait_refill_cycles,
+      pct(snap.perf_icache_wait_refill_cycles));
+  spdlog::info(
+      "lsu state cycles idle={}({:.1f}%) ld_req={}({:.1f}%) "
+      "ld_rsp={}({:.1f}%) resp={}({:.1f}%)",
+      snap.perf_lsu_idle_cycles, pct(snap.perf_lsu_idle_cycles),
+      snap.perf_lsu_ld_req_cycles, pct(snap.perf_lsu_ld_req_cycles),
+      snap.perf_lsu_ld_rsp_cycles, pct(snap.perf_lsu_ld_rsp_cycles),
+      snap.perf_lsu_resp_cycles, pct(snap.perf_lsu_resp_cycles));
+  spdlog::info(
+      "dcache state cycles idle={}({:.1f}%) lookup={}({:.1f}%) "
+      "store_write={}({:.1f}%) wb_req={}({:.1f}%) miss_req={}({:.1f}%) "
+      "wait_refill={}({:.1f}%) resp={}({:.1f}%)",
+      snap.perf_dcache_idle_cycles, pct(snap.perf_dcache_idle_cycles),
+      snap.perf_dcache_lookup_cycles, pct(snap.perf_dcache_lookup_cycles),
+      snap.perf_dcache_store_write_cycles,
+      pct(snap.perf_dcache_store_write_cycles),
+      snap.perf_dcache_wb_req_cycles,
+      pct(snap.perf_dcache_wb_req_cycles),
+      snap.perf_dcache_miss_req_cycles,
+      pct(snap.perf_dcache_miss_req_cycles),
+      snap.perf_dcache_wait_refill_cycles,
+      pct(snap.perf_dcache_wait_refill_cycles),
+      snap.perf_dcache_resp_cycles, pct(snap.perf_dcache_resp_cycles));
 }
 
 void Logger::log_info(const std::string& msg) { spdlog::info("{}", msg); }

@@ -127,10 +127,70 @@ module tb_triathlon #(
     output logic [$bits(decode_pkg::branch_op_e)-1:0] dbg_bru_op_o,
     output logic                               dbg_bru_is_jump_o,
     output logic                               dbg_bru_is_branch_o,
-    output logic                               dbg_bru_valid_o
+    output logic                               dbg_bru_valid_o,
+
+    // Perf counters
+    output logic [63:0]                        perf_cycles_o,
+    output logic [63:0]                        perf_commit_cycles_o,
+    output logic [63:0]                        perf_commit_instrs_o,
+    output logic [63:0]                        perf_nocommit_cycles_o,
+    output logic [63:0]                        perf_fe_empty_cycles_o,
+    output logic [63:0]                        perf_fe_stall_cycles_o,
+    output logic [63:0]                        perf_dec_stall_cycles_o,
+    output logic [63:0]                        perf_rob_full_cycles_o,
+    output logic [63:0]                        perf_issue_full_cycles_o,
+    output logic [63:0]                        perf_alu_full_cycles_o,
+    output logic [63:0]                        perf_bru_full_cycles_o,
+    output logic [63:0]                        perf_lsu_full_cycles_o,
+    output logic [63:0]                        perf_csr_full_cycles_o,
+    output logic [63:0]                        perf_sb_full_cycles_o,
+    output logic [63:0]                        perf_icache_miss_cycles_o,
+    output logic [63:0]                        perf_dcache_miss_cycles_o,
+    output logic [63:0]                        perf_flush_cycles_o,
+    output logic [63:0]                        perf_icache_miss_reqs_o,
+    output logic [63:0]                        perf_dcache_miss_reqs_o,
+    output logic [63:0]                        perf_ifu_start_cycles_o,
+    output logic [63:0]                        perf_ifu_wait_icache_cycles_o,
+    output logic [63:0]                        perf_ifu_wait_ibuf_cycles_o,
+    output logic [63:0]                        perf_icache_idle_cycles_o,
+    output logic [63:0]                        perf_icache_lookup_cycles_o,
+    output logic [63:0]                        perf_icache_miss_req_cycles_o,
+    output logic [63:0]                        perf_icache_wait_refill_cycles_o,
+    output logic [63:0]                        perf_lsu_idle_cycles_o,
+    output logic [63:0]                        perf_lsu_ld_req_cycles_o,
+    output logic [63:0]                        perf_lsu_ld_rsp_cycles_o,
+    output logic [63:0]                        perf_lsu_resp_cycles_o,
+    output logic [63:0]                        perf_dcache_idle_cycles_o,
+    output logic [63:0]                        perf_dcache_lookup_cycles_o,
+    output logic [63:0]                        perf_dcache_store_write_cycles_o,
+    output logic [63:0]                        perf_dcache_wb_req_cycles_o,
+    output logic [63:0]                        perf_dcache_miss_req_cycles_o,
+    output logic [63:0]                        perf_dcache_wait_refill_cycles_o,
+    output logic [63:0]                        perf_dcache_resp_cycles_o
 );
 
   // localparams provided via module parameters
+  localparam logic [1:0] IFU_S_START = 2'd0;
+  localparam logic [1:0] IFU_S_WAIT_ICACHE = 2'd1;
+  localparam logic [1:0] IFU_S_WAIT_IBUFFER = 2'd2;
+
+  localparam logic [1:0] ICACHE_S_IDLE = 2'd0;
+  localparam logic [1:0] ICACHE_S_LOOKUP = 2'd1;
+  localparam logic [1:0] ICACHE_S_MISS_REQ = 2'd2;
+  localparam logic [1:0] ICACHE_S_MISS_WAIT = 2'd3;
+
+  localparam logic [1:0] LSU_S_IDLE = 2'd0;
+  localparam logic [1:0] LSU_S_LD_REQ = 2'd1;
+  localparam logic [1:0] LSU_S_LD_RSP = 2'd2;
+  localparam logic [1:0] LSU_S_RESP = 2'd3;
+
+  localparam logic [2:0] DCACHE_S_IDLE = 3'd0;
+  localparam logic [2:0] DCACHE_S_LOOKUP = 3'd1;
+  localparam logic [2:0] DCACHE_S_STORE_WRITE = 3'd2;
+  localparam logic [2:0] DCACHE_S_WB_REQ = 3'd3;
+  localparam logic [2:0] DCACHE_S_MISS_REQ = 3'd4;
+  localparam logic [2:0] DCACHE_S_WAIT_REFILL = 3'd5;
+  localparam logic [2:0] DCACHE_S_RESP = 3'd6;
 
   triathlon #(
       .Cfg(global_config_pkg::Cfg)
@@ -318,5 +378,165 @@ module tb_triathlon #(
   assign dbg_bru_is_jump_o  = dut.u_backend.bru_uop.is_jump;
   assign dbg_bru_is_branch_o = dut.u_backend.bru_uop.is_branch;
   assign dbg_bru_valid_o    = dut.u_backend.bru_en;
+
+  // Perf counters
+  logic [1:0] ifu_state;
+  logic [1:0] icache_state;
+  logic [1:0] lsu_state;
+  logic [2:0] dcache_state;
+
+  assign ifu_state = dut.u_frontend.i_ifu.current_state;
+  assign icache_state = dut.u_frontend.i_icache.state_q;
+  assign lsu_state = dut.u_backend.u_lsu.state_q;
+  assign dcache_state = dut.u_backend.u_dcache.state_q;
+
+  logic [2:0] commit_count;
+  always_comb begin
+    commit_count = '0;
+    for (int i = 0; i < Cfg.NRET; i++) begin
+      if (commit_valid_o[i]) commit_count++;
+    end
+  end
+
+  always_ff @(posedge clk_i or negedge rst_ni) begin
+    if (!rst_ni) begin
+      perf_cycles_o <= 64'd0;
+      perf_commit_cycles_o <= 64'd0;
+      perf_commit_instrs_o <= 64'd0;
+      perf_nocommit_cycles_o <= 64'd0;
+      perf_fe_empty_cycles_o <= 64'd0;
+      perf_fe_stall_cycles_o <= 64'd0;
+      perf_dec_stall_cycles_o <= 64'd0;
+      perf_rob_full_cycles_o <= 64'd0;
+      perf_issue_full_cycles_o <= 64'd0;
+      perf_alu_full_cycles_o <= 64'd0;
+      perf_bru_full_cycles_o <= 64'd0;
+      perf_lsu_full_cycles_o <= 64'd0;
+      perf_csr_full_cycles_o <= 64'd0;
+      perf_sb_full_cycles_o <= 64'd0;
+      perf_icache_miss_cycles_o <= 64'd0;
+      perf_dcache_miss_cycles_o <= 64'd0;
+      perf_flush_cycles_o <= 64'd0;
+      perf_icache_miss_reqs_o <= 64'd0;
+      perf_dcache_miss_reqs_o <= 64'd0;
+      perf_ifu_start_cycles_o <= 64'd0;
+      perf_ifu_wait_icache_cycles_o <= 64'd0;
+      perf_ifu_wait_ibuf_cycles_o <= 64'd0;
+      perf_icache_idle_cycles_o <= 64'd0;
+      perf_icache_lookup_cycles_o <= 64'd0;
+      perf_icache_miss_req_cycles_o <= 64'd0;
+      perf_icache_wait_refill_cycles_o <= 64'd0;
+      perf_lsu_idle_cycles_o <= 64'd0;
+      perf_lsu_ld_req_cycles_o <= 64'd0;
+      perf_lsu_ld_rsp_cycles_o <= 64'd0;
+      perf_lsu_resp_cycles_o <= 64'd0;
+      perf_dcache_idle_cycles_o <= 64'd0;
+      perf_dcache_lookup_cycles_o <= 64'd0;
+      perf_dcache_store_write_cycles_o <= 64'd0;
+      perf_dcache_wb_req_cycles_o <= 64'd0;
+      perf_dcache_miss_req_cycles_o <= 64'd0;
+      perf_dcache_wait_refill_cycles_o <= 64'd0;
+      perf_dcache_resp_cycles_o <= 64'd0;
+    end else begin
+      perf_cycles_o <= perf_cycles_o + 1;
+      if (|commit_valid_o) begin
+        perf_commit_cycles_o <= perf_commit_cycles_o + 1;
+      end else begin
+        perf_nocommit_cycles_o <= perf_nocommit_cycles_o + 1;
+      end
+      perf_commit_instrs_o <= perf_commit_instrs_o + commit_count;
+
+      if (!dbg_fe_valid_o) perf_fe_empty_cycles_o <= perf_fe_empty_cycles_o + 1;
+      if (dbg_fe_valid_o && !dbg_fe_ready_o) begin
+        perf_fe_stall_cycles_o <= perf_fe_stall_cycles_o + 1;
+      end
+      if (dbg_dec_valid_o && !dbg_dec_ready_o) begin
+        perf_dec_stall_cycles_o <= perf_dec_stall_cycles_o + 1;
+      end
+      if (dut.u_backend.dec_valid && !dut.u_backend.rob_ready) begin
+        perf_rob_full_cycles_o <= perf_rob_full_cycles_o + 1;
+      end
+      if (dut.u_backend.dec_valid && dut.u_backend.rob_ready &&
+          !dut.u_backend.rob_ready_gated) begin
+        perf_issue_full_cycles_o <= perf_issue_full_cycles_o + 1;
+      end
+      if (dut.u_backend.dec_valid && dut.u_backend.rob_ready &&
+          !dut.u_backend.alu_can_accept) begin
+        perf_alu_full_cycles_o <= perf_alu_full_cycles_o + 1;
+      end
+      if (dut.u_backend.dec_valid && dut.u_backend.rob_ready &&
+          !dut.u_backend.bru_can_accept) begin
+        perf_bru_full_cycles_o <= perf_bru_full_cycles_o + 1;
+      end
+      if (dut.u_backend.dec_valid && dut.u_backend.rob_ready &&
+          !dut.u_backend.lsu_can_accept) begin
+        perf_lsu_full_cycles_o <= perf_lsu_full_cycles_o + 1;
+      end
+      if (dut.u_backend.dec_valid && dut.u_backend.rob_ready &&
+          !dut.u_backend.csr_can_accept) begin
+        perf_csr_full_cycles_o <= perf_csr_full_cycles_o + 1;
+      end
+      if ((|dut.u_backend.sb_alloc_req) && !dut.u_backend.sb_alloc_ready) begin
+        perf_sb_full_cycles_o <= perf_sb_full_cycles_o + 1;
+      end
+      if (icache_miss_req_valid_o && !icache_miss_req_ready_i) begin
+        perf_icache_miss_cycles_o <= perf_icache_miss_cycles_o + 1;
+      end
+      if (dcache_miss_req_valid_o && !dcache_miss_req_ready_i) begin
+        perf_dcache_miss_cycles_o <= perf_dcache_miss_cycles_o + 1;
+      end
+      if (backend_flush_o) perf_flush_cycles_o <= perf_flush_cycles_o + 1;
+      if (icache_miss_req_valid_o) begin
+        perf_icache_miss_reqs_o <= perf_icache_miss_reqs_o + 1;
+      end
+      if (dcache_miss_req_valid_o) begin
+        perf_dcache_miss_reqs_o <= perf_dcache_miss_reqs_o + 1;
+      end
+
+      unique case (ifu_state)
+        IFU_S_START: perf_ifu_start_cycles_o <= perf_ifu_start_cycles_o + 1;
+        IFU_S_WAIT_ICACHE:
+          perf_ifu_wait_icache_cycles_o <= perf_ifu_wait_icache_cycles_o + 1;
+        IFU_S_WAIT_IBUFFER:
+          perf_ifu_wait_ibuf_cycles_o <= perf_ifu_wait_ibuf_cycles_o + 1;
+        default: ;
+      endcase
+
+      unique case (icache_state)
+        ICACHE_S_IDLE: perf_icache_idle_cycles_o <= perf_icache_idle_cycles_o + 1;
+        ICACHE_S_LOOKUP:
+          perf_icache_lookup_cycles_o <= perf_icache_lookup_cycles_o + 1;
+        ICACHE_S_MISS_REQ:
+          perf_icache_miss_req_cycles_o <= perf_icache_miss_req_cycles_o + 1;
+        ICACHE_S_MISS_WAIT:
+          perf_icache_wait_refill_cycles_o <= perf_icache_wait_refill_cycles_o + 1;
+        default: ;
+      endcase
+
+      unique case (lsu_state)
+        LSU_S_IDLE: perf_lsu_idle_cycles_o <= perf_lsu_idle_cycles_o + 1;
+        LSU_S_LD_REQ: perf_lsu_ld_req_cycles_o <= perf_lsu_ld_req_cycles_o + 1;
+        LSU_S_LD_RSP: perf_lsu_ld_rsp_cycles_o <= perf_lsu_ld_rsp_cycles_o + 1;
+        LSU_S_RESP: perf_lsu_resp_cycles_o <= perf_lsu_resp_cycles_o + 1;
+        default: ;
+      endcase
+
+      unique case (dcache_state)
+        DCACHE_S_IDLE: perf_dcache_idle_cycles_o <= perf_dcache_idle_cycles_o + 1;
+        DCACHE_S_LOOKUP:
+          perf_dcache_lookup_cycles_o <= perf_dcache_lookup_cycles_o + 1;
+        DCACHE_S_STORE_WRITE:
+          perf_dcache_store_write_cycles_o <= perf_dcache_store_write_cycles_o + 1;
+        DCACHE_S_WB_REQ:
+          perf_dcache_wb_req_cycles_o <= perf_dcache_wb_req_cycles_o + 1;
+        DCACHE_S_MISS_REQ:
+          perf_dcache_miss_req_cycles_o <= perf_dcache_miss_req_cycles_o + 1;
+        DCACHE_S_WAIT_REFILL:
+          perf_dcache_wait_refill_cycles_o <= perf_dcache_wait_refill_cycles_o + 1;
+        DCACHE_S_RESP: perf_dcache_resp_cycles_o <= perf_dcache_resp_cycles_o + 1;
+        default: ;
+      endcase
+    end
+  end
 
 endmodule
