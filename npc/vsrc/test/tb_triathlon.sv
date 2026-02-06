@@ -453,29 +453,26 @@ module tb_triathlon #(
       if (dbg_dec_valid_o && !dbg_dec_ready_o) begin
         perf_dec_stall_cycles_o <= perf_dec_stall_cycles_o + 1;
       end
+
       if (dut.u_backend.dec_valid && !dut.u_backend.rob_ready) begin
         perf_rob_full_cycles_o <= perf_rob_full_cycles_o + 1;
+        if (!dut.u_backend.rob_ready_gated) begin
+          perf_issue_full_cycles_o <= perf_issue_full_cycles_o + 1;
+        end
+        if (!dut.u_backend.alu_can_accept) begin
+          perf_alu_full_cycles_o <= perf_alu_full_cycles_o + 1;
+        end
+        if (!dut.u_backend.bru_can_accept) begin
+          perf_bru_full_cycles_o <= perf_bru_full_cycles_o + 1;
+        end
+        if (!dut.u_backend.lsu_can_accept) begin
+          perf_lsu_full_cycles_o <= perf_lsu_full_cycles_o + 1;
+        end
+        if (!dut.u_backend.csr_can_accept) begin
+          perf_csr_full_cycles_o <= perf_csr_full_cycles_o + 1;
+        end
       end
-      if (dut.u_backend.dec_valid && dut.u_backend.rob_ready &&
-          !dut.u_backend.rob_ready_gated) begin
-        perf_issue_full_cycles_o <= perf_issue_full_cycles_o + 1;
-      end
-      if (dut.u_backend.dec_valid && dut.u_backend.rob_ready &&
-          !dut.u_backend.alu_can_accept) begin
-        perf_alu_full_cycles_o <= perf_alu_full_cycles_o + 1;
-      end
-      if (dut.u_backend.dec_valid && dut.u_backend.rob_ready &&
-          !dut.u_backend.bru_can_accept) begin
-        perf_bru_full_cycles_o <= perf_bru_full_cycles_o + 1;
-      end
-      if (dut.u_backend.dec_valid && dut.u_backend.rob_ready &&
-          !dut.u_backend.lsu_can_accept) begin
-        perf_lsu_full_cycles_o <= perf_lsu_full_cycles_o + 1;
-      end
-      if (dut.u_backend.dec_valid && dut.u_backend.rob_ready &&
-          !dut.u_backend.csr_can_accept) begin
-        perf_csr_full_cycles_o <= perf_csr_full_cycles_o + 1;
-      end
+
       if ((|dut.u_backend.sb_alloc_req) && !dut.u_backend.sb_alloc_ready) begin
         perf_sb_full_cycles_o <= perf_sb_full_cycles_o + 1;
       end
