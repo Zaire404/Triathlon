@@ -101,5 +101,66 @@ Snapshot collect_snapshot(const Vtb_triathlon *top,
   snap.dbg_sb_head_data_valid = static_cast<uint8_t>(top->dbg_sb_head_data_valid_o);
   snap.dbg_sb_head_addr = static_cast<uint32_t>(top->dbg_sb_head_addr_o);
 
+  snap.perf_cycles = static_cast<uint64_t>(top->perf_cycles_o);
+  snap.perf_commit_cycles = static_cast<uint64_t>(top->perf_commit_cycles_o);
+  snap.perf_commit_instrs = static_cast<uint64_t>(top->perf_commit_instrs_o);
+  snap.perf_nocommit_cycles = static_cast<uint64_t>(top->perf_nocommit_cycles_o);
+  snap.perf_fe_empty_cycles = static_cast<uint64_t>(top->perf_fe_empty_cycles_o);
+  snap.perf_fe_stall_cycles = static_cast<uint64_t>(top->perf_fe_stall_cycles_o);
+  snap.perf_dec_stall_cycles = static_cast<uint64_t>(top->perf_dec_stall_cycles_o);
+  snap.perf_rob_full_cycles = static_cast<uint64_t>(top->perf_rob_full_cycles_o);
+  snap.perf_issue_full_cycles =
+      static_cast<uint64_t>(top->perf_issue_full_cycles_o);
+  snap.perf_alu_full_cycles = static_cast<uint64_t>(top->perf_alu_full_cycles_o);
+  snap.perf_bru_full_cycles = static_cast<uint64_t>(top->perf_bru_full_cycles_o);
+  snap.perf_lsu_full_cycles = static_cast<uint64_t>(top->perf_lsu_full_cycles_o);
+  snap.perf_csr_full_cycles = static_cast<uint64_t>(top->perf_csr_full_cycles_o);
+  snap.perf_sb_full_cycles = static_cast<uint64_t>(top->perf_sb_full_cycles_o);
+  snap.perf_icache_miss_cycles =
+      static_cast<uint64_t>(top->perf_icache_miss_cycles_o);
+  snap.perf_dcache_miss_cycles =
+      static_cast<uint64_t>(top->perf_dcache_miss_cycles_o);
+  snap.perf_flush_cycles = static_cast<uint64_t>(top->perf_flush_cycles_o);
+  snap.perf_icache_miss_reqs =
+      static_cast<uint64_t>(top->perf_icache_miss_reqs_o);
+  snap.perf_dcache_miss_reqs =
+      static_cast<uint64_t>(top->perf_dcache_miss_reqs_o);
+  snap.perf_ifu_start_cycles =
+      static_cast<uint64_t>(top->perf_ifu_start_cycles_o);
+  snap.perf_ifu_wait_icache_cycles =
+      static_cast<uint64_t>(top->perf_ifu_wait_icache_cycles_o);
+  snap.perf_ifu_wait_ibuf_cycles =
+      static_cast<uint64_t>(top->perf_ifu_wait_ibuf_cycles_o);
+  snap.perf_icache_idle_cycles =
+      static_cast<uint64_t>(top->perf_icache_idle_cycles_o);
+  snap.perf_icache_lookup_cycles =
+      static_cast<uint64_t>(top->perf_icache_lookup_cycles_o);
+  snap.perf_icache_miss_req_cycles =
+      static_cast<uint64_t>(top->perf_icache_miss_req_cycles_o);
+  snap.perf_icache_wait_refill_cycles =
+      static_cast<uint64_t>(top->perf_icache_wait_refill_cycles_o);
+  snap.perf_lsu_idle_cycles =
+      static_cast<uint64_t>(top->perf_lsu_idle_cycles_o);
+  snap.perf_lsu_ld_req_cycles =
+      static_cast<uint64_t>(top->perf_lsu_ld_req_cycles_o);
+  snap.perf_lsu_ld_rsp_cycles =
+      static_cast<uint64_t>(top->perf_lsu_ld_rsp_cycles_o);
+  snap.perf_lsu_resp_cycles =
+      static_cast<uint64_t>(top->perf_lsu_resp_cycles_o);
+  snap.perf_dcache_idle_cycles =
+      static_cast<uint64_t>(top->perf_dcache_idle_cycles_o);
+  snap.perf_dcache_lookup_cycles =
+      static_cast<uint64_t>(top->perf_dcache_lookup_cycles_o);
+  snap.perf_dcache_store_write_cycles =
+      static_cast<uint64_t>(top->perf_dcache_store_write_cycles_o);
+  snap.perf_dcache_wb_req_cycles =
+      static_cast<uint64_t>(top->perf_dcache_wb_req_cycles_o);
+  snap.perf_dcache_miss_req_cycles =
+      static_cast<uint64_t>(top->perf_dcache_miss_req_cycles_o);
+  snap.perf_dcache_wait_refill_cycles =
+      static_cast<uint64_t>(top->perf_dcache_wait_refill_cycles_o);
+  snap.perf_dcache_resp_cycles =
+      static_cast<uint64_t>(top->perf_dcache_resp_cycles_o);
+
   return snap;
 }
