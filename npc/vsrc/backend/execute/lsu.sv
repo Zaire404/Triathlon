@@ -180,10 +180,21 @@ module lsu #(
   // ---------------------------------------------------------
   // Output defaults
   // ---------------------------------------------------------
-  assign req_ready_o = (state_q == S_IDLE) && !flush_i;
+  logic pipe_ready;
+  logic pipe_accept;
+  logic pipe_needs_dcache;
+
+  assign pipe_ready =
+      (state_q == S_LD_RSP) && ld_rsp_valid_i && wb_ready_i && !flush_i;
+  assign pipe_accept = pipe_ready && req_valid_i;
+  assign pipe_needs_dcache = is_load && !misaligned && !sb_load_hit_i;
+
+  assign req_ready_o = (state_q == S_IDLE && !flush_i) || pipe_ready;
 
   // Store buffer execute write (pulse when accepting a store)
-  assign sb_ex_valid_o = (state_q == S_IDLE) && req_valid_i && req_ready_o && is_store && !misaligned;
+  assign sb_ex_valid_o =
+      ((state_q == S_IDLE) && req_valid_i && req_ready_o && is_store && !misaligned) ||
+      (pipe_accept && is_store && !misaligned);
   assign sb_ex_sb_id_o = sb_id_i;
   assign sb_ex_addr_o = eff_addr;
   assign sb_ex_data_o = rs2_data_i;
@@ -191,7 +202,10 @@ module lsu #(
   assign sb_ex_rob_idx_o = rob_tag_i;
 
   // Store-buffer forwarding address (only meaningful for incoming load)
-  assign sb_load_addr_o = (state_q == S_IDLE && req_valid_i && is_load) ? eff_addr : '0;
+  assign sb_load_addr_o =
+      ((state_q == S_IDLE && req_valid_i && is_load) || (pipe_accept && is_load))
+          ? eff_addr
+          : '0;
   assign sb_load_rob_idx_o = rob_tag_i;
 
   // D-Cache load port
@@ -202,11 +216,66 @@ module lsu #(
   assign ld_rsp_ready_o = (state_q == S_LD_RSP);
 
   // Writeback (to CDB/ROB)
-  assign wb_valid_o = (state_q == S_RESP);
-  assign wb_rob_idx_o = resp_tag_q;
-  assign wb_data_o = resp_data_q;
-  assign wb_exception_o = resp_exc_q;
-  assign wb_ecause_o = resp_ecause_q;
+  logic resp_now_valid;
+  logic [ROB_IDX_WIDTH-1:0] resp_now_tag;
+  logic [Cfg.XLEN-1:0] resp_now_data;
+  logic resp_now_exc;
+  logic [4:0] resp_now_ecause;
+
+  logic imm_resp_valid;
+  logic [ROB_IDX_WIDTH-1:0] imm_resp_tag;
+  logic [Cfg.XLEN-1:0] imm_resp_data;
+  logic imm_resp_exc;
+  logic [4:0] imm_resp_ecause;
+
+  logic ld_resp_valid;
+  logic [ROB_IDX_WIDTH-1:0] ld_resp_tag;
+  logic [Cfg.XLEN-1:0] ld_resp_data;
+  logic ld_resp_exc;
+  logic [4:0] ld_resp_ecause;
+
+  assign imm_resp_valid =
+      (state_q == S_IDLE) && req_valid_i && req_ready_o &&
+      (is_store || !is_load || misaligned || sb_load_hit_i);
+  assign imm_resp_tag = rob_tag_i;
+  always_comb begin
+    imm_resp_data = '0;
+    imm_resp_exc = 1'b0;
+    imm_resp_ecause = '0;
+    if (misaligned) begin
+      imm_resp_exc = 1'b1;
+      imm_resp_ecause = is_load ? EXC_LD_ADDR_MISALIGNED : EXC_ST_ADDR_MISALIGNED;
+    end else if (is_load && sb_load_hit_i) begin
+      imm_resp_data = fwd_data;
+    end
+  end
+
+  assign ld_resp_valid = (state_q == S_LD_RSP) && ld_rsp_valid_i && !flush_i;
+  assign ld_resp_tag = req_tag_q;
+  assign ld_resp_data = ld_rsp_data_i;
+  assign ld_resp_exc = ld_rsp_err_i;
+  assign ld_resp_ecause = ld_rsp_err_i ? EXC_LD_ACCESS_FAULT : '0;
+
+  assign resp_now_valid = imm_resp_valid || ld_resp_valid;
+  always_comb begin
+    if (ld_resp_valid) begin
+      resp_now_tag = ld_resp_tag;
+      resp_now_data = ld_resp_data;
+      resp_now_exc = ld_resp_exc;
+      resp_now_ecause = ld_resp_ecause;
+    end else begin
+      resp_now_tag = imm_resp_tag;
+      resp_now_data = imm_resp_data;
+      resp_now_exc = imm_resp_exc;
+      resp_now_ecause = imm_resp_ecause;
+    end
+  end
+
+  assign wb_valid_o = (state_q == S_RESP) || resp_now_valid;
+  assign wb_rob_idx_o = resp_now_valid ? resp_now_tag : resp_tag_q;
+  assign wb_data_o = resp_now_valid ? resp_now_data : resp_data_q;
+  assign wb_exception_o = resp_now_valid ? resp_now_exc : resp_exc_q;
+  assign wb_ecause_o = resp_now_valid ? resp_now_ecause : resp_ecause_q;
   assign wb_is_mispred_o = 1'b0;
   assign wb_redirect_pc_o = '0;
 
@@ -219,18 +288,10 @@ module lsu #(
     unique case (state_q)
       S_IDLE: begin
         if (req_valid_i && req_ready_o) begin
-          if (is_store) begin
-            state_d = S_RESP;
-          end else if (is_load) begin
-            if (misaligned) begin
-              state_d = S_RESP;
-            end else if (sb_load_hit_i) begin
-              state_d = S_RESP;
-            end else begin
-              state_d = S_LD_REQ;
-            end
+          if (is_load && !misaligned && !sb_load_hit_i) begin
+            state_d = S_LD_REQ;
           end else begin
-            state_d = S_RESP;
+            state_d = wb_ready_i ? S_IDLE : S_RESP;
           end
         end
       end
@@ -243,7 +304,15 @@ module lsu #(
 
       S_LD_RSP: begin
         if (ld_rsp_valid_i) begin
-          state_d = S_RESP;
+          if (pipe_accept) begin
+            if (pipe_needs_dcache) begin
+              state_d = S_LD_REQ;
+            end else begin
+              state_d = S_RESP;
+            end
+          end else begin
+            state_d = wb_ready_i ? S_IDLE : S_RESP;
+          end
         end
       end
 
@@ -316,10 +385,39 @@ module lsu #(
             resp_exc_q    <= 1'b0;
             resp_ecause_q <= '0;
           end
+        end else if (pipe_accept) begin
+          if (pipe_needs_dcache) begin
+            req_addr_q <= eff_addr;
+            req_op_q   <= uop_i.lsu_op;
+            req_tag_q  <= rob_tag_i;
+          end
+
+          if (!pipe_needs_dcache) begin
+            resp_tag_q <= rob_tag_i;
+            if (is_store) begin
+              resp_data_q   <= '0;
+              resp_exc_q    <= misaligned;
+              resp_ecause_q <= misaligned ? EXC_ST_ADDR_MISALIGNED : '0;
+            end else if (is_load) begin
+              if (misaligned) begin
+                resp_data_q   <= '0;
+                resp_exc_q    <= 1'b1;
+                resp_ecause_q <= EXC_LD_ADDR_MISALIGNED;
+              end else if (sb_load_hit_i) begin
+                resp_data_q   <= fwd_data;
+                resp_exc_q    <= 1'b0;
+                resp_ecause_q <= '0;
+              end
+            end else begin
+              resp_data_q   <= '0;
+              resp_exc_q    <= 1'b0;
+              resp_ecause_q <= '0;
+            end
+          end
         end
 
-        // Capture load response
-        if (state_q == S_LD_RSP && ld_rsp_valid_i) begin
+        // Capture load response (skip when piping a new request to avoid clobbering)
+        if (state_q == S_LD_RSP && ld_rsp_valid_i && !pipe_accept) begin
           resp_tag_q    <= req_tag_q;
           resp_data_q   <= ld_rsp_data_i;
           resp_exc_q    <= ld_rsp_err_i;

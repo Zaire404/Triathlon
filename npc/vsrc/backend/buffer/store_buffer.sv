@@ -304,13 +304,12 @@ module store_buffer #(
       // 1. 條目有效 (可能是 Speculative 也可能是 Committed)
       // 2. 地址匹配
       // 3. 數據已就緒 (如果不就緒但地址匹配，真實硬件通常會 stall load，這裡簡化為不命中)
-      if (mem[idx].valid && 
-                mem[idx].addr_valid && 
-                mem[idx].data_valid && 
+      if (mem[idx].valid &&
+                mem[idx].addr_valid &&
+                mem[idx].data_valid &&
                 (mem[idx].addr == load_addr_i) &&
-                (rob_age(
-              mem[idx].rob_tag, rob_head_i
-          ) < load_age)) begin
+                ((mem[idx].committed || commit_set[idx]) ||
+                 (rob_age(mem[idx].rob_tag, rob_head_i) < load_age))) begin
 
         load_hit_o  = 1'b1;
         load_data_o = mem[idx].data;
