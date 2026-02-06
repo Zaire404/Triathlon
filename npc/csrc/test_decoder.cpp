@@ -480,6 +480,7 @@ GoldenInfo decode_reference(uint32_t inst, uint32_t pc) {
         info.has_rs1 = true;
       } else {
         info.has_rs1 = false; // 立即数形式
+        info.imm = rs1;
       }
     } else {
       info.illegal = true;
@@ -620,6 +621,97 @@ int main(int argc, char **argv) {
 
   const int NUM_TESTS = 20000;
   int passed = 0;
+
+  {
+    uint32_t inst = 0x7288fd73;
+    uint32_t pc = 0x80000000;
+    const int iter = -1;
+
+    top->inst_i = inst;
+    top->pc_i = pc;
+    top->eval(); // 纯组合逻辑
+
+    GoldenInfo ref = decode_reference(inst, pc);
+
+    bool mismatch = false;
+
+    if ((bool)top->check_illegal != ref.illegal) {
+      std::cout << "[ERROR] Illegal mismatch! Ref=" << ref.illegal
+                << " DUT=" << (int)top->check_illegal << std::endl;
+      mismatch = true;
+    }
+
+    if (!ref.illegal) {
+      if (top->check_imm != ref.imm) {
+        std::cout << "[ERROR] Imm mismatch! Ref=0x" << std::hex << ref.imm
+                  << " DUT=0x" << top->check_imm << std::endl;
+        mismatch = true;
+      }
+      if (top->check_alu_op != ref.alu_op) {
+        std::cout << "[ERROR] ALU_OP mismatch! Ref=" << std::dec << ref.alu_op
+                  << " DUT=" << top->check_alu_op << std::endl;
+        mismatch = true;
+      }
+      if (top->check_fu_type != ref.fu_type) {
+        std::cout << "[ERROR] FU_TYPE mismatch! Ref=" << ref.fu_type
+                  << " DUT=" << top->check_fu_type << std::endl;
+        mismatch = true;
+      }
+      if (top->check_is_load != ref.is_load) {
+        std::cout << "[ERROR] is_load mismatch!" << std::endl;
+        mismatch = true;
+      }
+      if (top->check_is_store != ref.is_store) {
+        std::cout << "[ERROR] is_store mismatch!" << std::endl;
+        mismatch = true;
+      }
+      if (ref.fu_type != FU_BRANCH &&
+          ref.fu_type != FU_LSU) {
+        if (top->check_rd != ref.rd && ref.has_rd) {
+          std::cout << "[ERROR] RD mismatch!" << std::endl;
+          mismatch = true;
+        }
+      }
+      if (ref.has_rs1 && top->check_rs1 != ref.rs1) {
+        std::cout << "[ERROR] RS1 mismatch! Ref=" << std::dec << ref.rs1
+                  << " DUT=" << (int)top->check_rs1 << std::endl;
+        mismatch = true;
+      }
+      if (ref.has_rs2 && top->check_rs2 != ref.rs2) {
+        std::cout << "[ERROR] RS2 mismatch! Ref=" << std::dec << ref.rs2
+                  << " DUT=" << (int)top->check_rs2 << std::endl;
+        mismatch = true;
+      }
+      if (ref.has_rd && top->check_rd != ref.rd) {
+        std::cout << "[ERROR] RD mismatch! Ref=" << std::dec << ref.rd
+                  << " DUT=" << (int)top->check_rd << std::endl;
+        mismatch = true;
+      }
+      if ((ref.is_load || ref.is_store) && top->check_lsu_op != ref.lsu_op) {
+        std::cout << "[ERROR] LSU_OP mismatch! Ref=" << std::dec << ref.lsu_op
+                  << " DUT=" << top->check_lsu_op << std::endl;
+        mismatch = true;
+      }
+      if (ref.is_branch && top->check_br_op != ref.br_op) {
+        std::cout << "[ERROR] BR_OP mismatch! Ref=" << std::dec << ref.br_op
+                  << " DUT=" << top->check_br_op << std::endl;
+        mismatch = true;
+      }
+      if (top->check_is_jump != ref.is_jump) {
+        std::cout << "[ERROR] is_jump mismatch! Ref=" << ref.is_jump
+                  << " DUT=" << (int)top->check_is_jump << std::endl;
+        mismatch = true;
+      }
+    }
+
+    if (mismatch) {
+      std::cout << "  Instruction: 0x" << std::hex << inst << std::endl;
+      std::cout << "  Iteration: " << std::dec << iter << std::endl;
+      assert(false); // 停止仿真
+    }
+
+    passed++;
+  }
 
   for (int i = 0; i < NUM_TESTS; ++i) {
     // 1. 生成指令

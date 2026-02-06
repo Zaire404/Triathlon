@@ -40,14 +40,26 @@ module ibuffer #(
   logic [PTR_W-1:0] rd_ptr_q, rd_ptr_d;
   logic [CNT_W-1:0] count_q, count_d;
 
-  // 计算当前空间、是否可一次性接收完整 fetch group
-  logic [CNT_W-1:0] free_slots;
-  assign free_slots = IB_DEPTH[CNT_W-1:0] - count_q;
-  logic can_enq_group;
-  assign can_enq_group = (free_slots >= FETCH_WIDTH[CNT_W-1:0]);
+  localparam int unsigned PEND_CNT_W = $clog2(FETCH_WIDTH + 1);
+  localparam int unsigned PEND_PTR_W = (FETCH_WIDTH > 1) ? $clog2(FETCH_WIDTH) : 1;
 
-  // 上游 ready：flush 时不接，空间不足时不接
-  assign fe_ready_o = (!flush_i) && can_enq_group;
+  logic [FETCH_WIDTH-1:0][Cfg.ILEN-1:0] pending_instrs_q, pending_instrs_d;
+  logic [Cfg.PLEN-1:0] pending_pc_q, pending_pc_d;
+  logic [PEND_CNT_W-1:0] pending_count_q, pending_count_d;
+  logic [PEND_PTR_W-1:0] pending_rd_ptr_q, pending_rd_ptr_d;
+
+  logic pending_empty;
+  logic fe_fire;
+
+  // 计算当前空间
+  logic [CNT_W-1:0] free_slots;
+  logic [CNT_W-1:0] effective_free;
+  assign free_slots = IB_DEPTH[CNT_W-1:0] - count_q;
+
+  // 上游 ready：flush 时不接，pending 未清空时不接
+  assign pending_empty = (pending_count_q == '0);
+  assign fe_ready_o = (!flush_i) && pending_empty;
+  assign fe_fire = fe_valid_i && fe_ready_o;
 
   // 下游 valid：只有队列里条目数 >= DECODE_WIDTH 才发一个完整 bundle
   logic can_deq_group;
@@ -59,9 +71,36 @@ module ibuffer #(
   int unsigned push_n;
   int unsigned pop_n;
 
+  logic [PEND_CNT_W-1:0] pending_count_src;
+  logic [PEND_PTR_W-1:0] pending_rd_ptr_src;
+  logic [FETCH_WIDTH-1:0][Cfg.ILEN-1:0] pending_instrs_src;
+  logic [Cfg.PLEN-1:0] pending_pc_src;
+
   always_comb begin
-    push_n = (fe_valid_i && fe_ready_o) ? FETCH_WIDTH : 0;
-    pop_n  = (ibuf_valid_o && ibuf_ready_i) ? DECODE_WIDTH : 0;
+    int unsigned pending_count_int;
+    int unsigned effective_free_int;
+
+    pop_n = (ibuf_valid_o && ibuf_ready_i) ? DECODE_WIDTH : 0;
+
+    pending_count_src = pending_count_q;
+    pending_rd_ptr_src = pending_rd_ptr_q;
+    pending_instrs_src = pending_instrs_q;
+    pending_pc_src = pending_pc_q;
+    if (fe_fire) begin
+      pending_count_src = FETCH_WIDTH[PEND_CNT_W-1:0];
+      pending_rd_ptr_src = '0;
+      pending_instrs_src = fe_instrs_i;
+      pending_pc_src = fe_pc_i;
+    end
+
+    effective_free = free_slots + CNT_W'(pop_n);
+    pending_count_int = pending_count_src;
+    effective_free_int = effective_free;
+    if (pending_count_int <= effective_free_int) begin
+      push_n = pending_count_int;
+    end else begin
+      push_n = effective_free_int;
+    end
   end
 
   // FIFO 控制逻辑
@@ -71,29 +110,56 @@ module ibuffer #(
     rd_ptr_d = rd_ptr_q;
     count_d  = count_q;
 
+    pending_instrs_d = pending_instrs_q;
+    pending_pc_d = pending_pc_q;
+    pending_count_d = pending_count_q;
+    pending_rd_ptr_d = pending_rd_ptr_q;
+
     if (flush_i) begin
       // flush：清空队列
       wr_ptr_d = '0;
       rd_ptr_d = '0;
       count_d  = '0;
+      pending_count_d = '0;
+      pending_rd_ptr_d = '0;
     end else begin
-      // 写入：把 fetch group 拆成若干 entry 写进 FIFO
-      if (push_n != 0) begin : gen_enqueue
-        for (int i = 0; i < FETCH_WIDTH; i++) begin
-          // 写指针位置 = wr_ptr_q + i（环形）
-          fifo_d[PTR_W'(wr_ptr_q + i)].instr = fe_instrs_i[i];
-          // 这里假设固定 4 字节指令：pc = base_pc + 4*i
-          fifo_d[PTR_W'(wr_ptr_q + i)].pc    = fe_pc_i + (Cfg.ILEN / 8 * i);
-        end
+      // Load new pending group
+      if (fe_fire) begin
+        pending_instrs_d = fe_instrs_i;
+        pending_pc_d = fe_pc_i;
+        pending_count_d = FETCH_WIDTH[PEND_CNT_W-1:0];
+        pending_rd_ptr_d = '0;
+      end
 
-        wr_ptr_d = wr_ptr_q + FETCH_WIDTH[PTR_W-1:0];
-        count_d  = count_q + FETCH_WIDTH[CNT_W-1:0];
-      end : gen_enqueue
+      // 写入：从 pending 缓冲搬运到 FIFO
+      for (int i = 0; i < FETCH_WIDTH; i++) begin
+        if (i < push_n) begin
+          // 写指针位置 = wr_ptr_q + i（环形）
+          fifo_d[PTR_W'(wr_ptr_q + i)].instr = pending_instrs_src[
+              ((pending_rd_ptr_src + i) >= FETCH_WIDTH) ?
+              (pending_rd_ptr_src + i - FETCH_WIDTH) :
+              (pending_rd_ptr_src + i)
+          ];
+          // 这里假设固定 4 字节指令：pc = base_pc + 4*i
+          fifo_d[PTR_W'(wr_ptr_q + i)].pc    = pending_pc_src + (Cfg.ILEN / 8 *
+              (((pending_rd_ptr_src + i) >= FETCH_WIDTH) ?
+              (pending_rd_ptr_src + i - FETCH_WIDTH) :
+              (pending_rd_ptr_src + i))
+          );
+        end
+      end
+
+      if (push_n != 0) begin
+        wr_ptr_d = wr_ptr_q + PTR_W'(push_n);
+        count_d  = count_d + CNT_W'(push_n);
+        pending_rd_ptr_d = pending_rd_ptr_src + PEND_PTR_W'(push_n);
+        pending_count_d = pending_count_src - PEND_CNT_W'(push_n);
+      end
 
       // 读出：只在成功发出一个完整 decode bundle 时移动 rd_ptr/count
       if (pop_n != 0) begin
         rd_ptr_d = rd_ptr_q + DECODE_WIDTH[PTR_W-1:0];
-        count_d  = count_d - DECODE_WIDTH[CNT_W-1:0];
+        count_d  = count_d - CNT_W'(pop_n);
       end
     end
   end
@@ -115,10 +181,18 @@ module ibuffer #(
       wr_ptr_q <= '0;
       rd_ptr_q <= '0;
       count_q  <= '0;
+      pending_instrs_q <= '0;
+      pending_pc_q <= '0;
+      pending_count_q <= '0;
+      pending_rd_ptr_q <= '0;
     end else begin
       wr_ptr_q <= wr_ptr_d;
       rd_ptr_q <= rd_ptr_d;
       count_q  <= count_d;
+      pending_instrs_q <= pending_instrs_d;
+      pending_pc_q <= pending_pc_d;
+      pending_count_q <= pending_count_d;
+      pending_rd_ptr_q <= pending_rd_ptr_d;
       // TODO: 优化为只写入被更新的那些位置
       fifo_q   <= fifo_d;
     end

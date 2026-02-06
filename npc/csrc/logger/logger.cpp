@@ -129,6 +129,12 @@ void Logger::log_perf(const Snapshot& snap, double ipc, double cpi) {
       pct(snap.perf_ifu_wait_icache_cycles),
       snap.perf_ifu_wait_ibuf_cycles, pct(snap.perf_ifu_wait_ibuf_cycles));
   spdlog::info(
+      "icache req stall total={}({:.1f}%) not_ready={}({:.1f}%) "
+      "respq_full={}({:.1f}%)",
+      snap.perf_ic_stall_cycles, pct(snap.perf_ic_stall_cycles),
+      snap.perf_ic_stall_noready_cycles, pct(snap.perf_ic_stall_noready_cycles),
+      snap.perf_ic_stall_respq_cycles, pct(snap.perf_ic_stall_respq_cycles));
+  spdlog::info(
       "icache state cycles idle={}({:.1f}%) lookup={}({:.1f}%) "
       "miss_req={}({:.1f}%) wait_refill={}({:.1f}%)",
       snap.perf_icache_idle_cycles, pct(snap.perf_icache_idle_cycles),
