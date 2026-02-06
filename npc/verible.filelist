@@ -26,6 +26,7 @@
 ./vsrc/cache/sram.sv
 ./vsrc/cache/tag_array.sv
 ./vsrc/frontend/bpu.sv
+./vsrc/frontend/fetch_target_queue.sv
 ./vsrc/frontend/frontend.sv
 ./vsrc/frontend/ifu.sv
 ./vsrc/include/build_config_pkg.sv

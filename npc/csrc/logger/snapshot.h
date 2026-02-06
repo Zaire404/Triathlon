@@ -122,6 +122,9 @@ struct Snapshot {
   uint64_t perf_icache_lookup_cycles = 0;
   uint64_t perf_icache_miss_req_cycles = 0;
   uint64_t perf_icache_wait_refill_cycles = 0;
+  uint64_t perf_ic_stall_cycles = 0;
+  uint64_t perf_ic_stall_noready_cycles = 0;
+  uint64_t perf_ic_stall_respq_cycles = 0;
   uint64_t perf_lsu_idle_cycles = 0;
   uint64_t perf_lsu_ld_req_cycles = 0;
   uint64_t perf_lsu_ld_rsp_cycles = 0;

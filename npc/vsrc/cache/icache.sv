@@ -57,6 +57,9 @@ module icache #(
   } ic_state_e;
   ic_state_e state_q, state_d;
   logic req_killed_q;
+  logic req_ready;
+  logic req_accept;
+  logic lookup_resp_valid;
 
   // ---------------------------------------------------------------------------
   // Request pipeline registers (one in-flight request)
@@ -89,8 +92,8 @@ module icache #(
   // Otherwise, using index_a_q/index_b_q directly would introduce an extra
   // cycle of latency (and can cause functional mismatch in simulation).
   logic [INDEX_WIDTH-1:0] index_a_mem, index_b_mem;
-  assign index_a_mem = (state_q == IDLE && ifu_req_handshake_i.valid && !ifu_req_flush_i) ? index_a_d : index_a_q;
-  assign index_b_mem = (state_q == IDLE && ifu_req_handshake_i.valid && !ifu_req_flush_i) ? index_b_d : index_b_q;
+  assign index_a_mem = req_accept ? index_a_d : index_a_q;
+  assign index_b_mem = req_accept ? index_b_d : index_b_q;
 
   // Miss context
   logic [                  Cfg.PLEN-1:0] miss_paddr_q;
@@ -98,6 +101,7 @@ module icache #(
   logic [               INDEX_WIDTH-1:0] miss_index_q;
   logic [       SETS_PER_BANK_WIDTH-1:0] miss_bank_addr_q;
   logic [            BANK_SEL_WIDTH-1:0] miss_bank_sel_q;
+
 
   // ---------------------------------------------------------------------------
   // Request decode helper (combinational)
@@ -166,11 +170,13 @@ module icache #(
       // Read port A
       .bank_addr_ra_i (index_a_mem[INDEX_WIDTH-1:BANK_SEL_WIDTH]),
       .bank_sel_ra_i  (index_a_mem[BANK_SEL_WIDTH-1:0]),
+      .bank_sel_ra_sel_i(index_a_q[BANK_SEL_WIDTH-1:0]),
       .rdata_tag_a_o  (tag_a),
       .rdata_valid_a_o(valid_a),
       // Read port B
       .bank_addr_rb_i (index_b_mem[INDEX_WIDTH-1:BANK_SEL_WIDTH]),
       .bank_sel_rb_i  (index_b_mem[BANK_SEL_WIDTH-1:0]),
+      .bank_sel_rb_sel_i(index_b_q[BANK_SEL_WIDTH-1:0]),
       .rdata_tag_b_o  (tag_b),
       .rdata_valid_b_o(valid_b),
       // Write port
@@ -193,10 +199,12 @@ module icache #(
       // Read port A
       .bank_addr_ra_i(index_a_mem[INDEX_WIDTH-1:BANK_SEL_WIDTH]),
       .bank_sel_ra_i (index_a_mem[BANK_SEL_WIDTH-1:0]),
+      .bank_sel_ra_sel_i(index_a_q[BANK_SEL_WIDTH-1:0]),
       .rdata_a_o     (line_a_all),
       // Read port B
       .bank_addr_rb_i(index_b_mem[INDEX_WIDTH-1:BANK_SEL_WIDTH]),
       .bank_sel_rb_i (index_b_mem[BANK_SEL_WIDTH-1:0]),
+      .bank_sel_rb_sel_i(index_b_q[BANK_SEL_WIDTH-1:0]),
       .rdata_b_o     (line_b_all),
       // Write port
       .w_bank_addr_i (w_bank_addr),
@@ -248,6 +256,11 @@ module icache #(
   assign hit_a   = |hit_way_a;
   assign hit_b   = |hit_way_b;
   assign hit_all = hit_a && (!cross_line_q || hit_b);
+
+  // Request accept / ready (allow pipelined hits)
+  assign req_ready = !ifu_req_flush_i && ((state_q == IDLE) || (state_q == LOOKUP && hit_all));
+  assign req_accept = ifu_req_handshake_i.valid && req_ready;
+  assign lookup_resp_valid = (state_q == LOOKUP) && hit_all && !req_killed_q && !ifu_req_flush_i;
 
   // Priority encoders to select first hit way
   priority_encoder #(
@@ -336,16 +349,11 @@ module icache #(
   end
 
   // ---------------------------------------------------------------------------
-  // Simple response registers
+  // Response (single-cycle hit)
   // ---------------------------------------------------------------------------
-  logic                           rsp_valid_q;
-  logic                           rsp_ready_q;
-  logic [FETCH_NUM-1:0][ILEN-1:0] rsp_instrs_q;
-
-  assign ifu_rsp_instrs_o          = rsp_instrs_q;
-  assign ifu_rsp_handshake_o.valid = rsp_valid_q;
-  assign ifu_rsp_handshake_o.ready = rsp_ready_q;
-  // assign ifu_rsp_handshake_o.ready = 1'b1;  // no back-pressure from cache
+  assign ifu_rsp_instrs_o          = assembled_instrs;
+  assign ifu_rsp_handshake_o.valid = lookup_resp_valid;
+  assign ifu_rsp_handshake_o.ready = req_ready;
 
   // ---------------------------------------------------------------------------
   // Miss / refill write port & handshake defaults
@@ -397,7 +405,7 @@ module icache #(
   end
 
   // ---------------------------------------------------------------------------
-  // Sequential logic: state, request pipeline, miss context, response regs
+  // Sequential logic: state, request pipeline, miss context
   // ---------------------------------------------------------------------------
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (!rst_ni) begin
@@ -412,9 +420,6 @@ module icache #(
       index_b_q         <= '0;
       tag_a_expected_q  <= '0;
       tag_b_expected_q  <= '0;
-      rsp_valid_q       <= 1'b0;
-      rsp_instrs_q      <= '0;
-      // rsp_ready_q       <= 1'b1;
       miss_paddr_q      <= '0;
       miss_victim_way_q <= '0;
       miss_index_q      <= '0;
@@ -422,76 +427,48 @@ module icache #(
       miss_bank_sel_q   <= '0;
     end else begin
       state_q <= state_d;
-      // Flush: drop response; mark current request as killed if in-flight
+
+      // Flush: mark current request as killed if in-flight
       if (ifu_req_flush_i) begin
-        rsp_valid_q  <= 1'b0;
-        rsp_instrs_q <= '0;
         if (state_q != IDLE) begin
           req_killed_q <= 1'b1;
+        end else begin
+          req_killed_q <= 1'b0;
         end
       end
 
-      unique case (state_q)
-        IDLE: begin
-          rsp_ready_q <= 1'b1;
-          if (ifu_req_handshake_i.valid && !ifu_req_flush_i) begin
-            // Latch request (Use computed _d signals)
-            pc_q             <= ifu_req_pc_i;
-            line_addr_a_q    <= line_addr_a_d;
-            line_addr_b_q    <= line_addr_b_d;
-            index_a_q        <= index_a_d;
-            index_b_q        <= index_b_d;
-            tag_a_expected_q <= tag_a_expected_d;
-            tag_b_expected_q <= tag_b_expected_d;
-            start_slot_q     <= start_slot_d;
-            cross_line_q     <= cross_line_d;
-            rsp_valid_q      <= 1'b0;
-            req_killed_q     <= 1'b0;
+      if (req_accept) begin
+        // Latch request (Use computed _d signals)
+        pc_q             <= ifu_req_pc_i;
+        line_addr_a_q    <= line_addr_a_d;
+        line_addr_b_q    <= line_addr_b_d;
+        index_a_q        <= index_a_d;
+        index_b_q        <= index_b_d;
+        tag_a_expected_q <= tag_a_expected_d;
+        tag_b_expected_q <= tag_b_expected_d;
+        start_slot_q     <= start_slot_d;
+        cross_line_q     <= cross_line_d;
+        req_killed_q     <= 1'b0;
+      end
+
+      if (state_q == LOOKUP && !ifu_req_flush_i) begin
+        if (!hit_all) begin
+          // [Fix] Capture miss context for the SPECIFIC line that missed
+          if (miss_on_b) begin
+            miss_paddr_q     <= {line_addr_b_q, {OFFSET_WIDTH{1'b0}}};
+            miss_index_q     <= index_b_q;
+            miss_bank_addr_q <= index_b_q[INDEX_WIDTH-1:BANK_SEL_WIDTH];
+            miss_bank_sel_q  <= index_b_q[BANK_SEL_WIDTH-1:0];
+          end else begin
+            miss_paddr_q     <= {line_addr_a_q, {OFFSET_WIDTH{1'b0}}};
+            miss_index_q     <= index_a_q;
+            miss_bank_addr_q <= index_a_q[INDEX_WIDTH-1:BANK_SEL_WIDTH];
+            miss_bank_sel_q  <= index_a_q[BANK_SEL_WIDTH-1:0];
           end
-        end
 
-        LOOKUP: begin
-          rsp_ready_q <= 1'b0;
-          if (!ifu_req_flush_i) begin
-            // Use array outputs + stored expected tag to determine hit/miss
-            if (hit_all) begin
-              if (!req_killed_q) begin
-                rsp_valid_q  <= 1'b1;
-                rsp_instrs_q <= assembled_instrs;
-              end else begin
-                rsp_valid_q <= 1'b0;
-              end
-            end else begin
-              rsp_valid_q <= 1'b0;
-              // [Fix] Capture miss context for the SPECIFIC line that missed
-              if (miss_on_b) begin
-                miss_paddr_q     <= {line_addr_b_q, {OFFSET_WIDTH{1'b0}}};
-                miss_index_q     <= index_b_q;
-                miss_bank_addr_q <= index_b_q[INDEX_WIDTH-1:BANK_SEL_WIDTH];
-                miss_bank_sel_q  <= index_b_q[BANK_SEL_WIDTH-1:0];
-              end else begin
-                miss_paddr_q     <= {line_addr_a_q, {OFFSET_WIDTH{1'b0}}};
-                miss_index_q     <= index_a_q;
-                miss_bank_addr_q <= index_a_q[INDEX_WIDTH-1:BANK_SEL_WIDTH];
-                miss_bank_sel_q  <= index_a_q[BANK_SEL_WIDTH-1:0];
-              end
-
-              miss_victim_way_q <= victim_way_d;
-            end
-          end
+          miss_victim_way_q <= victim_way_d;
         end
-
-        MISS_WAIT_REFILL: begin
-          // When we accept a refill (combinational block will do the array write)
-          if (refill_valid_i && refill_ready_o) begin
-            rsp_valid_q <= 1'b0;
-          end
-        end
-
-        default: begin
-          // nothing
-        end
-      endcase
+      end
     end
 `ifdef TRIATHLON_VERBOSE
     $display("ifu2icache_pc: %h", ifu_req_pc_i);
@@ -510,7 +487,7 @@ module icache #(
     state_d = state_q;
     unique case (state_q)
       IDLE: begin
-        if (ifu_req_handshake_i.valid && !ifu_req_flush_i) begin
+        if (req_accept) begin
           // Next cycle arrays will output data for this request
           state_d = LOOKUP;
         end
@@ -518,7 +495,7 @@ module icache #(
 
       LOOKUP: begin
         if (hit_all) begin
-          state_d = IDLE;
+          state_d = req_accept ? LOOKUP : IDLE;
         end else begin
           state_d = MISS_REQ;
         end

@@ -10,12 +10,14 @@ module data_array #(
 
     // --- 读端口 A (用于 Line 1) ---
     input logic [SETS_PER_BANK_WIDTH-1:0] bank_addr_ra_i,  // Bank内读地址 A (Index)
-    input logic [$clog2(NUM_BANKS)-1:0] bank_sel_ra_i,  // Bank选择 A
+    input logic [$clog2(NUM_BANKS)-1:0] bank_sel_ra_i,  // Bank选择 A (读地址)
+    input logic [$clog2(NUM_BANKS)-1:0] bank_sel_ra_sel_i,  // Bank选择 A (读数据选择)
     output logic [NUM_WAYS-1:0][BLOCK_WIDTH-1:0] rdata_a_o,  // 读数据 A (所有Way)
 
     // --- 读端口 B (用于 Line 2) ---
     input logic [SETS_PER_BANK_WIDTH-1:0] bank_addr_rb_i,  // Bank内读地址 B (Index)
-    input logic [$clog2(NUM_BANKS)-1:0] bank_sel_rb_i,  // Bank选择 B
+    input logic [$clog2(NUM_BANKS)-1:0] bank_sel_rb_i,  // Bank选择 B (读地址)
+    input logic [$clog2(NUM_BANKS)-1:0] bank_sel_rb_sel_i,  // Bank选择 B (读数据选择)
     output logic [NUM_WAYS-1:0][BLOCK_WIDTH-1:0] rdata_b_o,  // 读数据 B (所有Way)
 
     // --- 写端口 (用于 Refill) ---
@@ -104,9 +106,9 @@ module data_array #(
   always_comb begin
     for (int i = 0; i < NUM_WAYS; i++) begin
       // 从正确的Bank为Port A选择数据
-      rdata_a_o[i] = sram_rdata[i][bank_sel_ra_i];
+      rdata_a_o[i] = sram_rdata[i][bank_sel_ra_sel_i];
       // 从正确的Bank为Port B选择数据
-      rdata_b_o[i] = sram_rdata[i][bank_sel_rb_i];
+      rdata_b_o[i] = sram_rdata[i][bank_sel_rb_sel_i];
     end
   end
 

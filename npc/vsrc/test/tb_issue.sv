@@ -62,6 +62,17 @@ module tb_issue #(
     output wire [TAG_W-1:0] alu3_dst
 );
 
+  decode_pkg::uop_t dispatch_op_fixed [0:3];
+
+  always_comb begin
+    for (int i = 0; i < 4; i++) begin
+      dispatch_op_fixed[i] = dispatch_op[i];
+      dispatch_op_fixed[i].valid = dispatch_valid[i];
+      dispatch_op_fixed[i].has_rs1 = dispatch_valid[i];
+      dispatch_op_fixed[i].has_rs2 = dispatch_valid[i];
+    end
+  end
+
   // 实例化被测模块 (DUT)
   issue #(
       .Cfg(Cfg)
@@ -71,7 +82,7 @@ module tb_issue #(
       .flush_i(flush_i),
 
       .dispatch_valid(dispatch_valid),
-      .dispatch_op   (dispatch_op),     // 类型匹配：uop_t
+      .dispatch_op   (dispatch_op_fixed),
       .dispatch_dst  (dispatch_dst),
       .dispatch_v1   (dispatch_v1),
       .dispatch_q1   (dispatch_q1),

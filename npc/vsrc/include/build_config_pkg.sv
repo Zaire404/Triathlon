@@ -48,6 +48,9 @@ package build_config_pkg;
 
     // ALU 配置
     cfg.ALU_COUNT = user_cfg.ALU_COUNT;
+
+    // FTQ 配置
+    cfg.FTQ_DEPTH = user_cfg.FTQ_DEPTH;
     return cfg;
   endfunction
 endpackage

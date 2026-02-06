@@ -139,6 +139,11 @@ Snapshot collect_snapshot(const Vtb_triathlon *top,
       static_cast<uint64_t>(top->perf_icache_miss_req_cycles_o);
   snap.perf_icache_wait_refill_cycles =
       static_cast<uint64_t>(top->perf_icache_wait_refill_cycles_o);
+  snap.perf_ic_stall_cycles = static_cast<uint64_t>(top->perf_ic_stall_cycles_o);
+  snap.perf_ic_stall_noready_cycles =
+      static_cast<uint64_t>(top->perf_ic_stall_noready_cycles_o);
+  snap.perf_ic_stall_respq_cycles =
+      static_cast<uint64_t>(top->perf_ic_stall_respq_cycles_o);
   snap.perf_lsu_idle_cycles =
       static_cast<uint64_t>(top->perf_lsu_idle_cycles_o);
   snap.perf_lsu_ld_req_cycles =

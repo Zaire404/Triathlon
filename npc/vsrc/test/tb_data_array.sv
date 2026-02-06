@@ -38,11 +38,13 @@ module tb_data_array #(
       // 读端口 A
       .bank_addr_ra_i(bank_addr_ra_i),
       .bank_sel_ra_i(bank_sel_ra_i),
+      .bank_sel_ra_sel_i(bank_sel_ra_i),
       .rdata_a_o(rdata_a_o),
 
       // 读端口 B
       .bank_addr_rb_i(bank_addr_rb_i),
       .bank_sel_rb_i(bank_sel_rb_i),
+      .bank_sel_rb_sel_i(bank_sel_rb_i),
       .rdata_b_o(rdata_b_o),
 
       // 写端口

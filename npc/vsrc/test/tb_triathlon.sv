@@ -156,6 +156,9 @@ module tb_triathlon #(
     output logic [63:0]                        perf_icache_lookup_cycles_o,
     output logic [63:0]                        perf_icache_miss_req_cycles_o,
     output logic [63:0]                        perf_icache_wait_refill_cycles_o,
+    output logic [63:0]                        perf_ic_stall_cycles_o,
+    output logic [63:0]                        perf_ic_stall_noready_cycles_o,
+    output logic [63:0]                        perf_ic_stall_respq_cycles_o,
     output logic [63:0]                        perf_lsu_idle_cycles_o,
     output logic [63:0]                        perf_lsu_ld_req_cycles_o,
     output logic [63:0]                        perf_lsu_ld_rsp_cycles_o,
@@ -173,6 +176,12 @@ module tb_triathlon #(
   localparam logic [1:0] IFU_S_START = 2'd0;
   localparam logic [1:0] IFU_S_WAIT_ICACHE = 2'd1;
   localparam logic [1:0] IFU_S_WAIT_IBUFFER = 2'd2;
+  localparam int unsigned IFU_INFLIGHT_DEPTH = (Cfg.FTQ_DEPTH > 1) ? Cfg.FTQ_DEPTH : 2;
+  localparam int unsigned IFU_INFLIGHT_PTR_W = (IFU_INFLIGHT_DEPTH > 1)
+                                               ? $clog2(IFU_INFLIGHT_DEPTH)
+                                               : 1;
+  localparam int unsigned IFU_RESP_DEPTH = IFU_INFLIGHT_DEPTH;
+  localparam int unsigned IFU_RESP_PTR_W = IFU_INFLIGHT_PTR_W;
 
   localparam logic [1:0] ICACHE_S_IDLE = 2'd0;
   localparam logic [1:0] ICACHE_S_LOOKUP = 2'd1;
@@ -382,11 +391,21 @@ module tb_triathlon #(
   // Perf counters
   logic [1:0] ifu_state;
   logic [1:0] icache_state;
+  logic ifu_ftq_issue_valid;
+  logic ifu_ftq_issue_ready;
+  logic ifu_icache_ready;
+  logic [IFU_RESP_PTR_W:0] ifu_resp_free;
+  logic ifu_can_issue;
   logic [1:0] lsu_state;
   logic [2:0] dcache_state;
 
   assign ifu_state = dut.u_frontend.i_ifu.current_state;
   assign icache_state = dut.u_frontend.i_icache.state_q;
+  assign ifu_ftq_issue_valid = dut.u_frontend.i_ifu.ftq_issue_valid;
+  assign ifu_ftq_issue_ready = dut.u_frontend.i_ifu.ftq_issue_ready;
+  assign ifu_icache_ready = dut.u_frontend.icache2ifu_rsp_handshake.ready;
+  assign ifu_resp_free = IFU_RESP_DEPTH - dut.u_frontend.i_ifu.resp_count_q;
+  assign ifu_can_issue = (dut.u_frontend.i_ifu.inflight_count_q < ifu_resp_free);
   assign lsu_state = dut.u_backend.u_lsu.state_q;
   assign dcache_state = dut.u_backend.u_dcache.state_q;
 
@@ -426,6 +445,9 @@ module tb_triathlon #(
       perf_icache_lookup_cycles_o <= 64'd0;
       perf_icache_miss_req_cycles_o <= 64'd0;
       perf_icache_wait_refill_cycles_o <= 64'd0;
+      perf_ic_stall_cycles_o <= 64'd0;
+      perf_ic_stall_noready_cycles_o <= 64'd0;
+      perf_ic_stall_respq_cycles_o <= 64'd0;
       perf_lsu_idle_cycles_o <= 64'd0;
       perf_lsu_ld_req_cycles_o <= 64'd0;
       perf_lsu_ld_rsp_cycles_o <= 64'd0;
@@ -509,6 +531,15 @@ module tb_triathlon #(
           perf_icache_wait_refill_cycles_o <= perf_icache_wait_refill_cycles_o + 1;
         default: ;
       endcase
+
+      if (ifu_ftq_issue_valid && !backend_flush_o && !ifu_ftq_issue_ready) begin
+        perf_ic_stall_cycles_o <= perf_ic_stall_cycles_o + 1;
+        if (!ifu_icache_ready) begin
+          perf_ic_stall_noready_cycles_o <= perf_ic_stall_noready_cycles_o + 1;
+        end else if (!ifu_can_issue) begin
+          perf_ic_stall_respq_cycles_o <= perf_ic_stall_respq_cycles_o + 1;
+        end
+      end
 
       unique case (lsu_state)
         LSU_S_IDLE: perf_lsu_idle_cycles_o <= perf_lsu_idle_cycles_o + 1;

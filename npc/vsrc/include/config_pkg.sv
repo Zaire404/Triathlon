@@ -42,6 +42,9 @@ package config_pkg;
 
     int unsigned ALU_COUNT;
 
+    // Fetch target queue
+    int unsigned FTQ_DEPTH;
+
   } user_cfg_t;
 
   typedef struct packed {
@@ -91,6 +94,9 @@ package config_pkg;
 
     // Execute Station configuration
     int unsigned ALU_COUNT;
+
+    // Fetch target queue
+    int unsigned FTQ_DEPTH;
   } cfg_t;
   localparam cfg_t EmptyCfg = cfg_t'(0);
 endpackage

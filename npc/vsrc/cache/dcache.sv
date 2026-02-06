@@ -390,11 +390,13 @@ module dcache #(
 
       .bank_addr_ra_i (r_bank_addr),
       .bank_sel_ra_i  (r_bank_sel),
+      .bank_sel_ra_sel_i(r_bank_sel),
       .rdata_tag_a_o  (tag_a),
       .rdata_valid_a_o(meta_a),
 
       .bank_addr_rb_i (r_bank_addr),
       .bank_sel_rb_i  (r_bank_sel),
+      .bank_sel_rb_sel_i(r_bank_sel),
       .rdata_tag_b_o  (tag_b),
       .rdata_valid_b_o(meta_b),
 
@@ -416,10 +418,12 @@ module dcache #(
 
       .bank_addr_ra_i(r_bank_addr),
       .bank_sel_ra_i (r_bank_sel),
+      .bank_sel_ra_sel_i(r_bank_sel),
       .rdata_a_o     (line_a_all),
 
       .bank_addr_rb_i(r_bank_addr),
       .bank_sel_rb_i (r_bank_sel),
+      .bank_sel_rb_sel_i(r_bank_sel),
       .rdata_b_o     (line_b_all),
 
       .w_bank_addr_i(w_bank_addr),
