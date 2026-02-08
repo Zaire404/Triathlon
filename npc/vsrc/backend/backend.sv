@@ -216,8 +216,10 @@ module backend #(
   logic [ROB_IDX_WIDTH-1:0] sb_ex_rob_idx;
 
   logic [Cfg.PLEN-1:0] sb_load_addr;
+  decode_pkg::lsu_op_e sb_load_op;
   logic [ROB_IDX_WIDTH-1:0] sb_load_rob_idx;
   logic sb_load_hit;
+  logic sb_load_block;
   logic [Cfg.XLEN-1:0] sb_load_data;
 
   store_buffer #(
@@ -250,9 +252,11 @@ module backend #(
       .dcache_req_op_o   (sb_dcache_req_op),
 
       .load_addr_i(sb_load_addr),
+      .load_op_i  (sb_load_op),
       .load_rob_idx_i(sb_load_rob_idx),
-      .load_hit_o (sb_load_hit),
-      .load_data_o(sb_load_data),
+      .load_hit_o   (sb_load_hit),
+      .load_block_o (sb_load_block),
+      .load_data_o  (sb_load_data),
 
       .rob_head_i(rob_head_ptr),
 
@@ -1030,9 +1034,11 @@ module backend #(
       .sb_ex_rob_idx_o(sb_ex_rob_idx),
 
       .sb_load_addr_o(sb_load_addr),
+      .sb_load_op_o  (sb_load_op),
       .sb_load_rob_idx_o(sb_load_rob_idx),
-      .sb_load_hit_i (sb_load_hit),
-      .sb_load_data_i(sb_load_data),
+      .sb_load_hit_i   (sb_load_hit),
+      .sb_load_block_i (sb_load_block),
+      .sb_load_data_i  (sb_load_data),
 
       .ld_req_valid_o(lsu_ld_req_valid),
       .ld_req_ready_i(lsu_ld_req_ready),

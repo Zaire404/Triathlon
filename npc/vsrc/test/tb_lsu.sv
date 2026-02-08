@@ -30,6 +30,7 @@ module tb_lsu (
     // Store-to-load forwarding
     output logic [global_config_pkg::Cfg.PLEN-1:0] sb_load_addr_o,
     input  logic                       sb_load_hit_i,
+    input  logic                       sb_load_block_i,
     input  logic [global_config_pkg::Cfg.XLEN-1:0] sb_load_data_i,
 
     // DCache load port
@@ -89,6 +90,7 @@ module tb_lsu (
 
       .sb_load_addr_o,
       .sb_load_hit_i,
+      .sb_load_block_i,
       .sb_load_data_i,
 
       .ld_req_valid_o,
