@@ -200,19 +200,14 @@ int main(int argc, char **argv) {
     main_time++;
 
     // --- 8. 边界情况检查 ---
-    // 满状态检查: 如果队列里的预期指令数 >= IB_DEPTH (或者接近), fe_ready_o
-    // 应该拉低 ibuffer.sv 逻辑: free_slots >= FETCH_WIDTH
+    // IBuffer 允许在单拍内先 dequeue 再 enqueue，且可能暂存 pending group。
+    // 因此仅用 expected_queue 接近深度时不能强制要求 fe_ready 必须为 0。
     if (!top->flush_i) {
-      if (expected_queue.size() > (IB_DEPTH - INSTR_PER_FETCH)) {
-        // 空间不足以放一个完整的 Group
-        if (top->fe_ready_o == 1) {
-          std::cout << "[WARNING] IBuffer Full Check: Expected Size="
-                    << expected_queue.size() << " Depth=" << IB_DEPTH
-                    << " but fe_ready is 1." << std::endl;
-          // 注意：这取决于具体的实现逻辑，如果允许溢出一点点或者计算方式不同，可能不是严格错误
-          // 根据 ibuffer.sv: assign can_enq_group = (free_slots >= FETCH_WIDTH)
-          assert(top->fe_ready_o == 0);
-        }
+      if (expected_queue.size() > (IB_DEPTH + INSTR_PER_FETCH)) {
+        std::cout << "[ERROR] IBuffer Queue Check: Expected Size="
+                  << expected_queue.size() << " Depth=" << IB_DEPTH
+                  << " pending_limit=" << INSTR_PER_FETCH << std::endl;
+        assert(false);
       }
     }
 

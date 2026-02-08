@@ -42,6 +42,7 @@ static void set_defaults(Vtb_lsu *top) {
   top->sb_id_i = 0;
 
   top->sb_load_hit_i = 0;
+  top->sb_load_block_i = 0;
   top->sb_load_data_i = 0;
 
   top->ld_req_ready_i = 0;
@@ -142,10 +143,14 @@ static void test_load_forward_lb(Vtb_lsu *top) {
 
   eval_comb(top);
   expect(top->req_ready_o == 1, "Load fwd LB: req_ready");
+
+  tick(top); // accept request -> S_LD_WAIT
+  top->req_valid_i = 0;
+
+  eval_comb(top);
   expect(top->sb_load_addr_o == 0x2000, "Load fwd LB: sb_load_addr");
 
-  tick(top);
-  top->req_valid_i = 0;
+  tick(top); // capture SB forward response -> S_RESP
 
   eval_comb(top);
   expect(top->wb_valid_o == 1, "Load fwd LB: wb_valid");
@@ -167,8 +172,10 @@ static void test_load_dcache_ok(Vtb_lsu *top) {
   eval_comb(top);
   expect(top->req_ready_o == 1, "Load D$ ok: req_ready");
 
-  tick(top); // accept request -> S_LD_REQ
+  tick(top); // accept request -> S_LD_WAIT
   top->req_valid_i = 0;
+
+  tick(top); // move to S_LD_REQ
 
   top->ld_req_ready_i = 1;
   eval_comb(top);
@@ -232,8 +239,10 @@ static void test_load_access_fault(Vtb_lsu *top) {
   eval_comb(top);
   expect(top->req_ready_o == 1, "Load access fault: req_ready");
 
-  tick(top); // S_LD_REQ
+  tick(top); // accept request -> S_LD_WAIT
   top->req_valid_i = 0;
+
+  tick(top); // move to S_LD_REQ
 
   top->ld_req_ready_i = 1;
   eval_comb(top);

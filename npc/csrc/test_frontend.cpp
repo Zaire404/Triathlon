@@ -148,6 +148,7 @@ int main(int argc, char **argv) {
 
   int stage = 0;
   int stall_counter = 0;
+  int arm_block_counter = -1;
   int max_cycles = 300;
 
   for (int i = 0; i < max_cycles; ++i) {
@@ -202,11 +203,10 @@ int main(int argc, char **argv) {
           // Ready。
 
           std::cout << "[" << main_time
-                    << "] [Action] Asserting IBuffer BUSY (Ready=0)..."
+                    << "] [Action] Arm IBuffer BUSY after 1 cycle..."
                     << std::endl;
-          top->ibuffer_ready_i = 0;
-          stage = 4;
-          stall_counter = 0;
+          arm_block_counter = 2;
+          stage = 31;
         }
       }
       // ------------------------------------------------
@@ -255,6 +255,18 @@ int main(int argc, char **argv) {
           delete top;
           return 0;
         }
+      }
+    }
+
+    if (arm_block_counter > 0) {
+      arm_block_counter--;
+      if (arm_block_counter == 0) {
+        std::cout << "[" << main_time
+                  << "] [Action] Asserting IBuffer BUSY (Ready=0)..."
+                  << std::endl;
+        top->ibuffer_ready_i = 0;
+        stage = 4;
+        stall_counter = 0;
       }
     }
 
