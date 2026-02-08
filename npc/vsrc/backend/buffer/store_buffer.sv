@@ -49,8 +49,10 @@ module store_buffer #(
     // 5. Load Forwarding (From Load Unit) - 關鍵邏輯
     // =======================================================
     input  logic [     Cfg.PLEN-1:0] load_addr_i,
+    input  decode_pkg::lsu_op_e      load_op_i,
     input  logic [ROB_IDX_WIDTH-1:0] load_rob_idx_i,
     output logic                     load_hit_o,      // 在 SB 中命中且數據有效
+    output logic                     load_block_o,    // 與更老 Store 有重疊衝突，需要阻塞
     output logic [     Cfg.XLEN-1:0] load_data_o,     // 轉發的數據
     input  logic [ROB_IDX_WIDTH-1:0] rob_head_i,
 
@@ -82,6 +84,16 @@ module store_buffer #(
       diff = idx - head;
       return diff;
     end
+  endfunction
+
+  function automatic int unsigned lsu_size_bytes(input decode_pkg::lsu_op_e op);
+    unique case (op)
+      decode_pkg::LSU_LB, decode_pkg::LSU_LBU, decode_pkg::LSU_SB: lsu_size_bytes = 1;
+      decode_pkg::LSU_LH, decode_pkg::LSU_LHU, decode_pkg::LSU_SH: lsu_size_bytes = 2;
+      decode_pkg::LSU_LW, decode_pkg::LSU_LWU, decode_pkg::LSU_SW: lsu_size_bytes = 4;
+      decode_pkg::LSU_LD, decode_pkg::LSU_SD: lsu_size_bytes = 8;
+      default: lsu_size_bytes = 4;
+    endcase
   endfunction
 
 
@@ -281,44 +293,101 @@ module store_buffer #(
   assign dcache_req_op_o = mem[head_ptr].op;
 
   // =======================================================
-  // Store-to-Load Forwarding Logic
+  // Store-to-Load Forwarding / Blocking Logic
   // =======================================================
-  // 策略：從最新分配的條目 (tail-1) 開始向舊條目 (head) 搜索。
-  // 找到的第一個地址匹配且有效的 Store 即為正確的數據來源。
+  // 策略：從最新分配的條目 (tail-1) 向舊條目搜索，保持年輕 Store 優先。
+  // - 如果最年輕重疊 Store 能完整覆蓋本次 Load 範圍，直接 forward。
+  // - 如果存在重疊但不能完整覆蓋，輸出 load_block_o 阻塞 Load，避免讀到舊值。
+  localparam int unsigned XLEN_BYTES = (Cfg.XLEN / 8);
+
   logic [ROB_IDX_WIDTH-1:0] load_age;
+  logic [Cfg.PLEN:0] load_start;
+  logic [Cfg.PLEN:0] load_end;
 
   always_comb begin
+    logic [Cfg.XLEN-1:0] merged_data;
+    logic [XLEN_BYTES-1:0] merged_mask;
+    int unsigned load_size;
+    logic overlap_seen;
+    logic all_covered;
+
     load_hit_o = 1'b0;
+    load_block_o = 1'b0;
     load_data_o = '0;
 
-    load_age = rob_age(load_rob_idx_i, rob_head_i);
+    merged_data = '0;
+    merged_mask = '0;
+    overlap_seen = 1'b0;
+    all_covered = 1'b0;
 
-    // 遍歷整個 SB (邏輯上從 tail-1 到 head)
+    load_age = rob_age(load_rob_idx_i, rob_head_i);
+    load_size = lsu_size_bytes(load_op_i);
+    if (load_size > XLEN_BYTES) begin
+      load_size = XLEN_BYTES;
+    end
+
+    load_start = {1'b0, load_addr_i};
+    load_end = load_start + load_size - 1;
+
+    // 遍歷整個 SB (邏輯上從 tail-1 到 head)，逐字節 merge
     for (int i = 0; i < SB_DEPTH; i++) begin
-      // 計算當前檢查的索引 (回繞處理)
-      // 邏輯順序：tail-1, tail-2, ..., head
       logic [$clog2(SB_DEPTH)-1:0] idx;
+      logic older_or_committed;
+      int unsigned store_size;
+      logic [Cfg.PLEN:0] store_start;
+      logic [Cfg.PLEN:0] store_end;
+      logic overlap;
+
+      store_size = 0;
+      store_start = '0;
+      store_end = '0;
+      overlap = 1'b0;
+
       idx = tail_ptr - 1 - i[$clog2(SB_DEPTH)-1:0];
 
-      // 檢查條件：
-      // 1. 條目有效 (可能是 Speculative 也可能是 Committed)
-      // 2. 地址匹配
-      // 3. 數據已就緒 (如果不就緒但地址匹配，真實硬件通常會 stall load，這裡簡化為不命中)
-      if (mem[idx].valid &&
-                mem[idx].addr_valid &&
-                mem[idx].data_valid &&
-                (mem[idx].addr == load_addr_i) &&
-                ((mem[idx].committed || commit_set[idx]) ||
-                 (rob_age(mem[idx].rob_tag, rob_head_i) < load_age))) begin
+      older_or_committed = mem[idx].valid &&
+          ((mem[idx].committed || commit_set[idx]) ||
+           (rob_age(mem[idx].rob_tag, rob_head_i) < load_age));
 
-        load_hit_o  = 1'b1;
-        load_data_o = mem[idx].data;
+      if (older_or_committed && mem[idx].addr_valid && mem[idx].data_valid) begin
+        store_size = lsu_size_bytes(mem[idx].op);
+        store_start = {1'b0, mem[idx].addr};
+        store_end = store_start + store_size - 1;
 
-        // 找到最年輕的匹配項後立即停止搜索
-        break;
+        overlap = !(store_end < load_start || load_end < store_start);
+        if (overlap) begin
+          overlap_seen = 1'b1;
+
+          for (int b = 0; b < XLEN_BYTES; b++) begin
+            if ((b < load_size) && !merged_mask[b]) begin
+              if (((load_start + b) >= store_start) && ((load_start + b) <= store_end)) begin
+                merged_data[b*8+:8] = mem[idx].data[
+                    int'($unsigned((load_start + b) - store_start)) * 8 +: 8
+                ];
+                merged_mask[b] = 1'b1;
+              end
+            end
+          end
+
+          all_covered = 1'b1;
+          for (int k = 0; k < XLEN_BYTES; k++) begin
+            if ((k < load_size) && !merged_mask[k]) begin
+              all_covered = 1'b0;
+            end
+          end
+
+          if (all_covered) begin
+            load_hit_o = 1'b1;
+            load_data_o = merged_data;
+            break;
+          end
+        end
       end
     end
 
+    if (!load_hit_o && overlap_seen) begin
+      load_block_o = 1'b1;
+    end
   end
 
 endmodule
