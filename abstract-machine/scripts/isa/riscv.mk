@@ -1,4 +1,8 @@
-CROSS_COMPILE := riscv64-linux-gnu-
+ifneq ($(shell command -v riscv64-elf-gcc 2>/dev/null),)
+CROSS_COMPILE ?= riscv64-elf-
+else
+CROSS_COMPILE ?= riscv64-linux-gnu-
+endif
 COMMON_CFLAGS := -fno-pic -march=rv64g -mcmodel=medany -mstrict-align
 CFLAGS        += $(COMMON_CFLAGS) -static
 ASFLAGS       += $(COMMON_CFLAGS) -O0

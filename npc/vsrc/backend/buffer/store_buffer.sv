@@ -105,17 +105,6 @@ module store_buffer #(
     end
   end
 
-  // --- 輔助信號：計算已提交的條目數量 ---
-  logic [$clog2(SB_DEPTH):0] committed_count;
-  always_comb begin
-    committed_count = 0;
-    for (int i = 0; i < SB_DEPTH; i++) begin
-      if (mem[i].valid && (mem[i].committed || commit_set[i])) begin
-        committed_count++;
-      end
-    end
-  end
-
   // --- 分配接口邏輯 (最多 4 条/周期) ---
   logic [$clog2(SB_DEPTH):0] alloc_count;
 
@@ -174,30 +163,32 @@ module store_buffer #(
         mem[i].rob_tag    <= '0;
       end
     end else if (flush_i) begin
-      // 【Flush 處理關鍵邏輯】
-      // 1. 保留所有 committed=1 的條目 (它們是架構狀態的一部分，必須寫入內存)
-      // 2. 清除所有 committed=0 的條目 (它們是錯誤路徑上的指令)
+      int kept;
+      kept = 0;
 
-      // 重建 tail_ptr: 它應該緊跟在最後一個 committed 條目之後
-      // 在環形緩衝區中，這等於 head_ptr + committed_count
-      tail_ptr <= head_ptr + ($clog2(SB_DEPTH))'(committed_count);
-
-      // 重置計數
-      count    <= committed_count;
-
-      // 清除無效條目
       for (int i = 0; i < SB_DEPTH; i++) begin
-        if (commit_set[i]) begin
-          mem[i].committed <= 1'b1;
-        end
-        if (mem[i].valid && !(mem[i].committed || commit_set[i])) begin
-          mem[i].valid      <= 1'b0;
-          mem[i].committed  <= 1'b0;
-          mem[i].addr_valid <= 1'b0;
-          mem[i].data_valid <= 1'b0;
-          mem[i].rob_tag    <= '0;
+        mem[i].valid      <= 1'b0;
+        mem[i].committed  <= 1'b0;
+        mem[i].addr_valid <= 1'b0;
+        mem[i].data_valid <= 1'b0;
+        mem[i].rob_tag    <= '0;
+      end
+
+      for (int n = 0; n < SB_DEPTH; n++) begin
+        logic [$clog2(SB_DEPTH)-1:0] src_idx;
+        logic [$clog2(SB_DEPTH)-1:0] dst_idx;
+
+        src_idx = head_ptr + $clog2(SB_DEPTH)'(n);
+        if (mem[src_idx].valid && (mem[src_idx].committed || commit_set[src_idx])) begin
+          dst_idx = head_ptr + $clog2(SB_DEPTH)'(kept);
+          mem[dst_idx] <= mem[src_idx];
+          mem[dst_idx].committed <= mem[src_idx].committed || commit_set[src_idx];
+          kept++;
         end
       end
+
+      tail_ptr <= head_ptr + $clog2(SB_DEPTH)'(kept);
+      count    <= kept;
     end else begin
 
       // ------------------------------------
@@ -298,19 +289,21 @@ module store_buffer #(
       // 計算當前檢查的索引 (回繞處理)
       // 邏輯順序：tail-1, tail-2, ..., head
       logic [$clog2(SB_DEPTH)-1:0] idx;
+      logic older_than_load;
       idx = tail_ptr - 1 - i[$clog2(SB_DEPTH)-1:0];
 
       // 檢查條件：
       // 1. 條目有效 (可能是 Speculative 也可能是 Committed)
       // 2. 地址匹配
       // 3. 數據已就緒 (如果不就緒但地址匹配，真實硬件通常會 stall load，這裡簡化為不命中)
+      older_than_load = mem[idx].committed ||
+                        (rob_age(mem[idx].rob_tag, rob_head_i) < load_age);
+
       if (mem[idx].valid && 
                 mem[idx].addr_valid && 
                 mem[idx].data_valid && 
                 (mem[idx].addr == load_addr_i) &&
-                (rob_age(
-              mem[idx].rob_tag, rob_head_i
-          ) < load_age)) begin
+                older_than_load) begin
 
         load_hit_o  = 1'b1;
         load_data_o = mem[idx].data;

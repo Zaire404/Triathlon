@@ -49,6 +49,10 @@ module tb_triathlon #(
     output logic [Cfg.NRET-1:0][4:0]           commit_areg_o,
     output logic [Cfg.NRET-1:0][Cfg.XLEN-1:0]  commit_wdata_o,
     output logic [Cfg.NRET-1:0][Cfg.PLEN-1:0]  commit_pc_o,
+    output logic [Cfg.XLEN-1:0]                dbg_csr_mtvec_o,
+    output logic [Cfg.XLEN-1:0]                dbg_csr_mepc_o,
+    output logic [Cfg.XLEN-1:0]                dbg_csr_mstatus_o,
+    output logic [Cfg.XLEN-1:0]                dbg_csr_mcause_o,
     output logic                               backend_flush_o,
     output logic [Cfg.PLEN-1:0]                backend_redirect_pc_o,
 
@@ -95,6 +99,7 @@ module tb_triathlon #(
     output logic                               dbg_sb_dcache_req_ready_o,
     output logic [Cfg.PLEN-1:0]                dbg_sb_dcache_req_addr_o,
     output logic [Cfg.XLEN-1:0]                dbg_sb_dcache_req_data_o,
+    output logic [$bits(decode_pkg::lsu_op_e)-1:0] dbg_sb_dcache_req_op_o,
 
     // Debug (ROB head / count)
     output logic [$bits(decode_pkg::fu_e)-1:0] dbg_rob_head_fu_o,
@@ -174,6 +179,10 @@ module tb_triathlon #(
   assign commit_areg_o  = dut.u_backend.commit_areg;
   assign commit_wdata_o = dut.u_backend.commit_wdata;
   assign commit_pc_o    = dut.u_backend.commit_pc;
+  assign dbg_csr_mtvec_o   = dut.u_backend.u_csr.csr_mtvec;
+  assign dbg_csr_mepc_o    = dut.u_backend.u_csr.csr_mepc;
+  assign dbg_csr_mstatus_o = dut.u_backend.u_csr.csr_mstatus;
+  assign dbg_csr_mcause_o  = dut.u_backend.u_csr.csr_mcause;
   assign backend_flush_o = dut.u_backend.backend_flush_o;
   assign backend_redirect_pc_o = dut.u_backend.backend_redirect_pc_o;
 
@@ -266,6 +275,7 @@ module tb_triathlon #(
   assign dbg_sb_dcache_req_ready_o = dut.u_backend.sb_dcache_req_ready;
   assign dbg_sb_dcache_req_addr_o  = dut.u_backend.sb_dcache_req_addr;
   assign dbg_sb_dcache_req_data_o  = dut.u_backend.sb_dcache_req_data;
+  assign dbg_sb_dcache_req_op_o    = dut.u_backend.sb_dcache_req_op;
 
   // Debug: ROB head state
   assign dbg_rob_head_fu_o       = dut.u_backend.u_rob.rob_ram[dut.u_backend.u_rob.head_ptr_q].fu_type;

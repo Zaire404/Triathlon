@@ -24,7 +24,7 @@ const char *regs[] = {
 };
 
 void isa_reg_display_difftest(CPU_state *cpu, CPU_state *ref) {
-    for(int i = 0; i < 32; i++) {
+    for(int i = 0; i < MUXDEF(CONFIG_RVE, 16, 32); i++) {
         printf("%s%-4s cur: " FMT_WORD " ref: " FMT_WORD ANSI_NONE "\n",
                (cpu->gpr[i] == ref->gpr[i]) ? ANSI_FG_GREEN : ANSI_FG_RED,
                regs[i], cpu->gpr[i], ref->gpr[i]);
@@ -35,7 +35,7 @@ void isa_reg_display_difftest(CPU_state *cpu, CPU_state *ref) {
 }
 
 void isa_reg_display() {
-  int reg_number = 32;
+  int reg_number = MUXDEF(CONFIG_RVE, 16, 32);
   for(int i = 0; i < reg_number; i ++) {
     printf("%s值为%u\n",regs[i], cpu.gpr[i]);
   }
@@ -43,7 +43,7 @@ void isa_reg_display() {
 }
 
 word_t isa_reg_str2val(const char *s, bool *success) {
-  int reg_number = 32;
+  int reg_number = MUXDEF(CONFIG_RVE, 16, 32);
   for(int i = 0; i < reg_number; i ++) {
     if(strcmp(s, regs[i]) == 0) {
       return cpu.gpr[i];

@@ -51,7 +51,7 @@ static void decode_operand(Decode *s, int *rs1, int *rs2, int *rd, word_t *src1,
   *rs2 = BITS(i, 24, 20);
   *rd     = BITS(i, 11, 7);
   switch (type) {
-    case TYPE_I:  src1R();          immI(); break;
+    case TYPE_I:  if (BITS(i, 6, 0) == 0x73 && ((BITS(i, 14, 12) & 0x4) != 0)) { *src1 = BITS(i, 19, 15); } else { src1R(); } immI(); break;
     case TYPE_U:                    immU(); break;
     case TYPE_S:  src1R();src2R();  immS(); break;
     case TYPE_R_: src1R();src2R();  break;
@@ -144,8 +144,12 @@ static int decode_exec(Decode *s) {
   INSTPAT("0000001 ????? ????? 110 ????? 01100 11", rem    , R_, R(rd) = src2 == 0 ? src1 : (int32_t)src1 == INT32_MIN && (int32_t)src2 == -1 ? 0 : (int32_t)src1 % (int32_t)src2);          //rem
   INSTPAT("0000001 ????? ????? 111 ????? 01100 11", remu   , R_, R(rd) = src2 == 0 ? src1 : src1 % src2);             //remu
   //CSR
-  INSTPAT("??????? ????? ????? 001 ????? 11100 11", csrrw  , I, R(rd) = CSR(imm); CSR(imm) = src1);                      //csrrw
-  INSTPAT("??????? ????? ????? 010 ????? 11100 11", csrrs  , I, R(rd) = CSR(imm); CSR(imm) |= src1);                     //csrrs
+  INSTPAT("??????? ????? ????? 001 ????? 11100 11", csrrw  , I, { word_t csr_idx = imm & 0xfff; word_t old = CSR(csr_idx); R(rd) = old; CSR(csr_idx) = src1; });
+  INSTPAT("??????? ????? ????? 010 ????? 11100 11", csrrs  , I, { word_t csr_idx = imm & 0xfff; word_t old = CSR(csr_idx); R(rd) = old; if (rs1 != 0) CSR(csr_idx) = old | src1; });
+  INSTPAT("??????? ????? ????? 011 ????? 11100 11", csrrc  , I, { word_t csr_idx = imm & 0xfff; word_t old = CSR(csr_idx); R(rd) = old; if (rs1 != 0) CSR(csr_idx) = old & (~src1); });
+  INSTPAT("??????? ????? ????? 101 ????? 11100 11", csrrwi , I, { word_t csr_idx = imm & 0xfff; word_t old = CSR(csr_idx); R(rd) = old; CSR(csr_idx) = rs1; });
+  INSTPAT("??????? ????? ????? 110 ????? 11100 11", csrrsi , I, { word_t csr_idx = imm & 0xfff; word_t old = CSR(csr_idx); R(rd) = old; if (rs1 != 0) CSR(csr_idx) = old | rs1; });
+  INSTPAT("??????? ????? ????? 111 ????? 11100 11", csrrci , I, { word_t csr_idx = imm & 0xfff; word_t old = CSR(csr_idx); R(rd) = old; if (rs1 != 0) CSR(csr_idx) = old & (~rs1); });
   //mret
   INSTPAT("0011000 00010 00000 000 00000 11100 11", mret   , I, MRET(s->dnpc));                    //mret
   //ecall

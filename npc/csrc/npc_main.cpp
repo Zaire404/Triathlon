@@ -5,6 +5,8 @@
 #include <array>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
+#include <dlfcn.h>
 #include <fstream>
 #include <iostream>
 #include <string>
@@ -16,10 +18,14 @@ namespace {
 constexpr uint32_t kPmemBase = 0x80000000u;
 constexpr uint32_t kEbreakInsn = 0x00100073u;
 constexpr uint32_t kSerialPort = 0xA00003F8u;
+constexpr uint32_t kPmemSize = 0x08000000u;
+constexpr uint32_t kMmioBase = 0xA0000000u;
+constexpr uint32_t kMmioEnd = 0xAFFFFFFFu;
 
 struct SimArgs {
   std::string img_path;
-  uint64_t max_cycles = 2000000;
+  uint64_t max_cycles = 600000000;
+  std::string difftest_so;
   bool trace = false;
   std::string trace_path = "npc.vcd";
   bool commit_trace = false;
@@ -46,7 +52,14 @@ static SimArgs parse_args(int argc, char **argv) {
     std::string arg = argv[i];
 
     if (arg == "-d") {
-      if (i + 1 < argc) i++;
+      if (i + 1 < argc) {
+        args.difftest_so = argv[i + 1];
+        i++;
+      }
+      continue;
+    }
+    if (arg.rfind("--difftest=", 0) == 0) {
+      args.difftest_so = arg.substr(std::string("--difftest=").size());
       continue;
     }
     if (arg == "--max-cycles" && i + 1 < argc) {
@@ -134,17 +147,279 @@ static SimArgs parse_args(int argc, char **argv) {
   return args;
 }
 
+struct DifftestCPUState {
+  uint32_t gpr[16];
+  uint32_t pc;
+  struct {
+    uint32_t mtvec;
+    uint32_t mepc;
+    uint32_t mstatus;
+    uint32_t mcause;
+  } csr;
+};
+
+struct DUTCSRState {
+  uint32_t mtvec;
+  uint32_t mepc;
+  uint32_t mstatus;
+  uint32_t mcause;
+};
+
+class Difftest {
+ public:
+  bool init(const std::string &so_path,
+            const std::vector<uint32_t> &pmem_words,
+            uint32_t entry_pc) {
+    handle_ = dlopen(so_path.c_str(), RTLD_LAZY);
+    if (!handle_) {
+      std::cerr << "[difftest] dlopen failed: " << dlerror() << "\n";
+      return false;
+    }
+
+    difftest_memcpy_ =
+        reinterpret_cast<difftest_memcpy_t>(dlsym(handle_, "difftest_memcpy"));
+    difftest_regcpy_ =
+        reinterpret_cast<difftest_regcpy_t>(dlsym(handle_, "difftest_regcpy"));
+    difftest_exec_ =
+        reinterpret_cast<difftest_exec_t>(dlsym(handle_, "difftest_exec"));
+    difftest_init_ =
+        reinterpret_cast<difftest_init_t>(dlsym(handle_, "difftest_init"));
+
+    if (!difftest_memcpy_ || !difftest_regcpy_ || !difftest_exec_ ||
+        !difftest_init_) {
+      std::cerr << "[difftest] dlsym failed: missing required symbols\n";
+      return false;
+    }
+
+    difftest_init_(0);
+
+    std::vector<uint8_t> pmem(kPmemSize, 0);
+    size_t max_words = kPmemSize / sizeof(uint32_t);
+    size_t word_cnt = pmem_words.size() < max_words ? pmem_words.size() : max_words;
+    size_t copy_bytes = word_cnt * sizeof(uint32_t);
+    if (copy_bytes > 0) {
+      std::memcpy(pmem.data(), pmem_words.data(), copy_bytes);
+    }
+    difftest_memcpy_(kPmemBase, pmem.data(), pmem.size(), kToRef);
+
+    DifftestCPUState boot = {};
+    boot.pc = entry_pc;
+    boot.csr.mstatus = 0x1800u;
+    boot.csr.mtvec = 0x0u;
+    boot.csr.mepc = 0x0u;
+    boot.csr.mcause = 0x0u;
+    difftest_regcpy_(&boot, kToRef);
+    last_ref_state_ = boot;
+    has_last_ref_state_ = true;
+
+    enabled_ = true;
+    std::cout << "[difftest] enabled, image bytes copied=" << pmem.size()
+              << "\n";
+    return true;
+  }
+
+  bool enabled() const { return enabled_; }
+
+  bool step_and_check(uint64_t cycle, uint32_t pc, uint32_t inst,
+                      const std::array<uint32_t, 32> &rf_before,
+                      const std::array<uint32_t, 32> &rf_after) {
+    if (!enabled_) return true;
+
+    DifftestCPUState ref_before = {};
+    difftest_regcpy_(&ref_before, kToDut);
+    if (ref_before.pc != pc) {
+      std::cerr << "[difftest] pc mismatch before exec at cycle " << cycle
+                << " commit_pc=0x" << std::hex << pc << " ref_pc=0x"
+                << ref_before.pc << std::dec << "\n";
+      return false;
+    }
+
+    difftest_exec_(1);
+
+    DifftestCPUState ref_after = {};
+    difftest_regcpy_(&ref_after, kToDut);
+    last_ref_state_ = ref_after;
+    has_last_ref_state_ = true;
+
+    uint32_t mmio_load_rd = 0;
+    bool ignore_mmio_load_rd = decode_mmio_load_rd(inst, rf_before, mmio_load_rd);
+
+    for (int reg = 0; reg < 16; reg++) {
+      if (ignore_mmio_load_rd && reg == static_cast<int>(mmio_load_rd)) continue;
+      if (ref_after.gpr[reg] != rf_after[reg]) {
+        std::cerr << "[difftest] x" << reg << " mismatch at cycle " << cycle
+                  << " pc=0x" << std::hex << pc << " inst=0x" << inst
+                  << ": dut=0x" << rf_after[reg] << " ref=0x"
+                  << ref_after.gpr[reg] << std::dec << "\n";
+        return false;
+      }
+    }
+
+    if (ignore_mmio_load_rd && mmio_load_rd != 0) {
+      ref_after.gpr[mmio_load_rd] = rf_after[mmio_load_rd];
+      difftest_regcpy_(&ref_after, kToRef);
+      last_ref_state_ = ref_after;
+    }
+
+    return true;
+  }
+
+  bool check_arch_state(uint64_t cycle, const std::array<uint32_t, 32> &rf_after,
+                        const DUTCSRState &dut_csr) {
+    if (!enabled_ || !has_last_ref_state_) return true;
+
+    for (int reg = 0; reg < 16; reg++) {
+      if (last_ref_state_.gpr[reg] != rf_after[reg]) {
+        std::cerr << "[difftest] x" << reg
+                  << " mismatch at cycle-end " << cycle
+                  << ": dut=0x" << std::hex << rf_after[reg]
+                  << " ref=0x" << last_ref_state_.gpr[reg] << std::dec << "\n";
+        return false;
+      }
+    }
+
+    if (last_ref_state_.csr.mtvec != dut_csr.mtvec) {
+      std::cerr << "[difftest] mtvec mismatch at cycle-end " << cycle
+                << ": dut=0x" << std::hex << dut_csr.mtvec << " ref=0x"
+                << last_ref_state_.csr.mtvec << std::dec << "\n";
+      return false;
+    }
+    if (last_ref_state_.csr.mepc != dut_csr.mepc) {
+      std::cerr << "[difftest] mepc mismatch at cycle-end " << cycle
+                << ": dut=0x" << std::hex << dut_csr.mepc << " ref=0x"
+                << last_ref_state_.csr.mepc << std::dec << "\n";
+      return false;
+    }
+    if (last_ref_state_.csr.mstatus != dut_csr.mstatus) {
+      std::cerr << "[difftest] mstatus mismatch at cycle-end " << cycle
+                << ": dut=0x" << std::hex << dut_csr.mstatus << " ref=0x"
+                << last_ref_state_.csr.mstatus << std::dec << "\n";
+      return false;
+    }
+    if (last_ref_state_.csr.mcause != dut_csr.mcause) {
+      std::cerr << "[difftest] mcause mismatch at cycle-end " << cycle
+                << ": dut=0x" << std::hex << dut_csr.mcause << " ref=0x"
+                << last_ref_state_.csr.mcause << std::dec << "\n";
+      return false;
+    }
+
+    return true;
+  }
+
+  ~Difftest() {
+    handle_ = nullptr;
+  }
+
+ private:
+  using difftest_memcpy_t = void (*)(uint32_t, void *, size_t, bool);
+  using difftest_regcpy_t = void (*)(void *, bool);
+  using difftest_exec_t = void (*)(uint64_t);
+  using difftest_init_t = void (*)(int);
+
+  static constexpr bool kToDut = false;
+  static constexpr bool kToRef = true;
+
+  static int32_t sext12(uint32_t imm12) {
+    return static_cast<int32_t>(imm12 << 20) >> 20;
+  }
+
+  static bool is_mmio_addr(uint32_t addr) {
+    return addr >= kMmioBase && addr <= kMmioEnd;
+  }
+
+  static bool decode_mmio_load_rd(uint32_t inst,
+                                  const std::array<uint32_t, 32> &rf_before,
+                                  uint32_t &rd_out) {
+    uint32_t opcode = inst & 0x7fu;
+    if (opcode != 0x03u) return false;  // LOAD
+
+    uint32_t rd = (inst >> 7) & 0x1fu;
+    uint32_t rs1 = (inst >> 15) & 0x1fu;
+    uint32_t imm12 = (inst >> 20) & 0xfffu;
+    int32_t imm = sext12(imm12);
+
+    if (rs1 >= rf_before.size()) return false;
+    uint32_t addr = rf_before[rs1] + static_cast<uint32_t>(imm);
+    if (!is_mmio_addr(addr)) return false;
+    if (rd == 0 || rd >= 16) return false;
+
+    rd_out = rd;
+    return true;
+  }
+
+  void *handle_ = nullptr;
+  difftest_memcpy_t difftest_memcpy_ = nullptr;
+  difftest_regcpy_t difftest_regcpy_ = nullptr;
+  difftest_exec_t difftest_exec_ = nullptr;
+  difftest_init_t difftest_init_ = nullptr;
+
+  DifftestCPUState last_ref_state_ = {};
+  bool has_last_ref_state_ = false;
+  bool enabled_ = false;
+};
+
 struct UnifiedMem {
-  std::unordered_map<uint32_t, uint32_t> words;
+  std::vector<uint32_t> pmem_words;
+
+  UnifiedMem() : pmem_words(kPmemSize / sizeof(uint32_t), 0) {}
+
+  static bool in_pmem(uint32_t addr) {
+    return addr >= kPmemBase && addr < (kPmemBase + kPmemSize);
+  }
 
   void write_word(uint32_t addr, uint32_t data) {
-    words[addr & ~0x3u] = data;
+    uint32_t aligned = addr & ~0x3u;
+    if (!in_pmem(aligned)) return;
+    uint32_t idx = (aligned - kPmemBase) >> 2;
+    if (idx < pmem_words.size()) {
+      pmem_words[idx] = data;
+    }
+  }
+
+  void write_byte(uint32_t addr, uint8_t data) {
+    if (!in_pmem(addr)) return;
+    uint32_t aligned = addr & ~0x3u;
+    uint32_t shift = (addr & 0x3u) * 8u;
+    uint32_t mask = 0xffu << shift;
+    uint32_t cur = read_word(aligned);
+    uint32_t next = (cur & ~mask) | (static_cast<uint32_t>(data) << shift);
+    write_word(aligned, next);
+  }
+
+  void write_half(uint32_t addr, uint16_t data) {
+    if (!in_pmem(addr) || !in_pmem(addr + 1u)) return;
+    uint32_t aligned = addr & ~0x3u;
+    uint32_t shift = (addr & 0x3u) * 8u;
+    uint32_t mask = 0xffffu << shift;
+    uint32_t cur = read_word(aligned);
+    uint32_t next = (cur & ~mask) | (static_cast<uint32_t>(data) << shift);
+    write_word(aligned, next);
+  }
+
+  void write_store(uint32_t addr, uint32_t data, uint32_t op) {
+    switch (op) {
+      case 7u:  // LSU_SB
+        write_byte(addr, static_cast<uint8_t>(data & 0xffu));
+        break;
+      case 8u:  // LSU_SH
+        write_half(addr, static_cast<uint16_t>(data & 0xffffu));
+        break;
+      case 9u:  // LSU_SW
+        write_word(addr, data);
+        break;
+      default:
+        break;
+    }
   }
 
   uint32_t read_word(uint32_t addr) const {
-    auto it = words.find(addr & ~0x3u);
-    if (it == words.end()) return 0u;
-    return it->second;
+    uint32_t aligned = addr & ~0x3u;
+    if (!in_pmem(aligned)) return 0u;
+    uint32_t idx = (aligned - kPmemBase) >> 2;
+    if (idx < pmem_words.size()) {
+      return pmem_words[idx];
+    }
+    return 0u;
   }
 
   void fill_line(uint32_t line_addr, std::array<uint32_t, 8> &line) const {
@@ -181,6 +456,7 @@ struct UnifiedMem {
 };
 
 struct ICacheModel {
+
   bool pending = false;
   int delay = 0;
   uint32_t miss_addr = 0;
@@ -359,7 +635,7 @@ int main(int argc, char **argv) {
 
   if (args.img_path.empty()) {
     std::cerr << "Usage: " << argv[0]
-              << " <IMG> [--max-cycles N] [--trace [vcd]] [--commit-trace]"
+              << " <IMG> [--max-cycles N] [-d REF_SO] [--trace [vcd]] [--commit-trace]"
               << " [--bru-trace] [--fe-trace] [--stall-trace [N]]"
               << " [--progress [N]]\n";
     return 1;
@@ -374,11 +650,26 @@ int main(int argc, char **argv) {
   VerilatedVcdC *tfp = nullptr;
   vluint64_t sim_time = 0;
 
+#if VM_TRACE
   if (args.trace) {
     Verilated::traceEverOn(true);
     tfp = new VerilatedVcdC;
     top->trace(tfp, 99);
     tfp->open(args.trace_path.c_str());
+  }
+#else
+  if (args.trace) {
+    std::cerr << "[warn] this binary is built without --trace support, ignore --trace\n";
+  }
+#endif
+
+  Difftest difftest;
+  if (!args.difftest_so.empty()) {
+    if (!difftest.init(args.difftest_so, mem.mem.pmem_words, kPmemBase)) {
+      if (tfp) tfp->close();
+      delete top;
+      return 1;
+    }
   }
 
   reset(top, mem, tfp, sim_time);
@@ -393,9 +684,12 @@ int main(int argc, char **argv) {
 
     if (top->dbg_sb_dcache_req_valid_o && top->dbg_sb_dcache_req_ready_o) {
       uint32_t addr = top->dbg_sb_dcache_req_addr_o;
-      if (addr == kSerialPort) {
-        uint8_t ch =
-            static_cast<uint8_t>(top->dbg_sb_dcache_req_data_o & 0xFFu);
+      uint32_t data = top->dbg_sb_dcache_req_data_o;
+      uint32_t op = top->dbg_sb_dcache_req_op_o;
+      mem.mem.write_store(addr, data, op);
+      // avoid double printing when difftest also prints the log
+      if (addr == kSerialPort && !difftest.enabled()) {
+        uint8_t ch = static_cast<uint8_t>(data & 0xFFu);
         std::cout << static_cast<char>(ch) << std::flush;
       }
     }
@@ -425,6 +719,8 @@ int main(int argc, char **argv) {
       any_commit = true;
       total_commits++;
 
+      std::array<uint32_t, 32> rf_before = rf;
+
       bool we = (top->commit_we_o >> i) & 0x1;
       uint32_t rd = (top->commit_areg_o >> (i * 5)) & 0x1F;
       uint32_t data = top->commit_wdata_o[i];
@@ -449,6 +745,12 @@ int main(int argc, char **argv) {
                   << std::dec << "\n";
         std::cout.flags(f);
       }
+      if (!difftest.step_and_check(cycles, pc, inst, rf_before, rf)) {
+        std::cerr << "[difftest] stop on first mismatch\n";
+        if (tfp) tfp->close();
+        delete top;
+        return 1;
+      }
       if (inst == kEbreakInsn) {
         uint32_t code = rf[10];
         if (code == 0) {
@@ -470,6 +772,19 @@ int main(int argc, char **argv) {
     }
 
     if (any_commit) {
+      if (difftest.enabled()) {
+        DUTCSRState dut_csr = {};
+        dut_csr.mtvec = top->dbg_csr_mtvec_o;
+        dut_csr.mepc = top->dbg_csr_mepc_o;
+        dut_csr.mstatus = top->dbg_csr_mstatus_o;
+        dut_csr.mcause = top->dbg_csr_mcause_o;
+        if (!difftest.check_arch_state(cycles, rf, dut_csr)) {
+          std::cerr << "[difftest] stop on arch-state mismatch\n";
+          if (tfp) tfp->close();
+          delete top;
+          return 1;
+        }
+      }
       no_commit_cycles = 0;
     } else {
       no_commit_cycles++;

@@ -19,5 +19,10 @@
 #include <common.h>
 
 word_t expr(char *e, bool *success);
+void init_wp_pool();
+void add_wp(char *e);
+void delete_wp(int d_NO);
+void display_wp();
+bool scanf_wp();
 
 #endif
