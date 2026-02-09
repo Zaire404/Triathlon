@@ -14,6 +14,7 @@
 ***************************************************************************************/
 
 #include <isa.h>
+#include <memory/vaddr.h>
 
 /* We use the POSIX regex functions to process regular expressions.
  * Type 'man regex' for more information about POSIX regex functions.
@@ -190,7 +191,6 @@ bool check_parentheses(int l, int r) {
   check = (lp == 0) & (tokens[l].type == TK_left) & (tokens[r].type == TK_righ) ? check : 0;
   return check;
 }
-extern word_t vaddr_read();
 unsigned int eval(int l, int r) {
   if(l > r) { //处理解引用 * - $的时候可能越界
     return 0;

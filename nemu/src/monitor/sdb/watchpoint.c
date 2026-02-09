@@ -52,7 +52,6 @@ void free_wp(WP *wp) {
   wp->next = free_;
   free_ = wp;
 }
-extern word_t expr();
 void add_wp(char *e) {
   WP *n_wp = new_wp();
   if(head == NULL) {

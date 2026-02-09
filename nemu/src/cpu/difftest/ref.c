@@ -46,7 +46,9 @@ __EXPORT void difftest_raise_intr(word_t NO) {
 
 __EXPORT void difftest_init(int port) {
   void init_mem();
+  void init_device();
   init_mem();
+  IFDEF(CONFIG_DEVICE, init_device());
   /* Perform ISA dependent initialization. */
   init_isa();
 }

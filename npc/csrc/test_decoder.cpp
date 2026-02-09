@@ -480,6 +480,7 @@ GoldenInfo decode_reference(uint32_t inst, uint32_t pc) {
         info.has_rs1 = true;
       } else {
         info.has_rs1 = false; // 立即数形式
+        info.imm = rs1;       // CSR*I: zimm[4:0] 由 rs1 字段承载
       }
     } else {
       info.illegal = true;

@@ -6,9 +6,9 @@ TRIATHLON_HOME ?= $(abspath $(NPC_HOME)/..)
 
 VERILATOR = verilator
 # VERILATOR_CFLAGS += -MMD --build -cc \
-# 				-O3 --x-assign fast --x-initial fast --noassert --trace -sv
+# 				-O3 --x-assign fast --x-initial fast --noassert -sv
 VERILATOR_CFLAGS += -MMD --build -cc \
-				-O1 -j $(shell nproc) --x-assign fast --x-initial fast --noassert --trace -sv
+				-O2 -j $(shell nproc) --x-assign fast --x-initial fast --noassert -sv
 VERILATOR_CFLAGS += --Wno-fatal --Wno-WIDTH
 
 BUILD_DIR = ./build

@@ -752,8 +752,9 @@ module dcache #(
         miss_bank_addr_q <= req_bank_addr_q;
         miss_bank_sel_q  <= req_bank_sel_q;
 
-        // Writeback address from victim tag + current index
-        wb_paddr_q       <= {{victim_tag_q, req_index_q}, {OFFSET_WIDTH{1'b0}}};
+        // Writeback address from current victim tag + current index.
+        // NOTE: must use tag_a[...] of this cycle; victim_tag_q updates with NBA.
+        wb_paddr_q       <= {{tag_a[victim_way_d], req_index_q}, {OFFSET_WIDTH{1'b0}}};
 
         if (req_err_q) begin
           // Only loads have response

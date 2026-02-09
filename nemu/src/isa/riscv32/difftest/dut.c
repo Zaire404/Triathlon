@@ -19,7 +19,7 @@
 
 bool isa_difftest_checkregs(CPU_state *ref_r, vaddr_t pc) {
   bool ok = 1;
-  int reg_number = 32;
+  int reg_number = MUXDEF(CONFIG_RVE, 16, 32);
   for(int i = 0; i < reg_number; i ++) {
     if(cpu.gpr[i] != ref_r->gpr[i]) {
       ok = 0;

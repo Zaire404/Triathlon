@@ -18,6 +18,7 @@
 #include <readline/readline.h>
 #include <readline/history.h>
 #include "sdb.h"
+#include <memory/vaddr.h>
 
 static int is_batch_mode = false;
 
@@ -61,7 +62,6 @@ static int cmd_si(char *args){
   cpu_exec(execute_number);
   return 0;
 }
-extern void display_wp();
 static int cmd_info(char *args){
   if(strcmp(args, "r") == 0){
     isa_reg_display();
@@ -80,17 +80,14 @@ static int cmd_expr(char *args) {
   printf("%u\n",e_sum);
   return success;
 }
-extern void add_wp();
 static int cmd_w(char *args) {
   add_wp(args);
   return 0;
 }
-extern void delete_wp();
 static int cmd_dw(char *args) {
   delete_wp(strtol(args, NULL, 10));
   return 0;
 }
-extern word_t vaddr_read();
 static int cmd_x(char *args){
   printf("%s\n",args);
   char* token = strtok(args, " ");
@@ -209,7 +206,7 @@ void sdb_mainloop() {
       args = NULL;
     }
 
-#ifdef CONFIG_DEVICE
+#if defined(CONFIG_DEVICE) && defined(CONFIG_HAS_VGA)
     extern void sdl_clear_event_queue();
     sdl_clear_event_queue();
 #endif
