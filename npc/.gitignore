@@ -13,5 +13,12 @@
 !ref/*
 !verible.filelist
 !Makefile_test
+!tools/
+!tools/profiler/
+!tools/profiler/*.py
+!tools/profiler/*.sh
+!tools/profiler/*.md
+!tools/profiler/tests/
+!tools/profiler/tests/*.py
 build/
 .history/

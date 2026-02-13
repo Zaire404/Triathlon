@@ -109,5 +109,21 @@ gdb: $(BIN)
 	$(call git_commit, "debug RTL") # DO NOT REMOVE THIS LINE!!!
 	gdb -s $(BIN) --args $(BIN) $(NPC_EXE)
 
+.PHONY: profile-report profile-parse
+
+PROFILE_TOOL_DIR := $(abspath ./tools/profiler)
+PROFILE_OUT_DIR ?= $(abspath ./build/profile/latest)
+
+profile-report:
+	OUT_DIR=$(PROFILE_OUT_DIR) ARCH=$(ARCH) CROSS_COMPILE=$(CROSS_COMPILE) \
+		$(PROFILE_TOOL_DIR)/run_profile.sh
+
+profile-parse:
+	python3 $(PROFILE_TOOL_DIR)/parse_profile.py \
+		--log-dir $(PROFILE_OUT_DIR) \
+		--template $(PROFILE_TOOL_DIR)/report_template.md \
+		--out-json $(PROFILE_OUT_DIR)/summary.json \
+		--out-md $(PROFILE_OUT_DIR)/report.md
+
 clean:
 	rm -rf $(BUILD_DIR)
