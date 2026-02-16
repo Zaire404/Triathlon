@@ -19,6 +19,8 @@ vluint64_t main_time = 0;
 struct Instruction {
   uint32_t inst;
   uint32_t pc;
+  uint8_t slot_valid;
+  uint32_t pred_npc;
 };
 
 // C++ 端维护的 Golden Model
@@ -41,6 +43,10 @@ void reset(Vtb_ibuffer *top) {
   // 清空输入数据
   for (int i = 0; i < INSTR_PER_FETCH; ++i)
     top->fe_instrs_i[i] = 0;
+  top->fe_slot_valid_i = 0;
+  for (int i = 0; i < INSTR_PER_FETCH; ++i) {
+    top->fe_pred_npc_i[i] = 0;
+  }
   top->fe_pc_i = 0;
 
   tick(top);
@@ -55,6 +61,7 @@ void set_fetch_group(Vtb_ibuffer *top, uint32_t base_pc,
                      const std::vector<uint32_t> &instrs) {
   assert(instrs.size() == INSTR_PER_FETCH);
   top->fe_pc_i = base_pc;
+  top->fe_slot_valid_i = 0;
 
   // Verilator 的宽端口通常是 uint32_t 数组 (WData)
   // fe_instrs_i 是 128 位 (4 * 32)
@@ -62,6 +69,8 @@ void set_fetch_group(Vtb_ibuffer *top, uint32_t base_pc,
   // 如果 SV 中是 packed [3:0][31:0]，则 instrs[0] 对应低位
   for (int i = 0; i < INSTR_PER_FETCH; ++i) {
     top->fe_instrs_i[i] = instrs[i];
+    top->fe_slot_valid_i |= (1u << i);
+    top->fe_pred_npc_i[i] = base_pc + (i + 1) * ILEN_BYTES;
   }
 }
 
@@ -82,6 +91,8 @@ std::vector<Instruction> get_decode_group(Vtb_ibuffer *top) {
     // 您的 build_config_pkg 中: cfg.PLEN = user_cfg.VLEN (32)
     // 所以它是 32 位 PC。
     instr.pc = top->ibuf_pcs_o[i];
+    instr.slot_valid = (top->ibuf_slot_valid_o >> i) & 0x1;
+    instr.pred_npc = top->ibuf_pred_npc_o[i];
 
     group.push_back(instr);
   }
@@ -150,6 +161,8 @@ int main(int argc, char **argv) {
         Instruction instr;
         instr.inst = top->fe_instrs_i[i];
         instr.pc = current_fetch_pc + i * ILEN_BYTES;
+        instr.slot_valid = (top->fe_slot_valid_i >> i) & 0x1;
+        instr.pred_npc = top->fe_pred_npc_i[i];
         expected_queue.push_back(instr);
       }
       current_fetch_pc += INSTR_PER_FETCH * ILEN_BYTES;
@@ -176,6 +189,18 @@ int main(int argc, char **argv) {
                     << " Inst=0x" << expected.inst << std::endl;
           std::cout << "  Actual:   PC=0x" << std::hex << actual.pc
                     << " Inst=0x" << actual.inst << std::endl;
+          assert(false);
+        }
+        if (actual.slot_valid != expected.slot_valid ||
+            actual.pred_npc != expected.pred_npc) {
+          std::cout << "[ERROR] Metadata mismatch at time " << main_time
+                    << std::endl;
+          std::cout << "  Expected: valid=" << int(expected.slot_valid)
+                    << " pred_npc=0x" << std::hex << expected.pred_npc
+                    << std::endl;
+          std::cout << "  Actual:   valid=" << int(actual.slot_valid)
+                    << " pred_npc=0x" << std::hex << actual.pred_npc
+                    << std::endl;
           assert(false);
         }
       }

@@ -43,6 +43,8 @@ struct DispatchInstr {
 void set_dispatch(Vtb_issue *top, const std::vector<DispatchInstr>& instrs) {
     // 先清零
     top->dispatch_valid = 0;
+    top->dispatch_has_rs1 = 0;
+    top->dispatch_has_rs2 = 0;
     for (int i = 0; i < INSTR_PER_FETCH; ++i) {
         // 对于 VlWide 类型，需要对每个 word 清零
         for(int w = 0; w < UOP_WORDS; ++w) {
@@ -65,10 +67,8 @@ void set_dispatch(Vtb_issue *top, const std::vector<DispatchInstr>& instrs) {
             // [修复] 将 op 写入 uop_t 的第一个 word，其余保持 0
             // 这里我们把 instrs[i].op 当作 uop 的 payload 或者是唯一标识符
             top->dispatch_op[i][0]  = instrs[i].op; 
-            // uop_t 是 packed struct，has_rs1/has_rs2 分别位于 bit[91]/bit[90]。
-            // 在 Verilator 的 VlWide<4> 表示里，对应 dispatch_op[][2] 的 bit[27]/bit[26]。
-            top->dispatch_op[i][2] |= (1u << 27); // has_rs1 = 1
-            top->dispatch_op[i][2] |= (1u << 26); // has_rs2 = 1
+            top->dispatch_has_rs1 |= (1u << i);
+            top->dispatch_has_rs2 |= (1u << i);
             
             top->dispatch_dst[i] = instrs[i].dst_tag;
             top->dispatch_v1[i]  = instrs[i].v1;

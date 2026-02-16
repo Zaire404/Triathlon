@@ -52,9 +52,16 @@ module triathlon #(
   logic fe_ibuf_ready;
   logic [Cfg.INSTR_PER_FETCH-1:0][Cfg.ILEN-1:0] fe_ibuf_instrs;
   logic [Cfg.PLEN-1:0] fe_ibuf_pc;
+  logic [Cfg.INSTR_PER_FETCH-1:0] fe_ibuf_slot_valid;
+  logic [Cfg.INSTR_PER_FETCH-1:0][Cfg.PLEN-1:0] fe_ibuf_pred_npc;
 
   logic backend_flush;
   logic [Cfg.PLEN-1:0] backend_redirect_pc;
+  logic bpu_update_valid;
+  logic [Cfg.PLEN-1:0] bpu_update_pc;
+  logic bpu_update_is_cond;
+  logic bpu_update_taken;
+  logic [Cfg.PLEN-1:0] bpu_update_target;
 
   frontend #(
       .Cfg(Cfg)
@@ -66,9 +73,16 @@ module triathlon #(
       .ibuffer_ready_i(fe_ibuf_ready),
       .ibuffer_data_o (fe_ibuf_instrs),
       .ibuffer_pc_o   (fe_ibuf_pc),
+      .ibuffer_slot_valid_o(fe_ibuf_slot_valid),
+      .ibuffer_pred_npc_o(fe_ibuf_pred_npc),
 
       .flush_i      (backend_flush),
       .redirect_pc_i(backend_redirect_pc),
+      .bpu_update_valid_i(bpu_update_valid),
+      .bpu_update_pc_i(bpu_update_pc),
+      .bpu_update_is_cond_i(bpu_update_is_cond),
+      .bpu_update_taken_i(bpu_update_taken),
+      .bpu_update_target_i(bpu_update_target),
 
       .miss_req_valid_o     (icache_miss_req_valid_o),
       .miss_req_ready_i     (icache_miss_req_ready_i),
@@ -97,9 +111,16 @@ module triathlon #(
       .frontend_ibuf_ready (fe_ibuf_ready),
       .frontend_ibuf_instrs(fe_ibuf_instrs),
       .frontend_ibuf_pc    (fe_ibuf_pc),
+      .frontend_ibuf_slot_valid(fe_ibuf_slot_valid),
+      .frontend_ibuf_pred_npc(fe_ibuf_pred_npc),
 
       .backend_flush_o      (backend_flush),
       .backend_redirect_pc_o(backend_redirect_pc),
+      .bpu_update_valid_o(bpu_update_valid),
+      .bpu_update_pc_o(bpu_update_pc),
+      .bpu_update_is_cond_o(bpu_update_is_cond),
+      .bpu_update_taken_o(bpu_update_taken),
+      .bpu_update_target_o(bpu_update_target),
 
       .dcache_miss_req_valid_o(dcache_miss_req_valid_o),
       .dcache_miss_req_ready_i(dcache_miss_req_ready_i),

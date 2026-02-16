@@ -171,7 +171,11 @@ static void reset(Vtb_backend *top, MemModel &mem) {
   top->flush_from_backend = 0;
   top->frontend_ibuf_valid = 0;
   top->frontend_ibuf_pc = 0;
-  for (int i = 0; i < INSTR_PER_FETCH; i++) top->frontend_ibuf_instrs[i] = 0;
+  for (int i = 0; i < INSTR_PER_FETCH; i++) {
+    top->frontend_ibuf_instrs[i] = 0;
+    top->frontend_ibuf_pred_npc[i] = 0;
+  }
+  top->frontend_ibuf_slot_valid = 0;
 
   mem.reset();
   tick(top, mem);
@@ -205,8 +209,11 @@ static void send_group(Vtb_backend *top, MemModel &mem,
   while (!sent) {
     top->frontend_ibuf_valid = 1;
     top->frontend_ibuf_pc = base_pc;
+    top->frontend_ibuf_slot_valid = 0;
     for (int i = 0; i < INSTR_PER_FETCH; i++) {
       top->frontend_ibuf_instrs[i] = instrs[i];
+      top->frontend_ibuf_slot_valid |= (1u << i);
+      top->frontend_ibuf_pred_npc[i] = base_pc + static_cast<uint32_t>((i + 1) * 4);
     }
     bool ready = tick_sample_frontend_ready(top, mem);
     update_commits(top, rf, commit_log);
@@ -276,11 +283,25 @@ static void test_branch_flush(Vtb_backend *top, MemModel &mem) {
 
   bool flush_seen = false;
   bool wrong_commit = false;
+  int bpu_update_count = 0;
+  uint32_t first_update_pc = 0;
+  uint32_t first_update_target = 0;
+  bool first_update_is_cond = false;
+  bool first_update_taken = false;
 
   for (int i = 0; i < 200; i++) {
     tick(top, mem);
     update_commits(top, rf, commits);
     if (top->rob_flush_o) flush_seen = true;
+    if (top->bpu_update_valid_o) {
+      bpu_update_count++;
+      if (bpu_update_count == 1) {
+        first_update_pc = top->bpu_update_pc_o;
+        first_update_target = top->bpu_update_target_o;
+        first_update_is_cond = top->bpu_update_is_cond_o;
+        first_update_taken = top->bpu_update_taken_o;
+      }
+    }
 
     // Any commit to x2/x3 before re-fetch is wrong
     for (uint32_t rd : commits) {
@@ -309,6 +330,9 @@ static void test_branch_flush(Vtb_backend *top, MemModel &mem) {
   for (int i = 0; i < 200; i++) {
     tick(top, mem);
     update_commits(top, rf, commits);
+    if (top->bpu_update_valid_o) {
+      bpu_update_count++;
+    }
     if (rf[1] == 1 && rf[2] == 0 && rf[3] == 3) {
       ok = true;
       break;
@@ -322,6 +346,11 @@ static void test_branch_flush(Vtb_backend *top, MemModel &mem) {
     std::cout << std::endl;
   }
   expect(ok, "Branch flush + correct-path commit");
+  expect(bpu_update_count == 1, "Commit-time predictor update asserted exactly once");
+  expect(first_update_pc == 0x8004, "Predictor update PC matches committed branch PC");
+  expect(first_update_target == 0x800C, "Predictor update target matches branch target");
+  expect(first_update_is_cond, "Predictor update marks conditional branch");
+  expect(first_update_taken, "Predictor update marks taken branch");
 }
 
 static void test_store_load_forward(Vtb_backend *top, MemModel &mem) {

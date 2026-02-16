@@ -13,6 +13,8 @@ module tb_backend (
     output logic                                         frontend_ibuf_ready,
     input  logic [Cfg.INSTR_PER_FETCH-1:0][Cfg.ILEN-1:0] frontend_ibuf_instrs,
     input  logic [           Cfg.PLEN-1:0]               frontend_ibuf_pc,
+    input  logic [Cfg.INSTR_PER_FETCH-1:0]               frontend_ibuf_slot_valid,
+    input  logic [Cfg.INSTR_PER_FETCH-1:0][Cfg.PLEN-1:0] frontend_ibuf_pred_npc,
 
     // D-Cache miss/refill/writeback interface
     output logic                                  dcache_miss_req_valid_o,
@@ -37,6 +39,11 @@ module tb_backend (
     output logic [Cfg.NRET-1:0]                commit_we_o,
     output logic [Cfg.NRET-1:0][4:0]           commit_areg_o,
     output logic [Cfg.NRET-1:0][Cfg.XLEN-1:0]  commit_wdata_o,
+    output logic                               bpu_update_valid_o,
+    output logic [Cfg.PLEN-1:0]                bpu_update_pc_o,
+    output logic                               bpu_update_is_cond_o,
+    output logic                               bpu_update_taken_o,
+    output logic [Cfg.PLEN-1:0]                bpu_update_target_o,
     output logic                               rob_flush_o,
     output logic [Cfg.PLEN-1:0]                rob_flush_pc_o
 );
@@ -54,8 +61,15 @@ module tb_backend (
       .frontend_ibuf_ready,
       .frontend_ibuf_instrs,
       .frontend_ibuf_pc,
+      .frontend_ibuf_slot_valid,
+      .frontend_ibuf_pred_npc,
       .backend_flush_o(backend_flush_unused),
       .backend_redirect_pc_o(backend_redirect_pc_unused),
+      .bpu_update_valid_o(bpu_update_valid_o),
+      .bpu_update_pc_o(bpu_update_pc_o),
+      .bpu_update_is_cond_o(bpu_update_is_cond_o),
+      .bpu_update_taken_o(bpu_update_taken_o),
+      .bpu_update_target_o(bpu_update_target_o),
 
       .dcache_miss_req_valid_o,
       .dcache_miss_req_ready_i,

@@ -24,6 +24,8 @@ module rob #(
     input decode_pkg::fu_e [DISPATCH_WIDTH-1:0]               dispatch_fu_type_i,
     input logic            [DISPATCH_WIDTH-1:0][         4:0] dispatch_areg_i,
     input logic            [DISPATCH_WIDTH-1:0]               dispatch_has_rd_i,
+    input logic            [DISPATCH_WIDTH-1:0]               dispatch_is_branch_i,
+    input logic            [DISPATCH_WIDTH-1:0]               dispatch_is_jump_i,
 
     // [新增] 接收 Store Buffer ID
     // 只有当指令是 Store 时，这个信号才有效；否则忽略
@@ -63,11 +65,19 @@ module rob #(
     output logic [COMMIT_WIDTH-1:0] commit_is_store_o,
     // [新增] 告诉 Store Buffer 哪条指令退休了
     output logic [COMMIT_WIDTH-1:0][SB_IDX_WIDTH-1:0] commit_sb_id_o,
+    output logic [COMMIT_WIDTH-1:0]                    commit_is_branch_o,
+    output logic [COMMIT_WIDTH-1:0]                    commit_is_jump_o,
+    output logic [COMMIT_WIDTH-1:0][Cfg.PLEN-1:0]      commit_actual_npc_o,
 
     // Flush Interface
     output logic flush_o,
     output logic [Cfg.PLEN-1:0] flush_pc_o,
     output logic [4:0] flush_cause_o,
+    output logic flush_is_mispred_o,
+    output logic flush_is_exception_o,
+    output logic flush_is_branch_o,
+    output logic flush_is_jump_o,
+    output logic [Cfg.PLEN-1:0] flush_src_pc_o,
 
     // =========================================================
     // 4. Operand Query (To Issue/Rename)
@@ -96,6 +106,8 @@ module rob #(
     decode_pkg::fu_e fu_type;
     logic [4:0] areg;
     logic has_rd;
+    logic is_branch;
+    logic is_jump;
     logic [Cfg.XLEN-1:0] data;
     logic [Cfg.PLEN-1:0] pc;
 
@@ -136,6 +148,11 @@ module rob #(
     flush_o = 1'b0;
     flush_pc_o = '0;
     flush_cause_o = '0;
+    flush_is_mispred_o = 1'b0;
+    flush_is_exception_o = 1'b0;
+    flush_is_branch_o = 1'b0;
+    flush_is_jump_o = 1'b0;
+    flush_src_pc_o = '0;
 
     commit_valid_o = '0;
     commit_pc_o    = '0;
@@ -144,6 +161,9 @@ module rob #(
     commit_wdata_o = '0;
     commit_is_store_o = '0;
     commit_sb_id_o    = '0; // 默认清零
+    commit_is_branch_o = '0;
+    commit_is_jump_o = '0;
+    commit_actual_npc_o = '0;
     commit_rob_index_o = '0;
 
     // --- 1. Resource Check ---
@@ -187,6 +207,10 @@ module rob #(
             flush_o       = 1'b1;
             flush_pc_o    = rob_ram[idx].pc;
             flush_cause_o = rob_ram[idx].ecause;
+            flush_is_exception_o = 1'b1;
+            flush_is_branch_o = rob_ram[idx].is_branch;
+            flush_is_jump_o = rob_ram[idx].is_jump;
+            flush_src_pc_o = rob_ram[idx].pc;
           end else if (rob_ram[idx].is_mispred) begin
             // 分支/跳转误预测：先退休该指令，再触发 flush
             commit_valid_o[i] = 1'b1;
@@ -200,10 +224,17 @@ module rob #(
 
             commit_is_store_o[i] = rob_ram[idx].is_store;
             commit_sb_id_o[i]    = rob_ram[idx].sb_id;
+            commit_is_branch_o[i] = rob_ram[idx].is_branch;
+            commit_is_jump_o[i] = rob_ram[idx].is_jump;
+            commit_actual_npc_o[i] = rob_ram[idx].redirect_pc;
 
             stop_commit          = 1'b1;
             flush_o              = 1'b1;
             flush_pc_o           = rob_ram[idx].redirect_pc;
+            flush_is_mispred_o   = 1'b1;
+            flush_is_branch_o    = rob_ram[idx].is_branch;
+            flush_is_jump_o      = rob_ram[idx].is_jump;
+            flush_src_pc_o       = rob_ram[idx].pc;
           end else begin
             // 正常退休
             commit_valid_o[i] = 1'b1;
@@ -218,6 +249,9 @@ module rob #(
             // [修复] 输出 Store Buffer ID
             commit_is_store_o[i] = rob_ram[idx].is_store;
             commit_sb_id_o[i]    = rob_ram[idx].sb_id;
+            commit_is_branch_o[i] = rob_ram[idx].is_branch;
+            commit_is_jump_o[i] = rob_ram[idx].is_jump;
+            commit_actual_npc_o[i] = rob_ram[idx].redirect_pc;
           end
         end else begin
           stop_commit = 1'b1;
@@ -289,6 +323,8 @@ module rob #(
             rob_ram[w_idx].fu_type     <= dispatch_fu_type_i[i];
             rob_ram[w_idx].areg        <= dispatch_areg_i[i];
             rob_ram[w_idx].has_rd      <= dispatch_has_rd_i[i];
+            rob_ram[w_idx].is_branch   <= dispatch_is_branch_i[i];
+            rob_ram[w_idx].is_jump     <= dispatch_is_jump_i[i];
             rob_ram[w_idx].pc          <= dispatch_pc_i[i];
 
             // [新增] 保存 SB ID

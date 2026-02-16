@@ -14,6 +14,7 @@ module tb_execute #(
 
     // 简单信号输入
     input logic [ XLEN-1:0] pc_i,         // [修改] 参数化位宽
+    input logic [ XLEN-1:0] pred_npc_i,
     input logic [ XLEN-1:0] imm_i,        // [修改] 参数化位宽
     input logic [      4:0] alu_op_i,     // ALU OP 宽度通常固定，暂保持 5
     input logic [      2:0] br_op_i,      // BR OP 宽度通常固定，暂保持 3
@@ -38,6 +39,7 @@ module tb_execute #(
     uop           = '0;
     // 这里的赋值会自动进行位宽截断或扩展，前提是 uop_t 定义使用了 Cfg.XLEN
     uop.pc        = pc_i;
+    uop.pred_npc  = pred_npc_i;
     uop.imm       = imm_i;
     uop.alu_op    = decode_pkg::alu_op_e'(alu_op_i);
     uop.br_op     = decode_pkg::branch_op_e'(br_op_i);

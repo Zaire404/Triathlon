@@ -14,6 +14,8 @@ module tb_ibuffer #(
     // [INSTR_PER_FETCH * ILEN - 1 : 0]
     input  logic [Cfg.INSTR_PER_FETCH*Cfg.ILEN-1:0] fe_instrs_i,
     input  logic [                    Cfg.PLEN-1:0] fe_pc_i,
+    input  logic [Cfg.INSTR_PER_FETCH-1:0]          fe_slot_valid_i,
+    input  logic [Cfg.INSTR_PER_FETCH*Cfg.PLEN-1:0] fe_pred_npc_i,
 
     // --- Decode Interface (展平) ---
     output logic                                    ibuf_valid_o,
@@ -22,6 +24,8 @@ module tb_ibuffer #(
     output logic [Cfg.INSTR_PER_FETCH*Cfg.ILEN-1:0] ibuf_instrs_o,
     // [DECODE_WIDTH * PLEN - 1 : 0]
     output logic [Cfg.INSTR_PER_FETCH*Cfg.PLEN-1:0] ibuf_pcs_o,
+    output logic [Cfg.INSTR_PER_FETCH-1:0]          ibuf_slot_valid_o,
+    output logic [Cfg.INSTR_PER_FETCH*Cfg.PLEN-1:0] ibuf_pred_npc_o,
 
     // --- Control ---
     input logic flush_i
@@ -40,11 +44,15 @@ module tb_ibuffer #(
       // SystemVerilog 会自动处理 展平向量 到 Packed Array 的赋值
       .fe_instrs_i(fe_instrs_i),
       .fe_pc_i(fe_pc_i),
+      .fe_slot_valid_i(fe_slot_valid_i),
+      .fe_pred_npc_i(fe_pred_npc_i),
 
       .ibuf_valid_o(ibuf_valid_o),
       .ibuf_ready_i(ibuf_ready_i),
       .ibuf_instrs_o(ibuf_instrs_o),
       .ibuf_pcs_o(ibuf_pcs_o),
+      .ibuf_slot_valid_o(ibuf_slot_valid_o),
+      .ibuf_pred_npc_o(ibuf_pred_npc_o),
 
       .flush_i(flush_i)
   );

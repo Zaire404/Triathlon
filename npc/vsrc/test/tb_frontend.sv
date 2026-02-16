@@ -14,9 +14,16 @@ module tb_frontend (
     // 将 packed array 展平以便 C++ 访问 (4 * 32 = 128 bit)
     output logic [Cfg.INSTR_PER_FETCH*Cfg.ILEN-1:0] ibuffer_data_o,
     output logic [                    Cfg.PLEN-1:0] ibuffer_pc_o,
+    output logic [Cfg.INSTR_PER_FETCH-1:0]          ibuffer_slot_valid_o,
+    output logic [Cfg.INSTR_PER_FETCH*Cfg.PLEN-1:0] ibuffer_pred_npc_o,
 
     input logic                flush_i,
     input logic [Cfg.PLEN-1:0] redirect_pc_i,
+    input logic                bpu_update_valid_i,
+    input logic [Cfg.PLEN-1:0] bpu_update_pc_i,
+    input logic                bpu_update_is_cond_i,
+    input logic                bpu_update_taken_i,
+    input logic [Cfg.PLEN-1:0] bpu_update_target_i,
 
     // ============================================
     // 2. 存储器系统接口 (To Memory/L2/Bus)
@@ -48,9 +55,16 @@ module tb_frontend (
       .ibuffer_ready_i(ibuffer_ready_i),
       .ibuffer_data_o (ibuffer_data_o),
       .ibuffer_pc_o   (ibuffer_pc_o),
+      .ibuffer_slot_valid_o(ibuffer_slot_valid_o),
+      .ibuffer_pred_npc_o(ibuffer_pred_npc_o),
 
       .flush_i      (flush_i),
       .redirect_pc_i(redirect_pc_i),
+      .bpu_update_valid_i(bpu_update_valid_i),
+      .bpu_update_pc_i(bpu_update_pc_i),
+      .bpu_update_is_cond_i(bpu_update_is_cond_i),
+      .bpu_update_taken_i(bpu_update_taken_i),
+      .bpu_update_target_i(bpu_update_target_i),
 
       .miss_req_valid_o     (miss_req_valid_o),
       .miss_req_ready_i     (miss_req_ready_i),

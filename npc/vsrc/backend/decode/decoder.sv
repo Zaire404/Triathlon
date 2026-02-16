@@ -20,6 +20,8 @@ module decoder #(
     output logic                                  dec2ibuf_ready_o,
     input  logic [DECODE_WIDTH-1:0][Cfg.ILEN-1:0] ibuf_instrs_i,
     input  logic [DECODE_WIDTH-1:0][Cfg.PLEN-1:0] ibuf_pcs_i,
+    input  logic [DECODE_WIDTH-1:0]               ibuf_slot_valid_i,
+    input  logic [DECODE_WIDTH-1:0][Cfg.PLEN-1:0] ibuf_pred_npc_i,
 
     // Decoded uops to Rename / Issue
     output logic                                dec2backend_valid_o,
@@ -70,7 +72,7 @@ module decoder #(
   assign dec2backend_valid_o = ibuf2dec_valid_i;
 
   for (genvar slot_index = 0; slot_index < DECODE_WIDTH; slot_index++) begin : gen_slot_valid
-    assign dec_slot_valid_o[slot_index] = ibuf2dec_valid_i;
+    assign dec_slot_valid_o[slot_index] = ibuf2dec_valid_i && ibuf_slot_valid_i[slot_index];
   end
 
   // ----------------------------------------------------------------------
@@ -554,7 +556,8 @@ module decoder #(
     always_comb begin
       decode_pkg::uop_t lane_uop;
       lane_uop = decode_one_instruction(ibuf_instrs_i[lane_index], ibuf_pcs_i[lane_index]);
-      lane_uop.valid = ibuf2dec_valid_i;  // 当前不产生 per-lane bubble
+      lane_uop.valid = ibuf2dec_valid_i && ibuf_slot_valid_i[lane_index];
+      lane_uop.pred_npc = ibuf_pred_npc_i[lane_index];
       dec_uops_o[lane_index] = lane_uop;
     end
   end

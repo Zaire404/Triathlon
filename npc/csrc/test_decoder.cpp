@@ -709,6 +709,11 @@ int main(int argc, char **argv) {
                   << " DUT=" << (int)top->check_is_jump << std::endl;
         mismatch = true;
       }
+      if (top->check_pred_npc != (pc + 4)) {
+        std::cout << "[ERROR] pred_npc mismatch! Ref=0x" << std::hex << (pc + 4)
+                  << " DUT=0x" << top->check_pred_npc << std::endl;
+        mismatch = true;
+      }
     }
 
     if (mismatch) {

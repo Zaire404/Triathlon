@@ -14,12 +14,16 @@ module ibuffer #(
     output logic                                         fe_ready_o,
     input  logic [Cfg.INSTR_PER_FETCH-1:0][Cfg.ILEN-1:0] fe_instrs_i,
     input  logic [           Cfg.PLEN-1:0]               fe_pc_i,      // 该组第 0 条的 PC
+    input  logic [Cfg.INSTR_PER_FETCH-1:0]               fe_slot_valid_i,
+    input  logic [Cfg.INSTR_PER_FETCH-1:0][Cfg.PLEN-1:0] fe_pred_npc_i,
 
     // 发往 decode 的接口：按 uop/指令粒度输出
     output logic                                  ibuf_valid_o,
     input  logic                                  ibuf_ready_i,
     output logic [DECODE_WIDTH-1:0][Cfg.ILEN-1:0] ibuf_instrs_o,
     output logic [DECODE_WIDTH-1:0][Cfg.PLEN-1:0] ibuf_pcs_o,
+    output logic [DECODE_WIDTH-1:0]               ibuf_slot_valid_o,
+    output logic [DECODE_WIDTH-1:0][Cfg.PLEN-1:0] ibuf_pred_npc_o,
 
     // flush：来自后端（比如 ROB 或 commit）
     input logic flush_i
@@ -84,6 +88,8 @@ module ibuffer #(
           fifo_d[PTR_W'(wr_ptr_q + i)].instr = fe_instrs_i[i];
           // 这里假设固定 4 字节指令：pc = base_pc + 4*i
           fifo_d[PTR_W'(wr_ptr_q + i)].pc    = fe_pc_i + (Cfg.ILEN / 8 * i);
+          fifo_d[PTR_W'(wr_ptr_q + i)].slot_valid = fe_slot_valid_i[i];
+          fifo_d[PTR_W'(wr_ptr_q + i)].pred_npc = fe_pred_npc_i[i];
         end
 
         wr_ptr_d = wr_ptr_q + FETCH_WIDTH[PTR_W-1:0];
@@ -106,6 +112,8 @@ module ibuffer #(
 
       ibuf_instrs_o[j] = fifo_q[ridx].instr;
       ibuf_pcs_o[j]    = fifo_q[ridx].pc;
+      ibuf_slot_valid_o[j] = fifo_q[ridx].slot_valid;
+      ibuf_pred_npc_o[j] = fifo_q[ridx].pred_npc;
     end
   end
 

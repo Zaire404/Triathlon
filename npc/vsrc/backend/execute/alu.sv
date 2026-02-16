@@ -116,32 +116,19 @@ module execute_alu #(
   end
 
   // --- 4. 预测错误判断 (给 ROB) ---
-  // [改进] 显式定义预测方向，方便未来接入 BPU/Decoder 的预测信息
-  logic pred_taken;
-  assign pred_taken = 1'b0;  // 目前默认预测不跳转 (Not Taken)
+  logic            control_uop;
+  logic [PC_W-1:0] actual_npc;
+
+  assign control_uop = uop_i.is_branch || uop_i.is_jump;
+  assign actual_npc = br_take ? br_target : (uop_i.pc + INSTR_SIZE);
 
   always_comb begin
     alu_is_mispred_o  = 1'b0;
     alu_redirect_pc_o = '0;
 
-    if (alu_valid_i) begin
-      if (uop_i.is_branch) begin
-        // 分支预测错误：实际结果 != 预测结果
-        if (br_take != pred_taken) begin
-          alu_is_mispred_o  = 1'b1;
-          // 如果实际要跳但预测没跳，目标是计算出的 target
-          // 如果实际没跳但预测跳了，目标是 fall-through (PC+4)
-          alu_redirect_pc_o = br_take ? br_target : (uop_i.pc + INSTR_SIZE);
-        end
-      end else if (uop_i.is_jump) begin
-        // JAL/JALR 始终 Taken。
-        // 如果前端没预测跳转（视为预测 Not Taken），则此处一定误判
-        // 未来如果有 BTB，这里应该比较 br_target 和 pred_target
-        if (!pred_taken) begin
-          alu_is_mispred_o  = 1'b1;
-          alu_redirect_pc_o = br_target;
-        end
-      end
+    if (alu_valid_i && control_uop) begin
+      alu_redirect_pc_o = actual_npc;
+      alu_is_mispred_o  = (actual_npc != uop_i.pred_npc);
     end
   end
 
