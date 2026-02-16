@@ -55,6 +55,13 @@ module tb_triathlon #(
     output logic [Cfg.XLEN-1:0]                dbg_csr_mcause_o,
     output logic                               backend_flush_o,
     output logic [Cfg.PLEN-1:0]                backend_redirect_pc_o,
+    output logic                               dbg_rob_flush_o,
+    output logic [4:0]                         dbg_rob_flush_cause_o,
+    output logic                               dbg_rob_flush_is_mispred_o,
+    output logic                               dbg_rob_flush_is_exception_o,
+    output logic                               dbg_rob_flush_is_branch_o,
+    output logic                               dbg_rob_flush_is_jump_o,
+    output logic [Cfg.PLEN-1:0]                dbg_rob_flush_src_pc_o,
 
     // Debug (frontend/backend handshakes)
     output logic                               dbg_fe_valid_o,
@@ -185,6 +192,13 @@ module tb_triathlon #(
   assign dbg_csr_mcause_o  = dut.u_backend.u_csr.csr_mcause;
   assign backend_flush_o = dut.u_backend.backend_flush_o;
   assign backend_redirect_pc_o = dut.u_backend.backend_redirect_pc_o;
+  assign dbg_rob_flush_o = dut.u_backend.rob_flush;
+  assign dbg_rob_flush_cause_o = dut.u_backend.rob_flush_cause;
+  assign dbg_rob_flush_is_mispred_o = dut.u_backend.rob_flush_is_mispred;
+  assign dbg_rob_flush_is_exception_o = dut.u_backend.rob_flush_is_exception;
+  assign dbg_rob_flush_is_branch_o = dut.u_backend.rob_flush_is_branch;
+  assign dbg_rob_flush_is_jump_o = dut.u_backend.rob_flush_is_jump;
+  assign dbg_rob_flush_src_pc_o = dut.u_backend.rob_flush_src_pc;
 
   // Debug: frontend/backend handshakes
   assign dbg_fe_valid_o = dut.fe_ibuf_valid;
