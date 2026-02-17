@@ -140,17 +140,23 @@ int main(int argc, char **argv) {
   assert(top->pred_slot_target_o == early_target);
   assert(top->npc_o == early_target);
 
-  // 5) RAS behavior:
-  // - A committed return marks BTB entry as return (underflow is ignored).
-  // - A later committed call pushes return address onto RAS.
-  // - Predicting return should use RAS top instead of BTB target.
+  // 5) Speculative call->return:
+  // Call prediction pushes RAS on next cycle, so following return should use it.
+  reset(top);
   const uint32_t ret_pc = 0x80000300;
   const uint32_t ret_btb_target = 0x90000000;
   const uint32_t call_pc = 0x80000220;
   const uint32_t call_target = 0x80001000;
 
-  train(top, ret_pc, false, true, ret_btb_target, false, true);   // mark as return
-  train(top, call_pc, false, true, call_target, true, false);      // push call return addr
+  train(top, ret_pc, false, true, ret_btb_target, false, true);
+  train(top, call_pc, false, true, call_target, true, false);
+
+  top->pc_i = call_pc;
+  tick(top, 1);
+  assert(top->pred_slot_valid_o == 1);
+  assert(top->pred_slot_idx_o == 0);
+  assert(top->pred_slot_target_o == call_target);
+  assert(top->npc_o == call_target);
 
   top->pc_i = ret_pc;
   tick(top, 1);
@@ -160,8 +166,7 @@ int main(int argc, char **argv) {
   assert(top->npc_o == call_pc + 4);
 
   // 6) Return underflow fallback:
-  // After a return commit pops RAS to empty, return prediction falls back BTB target.
-  train(top, ret_pc, false, true, ret_btb_target, false, true);  // pop once
+  // The previous return prediction pops speculative RAS on next cycle.
   top->pc_i = ret_pc;
   tick(top, 1);
   assert(top->pred_slot_valid_o == 1);
@@ -170,14 +175,29 @@ int main(int argc, char **argv) {
   assert(top->npc_o == ret_btb_target);
 
   // 7) Nested call/return should follow LIFO order.
+  reset(top);
   const uint32_t ret2_pc = 0x80000320;
   const uint32_t ret2_btb_target = 0x90000020;
   const uint32_t call_a_pc = 0x80000440;
   const uint32_t call_b_pc = 0x80000460;
 
-  train(top, ret2_pc, false, true, ret2_btb_target, false, true);  // mark as return
-  train(top, call_a_pc, false, true, 0x80002000, true, false);      // push A
-  train(top, call_b_pc, false, true, 0x80003000, true, false);      // push B
+  train(top, ret2_pc, false, true, ret2_btb_target, false, true);
+  train(top, call_a_pc, false, true, 0x80002000, true, false);
+  train(top, call_b_pc, false, true, 0x80003000, true, false);
+
+  top->pc_i = call_a_pc;
+  tick(top, 1);
+  assert(top->pred_slot_valid_o == 1);
+  assert(top->pred_slot_idx_o == 0);
+  assert(top->pred_slot_target_o == 0x80002000);
+  assert(top->npc_o == 0x80002000);
+
+  top->pc_i = call_b_pc;
+  tick(top, 1);
+  assert(top->pred_slot_valid_o == 1);
+  assert(top->pred_slot_idx_o == 0);
+  assert(top->pred_slot_target_o == 0x80003000);
+  assert(top->npc_o == 0x80003000);
 
   top->pc_i = ret2_pc;
   tick(top, 1);
@@ -186,7 +206,6 @@ int main(int argc, char **argv) {
   assert(top->pred_slot_target_o == call_b_pc + 4);
   assert(top->npc_o == call_b_pc + 4);
 
-  train(top, ret2_pc, false, true, call_a_pc + 4, false, true);     // pop B, actual return to A
   top->pc_i = ret2_pc;
   tick(top, 1);
   assert(top->pred_slot_valid_o == 1);
@@ -194,24 +213,65 @@ int main(int argc, char **argv) {
   assert(top->pred_slot_target_o == call_a_pc + 4);
   assert(top->npc_o == call_a_pc + 4);
 
-  // 8) Stale-RAS guard:
-  // If return commit observes RAS-top != actual return target, later prediction
-  // should fall back to BTB target instead of blindly trusting current RAS top.
+  // 8) Optimistic return policy:
+  // Return prediction prioritizes live RAS top over stale BTB return target.
+  reset(top);
   const uint32_t stale_call_pc = 0x80000500;
   const uint32_t stale_ret_pc = 0x80000520;
-  const uint32_t stale_ret_actual = 0x80000540;
+  const uint32_t stale_ret_btb_target = 0x80000540;
   const uint32_t later_call_pc = 0x80000580;
 
-  train(top, stale_call_pc, false, true, 0x80003000, true, false);      // push stale_call_pc+4
-  train(top, stale_ret_pc, false, true, stale_ret_actual, false, true);  // mismatch + pop
-  train(top, later_call_pc, false, true, 0x80004000, true, false);       // push later_call_pc+4
+  train(top, stale_ret_pc, false, true, stale_ret_btb_target, false, true);
+  train(top, stale_call_pc, false, true, 0x80003000, true, false);
+  train(top, later_call_pc, false, true, 0x80004000, true, false);
+
+  top->pc_i = stale_call_pc;
+  tick(top, 1);
+  assert(top->pred_slot_valid_o == 1);
+  assert(top->pred_slot_idx_o == 0);
+  assert(top->pred_slot_target_o == 0x80003000);
+
+  top->pc_i = later_call_pc;
+  tick(top, 1);
+  assert(top->pred_slot_valid_o == 1);
+  assert(top->pred_slot_idx_o == 0);
+  assert(top->pred_slot_target_o == 0x80004000);
 
   top->pc_i = stale_ret_pc;
   tick(top, 1);
   assert(top->pred_slot_valid_o == 1);
   assert(top->pred_slot_idx_o == 0);
-  assert(top->pred_slot_target_o == stale_ret_actual);
-  assert(top->npc_o == stale_ret_actual);
+  assert(top->pred_slot_target_o == later_call_pc + 4);
+  assert(top->npc_o == later_call_pc + 4);
+
+  // 9) Empty-RAS fallback then speculative override.
+  reset(top);
+  const uint32_t spec_call_pc = 0x80000600;
+  const uint32_t spec_ret_pc = 0x80000640;
+  const uint32_t spec_ret_btb_target = 0x90000640;
+
+  train(top, spec_call_pc, false, true, 0x80006000, true, false);
+  train(top, spec_ret_pc, false, true, spec_ret_btb_target, false, true);
+
+  top->pc_i = spec_ret_pc;
+  tick(top, 1);
+  assert(top->pred_slot_valid_o == 1);
+  assert(top->pred_slot_idx_o == 0);
+  assert(top->pred_slot_target_o == spec_ret_btb_target);
+  assert(top->npc_o == spec_ret_btb_target);
+
+  top->pc_i = spec_call_pc;
+  tick(top, 1);
+  assert(top->pred_slot_valid_o == 1);
+  assert(top->pred_slot_idx_o == 0);
+  assert(top->pred_slot_target_o == 0x80006000);
+
+  top->pc_i = spec_ret_pc;
+  tick(top, 1);
+  assert(top->pred_slot_valid_o == 1);
+  assert(top->pred_slot_idx_o == 0);
+  assert(top->pred_slot_target_o == spec_call_pc + 4);
+  assert(top->npc_o == spec_call_pc + 4);
 
   std::cout << "--- [PASSED] All checks passed successfully! ---" << std::endl;
   delete top;

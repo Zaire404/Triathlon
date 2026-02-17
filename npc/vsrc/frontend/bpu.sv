@@ -31,9 +31,13 @@ module bpu #(
   localparam int unsigned INSTR_BYTES = Cfg.ILEN / 8;
   localparam int unsigned BTB_TAG_W = Cfg.PLEN - BTB_IDX_W - 2;
   localparam int unsigned RAS_CNT_W = (RAS_DEPTH > 0) ? $clog2(RAS_DEPTH + 1) : 1;
+  // A2.2 uses speculative RAS updates on prediction path. Keep commit-time call/ret
+  // metadata updates for BTB classification, but avoid double push/pop on RAS stack.
+  localparam bit ENABLE_COMMIT_RAS_STACK_UPDATE = 1'b0;
 
   logic [BTB_ENTRIES-1:0] btb_valid_q;
   logic [BTB_ENTRIES-1:0] btb_is_cond_q;
+  logic [BTB_ENTRIES-1:0] btb_is_call_q;
   logic [BTB_ENTRIES-1:0] btb_is_ret_q;
   logic [BTB_ENTRIES-1:0] btb_use_ras_q;
   logic [BTB_ENTRIES-1:0][BTB_TAG_W-1:0] btb_tag_q;
@@ -41,6 +45,10 @@ module bpu #(
   logic [BHT_ENTRIES-1:0][1:0] bht_q;
   logic [RAS_DEPTH-1:0][Cfg.PLEN-1:0] ras_stack_q;
   logic [RAS_CNT_W-1:0] ras_count_q;
+  logic pred_event_valid_q;
+  logic pred_event_is_call_q;
+  logic pred_event_is_ret_q;
+  logic [Cfg.PLEN-1:0] pred_event_pc_q;
 
   function automatic logic [BTB_IDX_W-1:0] btb_index(input logic [Cfg.PLEN-1:0] pc);
     btb_index = pc[2 +: BTB_IDX_W];
@@ -66,12 +74,17 @@ module bpu #(
 
   logic [Cfg.INSTR_PER_FETCH-1:0] predict_hit;
   logic [Cfg.INSTR_PER_FETCH-1:0] predict_taken;
+  logic [Cfg.INSTR_PER_FETCH-1:0] predict_is_call;
+  logic [Cfg.INSTR_PER_FETCH-1:0] predict_is_ret;
   logic [Cfg.INSTR_PER_FETCH-1:0][Cfg.PLEN-1:0] predict_pc;
   logic [Cfg.INSTR_PER_FETCH-1:0][Cfg.PLEN-1:0] predict_target;
   logic [Cfg.PLEN-1:0] ras_top_w;
   logic ras_has_entry_w;
   logic [SLOT_IDX_W-1:0] pred_slot_idx_w;
   logic pred_slot_valid_w;
+  logic pred_slot_is_call_w;
+  logic pred_slot_is_ret_w;
+  logic [Cfg.PLEN-1:0] pred_slot_pc_w;
   logic [Cfg.PLEN-1:0] pred_slot_target_w;
   logic [Cfg.PLEN-1:0] pred_npc_w;
 
@@ -95,12 +108,14 @@ module bpu #(
       predict_pc[i] = slot_pc;
       predict_target[i] = btb_target_q[idx];
       predict_hit[i] = btb_valid_q[idx] && (btb_tag_q[idx] == btb_tag(slot_pc));
+      predict_is_call[i] = predict_hit[i] && btb_is_call_q[idx];
+      predict_is_ret[i] = predict_hit[i] && btb_is_ret_q[idx];
 
       predict_taken[i] = 1'b0;
       if (predict_hit[i]) begin
         if (btb_is_ret_q[idx]) begin
           predict_taken[i] = 1'b1;
-          if (btb_use_ras_q[idx] && ras_has_entry_w) begin
+          if (ras_has_entry_w) begin
             predict_target[i] = ras_top_w;
           end
         end else if (!btb_is_cond_q[idx]) begin
@@ -115,11 +130,17 @@ module bpu #(
   always_comb begin
     pred_slot_valid_w = 1'b0;
     pred_slot_idx_w = '0;
+    pred_slot_is_call_w = 1'b0;
+    pred_slot_is_ret_w = 1'b0;
+    pred_slot_pc_w = '0;
     pred_slot_target_w = '0;
     for (int i = 0; i < Cfg.INSTR_PER_FETCH; i++) begin
       if (!pred_slot_valid_w && predict_taken[i]) begin
         pred_slot_valid_w = 1'b1;
         pred_slot_idx_w = SLOT_IDX_W'(i);
+        pred_slot_is_call_w = predict_is_call[i];
+        pred_slot_is_ret_w = predict_is_ret[i];
+        pred_slot_pc_w = predict_pc[i];
         pred_slot_target_w = predict_target[i];
       end
     end
@@ -138,12 +159,17 @@ module bpu #(
     if (rst_i) begin
       btb_valid_q   <= '0;
       btb_is_cond_q <= '0;
+      btb_is_call_q <= '0;
       btb_is_ret_q  <= '0;
       btb_use_ras_q <= '0;
       btb_tag_q     <= '0;
       btb_target_q  <= '0;
       ras_stack_q   <= '0;
       ras_count_q   <= '0;
+      pred_event_valid_q <= 1'b0;
+      pred_event_is_call_q <= 1'b0;
+      pred_event_is_ret_q <= 1'b0;
+      pred_event_pc_q <= '0;
       for (int i = 0; i < BHT_ENTRIES; i++) begin
         bht_q[i] <= 2'b01;
       end
@@ -158,6 +184,7 @@ module bpu #(
       if (do_btb_write) begin
         btb_valid_q[up_btb_idx] <= 1'b1;
         btb_is_cond_q[up_btb_idx] <= update_is_cond_i;
+        btb_is_call_q[up_btb_idx] <= update_is_call_i;
         btb_is_ret_q[up_btb_idx] <= update_is_ret_i;
         // Commit-time RAS 可能滞后于 fetch。策略：
         // - 首次学习 return 且当下无 RAS 证据时，先保持 optimistic；
@@ -171,22 +198,24 @@ module bpu #(
         btb_target_q[up_btb_idx] <= update_target_i;
       end
 
-      if (update_is_call_i) begin
-        logic [Cfg.PLEN-1:0] call_ret_addr;
-        call_ret_addr = update_pc_i + Cfg.PLEN'(INSTR_BYTES);
-        if (ras_count_q < RAS_DEPTH) begin
-          ras_stack_q[ras_count_q] <= call_ret_addr;
-          ras_count_q <= ras_count_q + 1'b1;
-        end else begin
-          for (int i = 0; i < RAS_DEPTH - 1; i++) begin
-            ras_stack_q[i] <= ras_stack_q[i+1];
+      if (ENABLE_COMMIT_RAS_STACK_UPDATE) begin
+        if (update_is_call_i) begin
+          logic [Cfg.PLEN-1:0] call_ret_addr;
+          call_ret_addr = update_pc_i + Cfg.PLEN'(INSTR_BYTES);
+          if (ras_count_q < RAS_DEPTH) begin
+            ras_stack_q[ras_count_q] <= call_ret_addr;
+            ras_count_q <= ras_count_q + 1'b1;
+          end else begin
+            for (int i = 0; i < RAS_DEPTH - 1; i++) begin
+              ras_stack_q[i] <= ras_stack_q[i+1];
+            end
+            ras_stack_q[RAS_DEPTH-1] <= call_ret_addr;
+            ras_count_q <= RAS_DEPTH[RAS_CNT_W-1:0];
           end
-          ras_stack_q[RAS_DEPTH-1] <= call_ret_addr;
-          ras_count_q <= RAS_DEPTH[RAS_CNT_W-1:0];
-        end
-      end else if (update_is_ret_i) begin
-        if (ras_count_q != '0) begin
-          ras_count_q <= ras_count_q - 1'b1;
+        end else if (update_is_ret_i) begin
+          if (ras_count_q != '0) begin
+            ras_count_q <= ras_count_q - 1'b1;
+          end
         end
       end
 
@@ -199,6 +228,39 @@ module bpu #(
       end else begin
         bht_q[up_bht_idx] <= 2'b11;
       end
+    end else begin
+      if (pred_event_valid_q && pred_event_is_call_q) begin
+        logic [Cfg.PLEN-1:0] spec_ret_addr;
+        spec_ret_addr = pred_event_pc_q + Cfg.PLEN'(INSTR_BYTES);
+        if (ras_count_q < RAS_DEPTH) begin
+          ras_stack_q[ras_count_q] <= spec_ret_addr;
+          ras_count_q <= ras_count_q + 1'b1;
+        end else begin
+          for (int i = 0; i < RAS_DEPTH - 1; i++) begin
+            ras_stack_q[i] <= ras_stack_q[i+1];
+          end
+          ras_stack_q[RAS_DEPTH-1] <= spec_ret_addr;
+          ras_count_q <= RAS_DEPTH[RAS_CNT_W-1:0];
+        end
+      end else if (pred_event_valid_q && pred_event_is_ret_q) begin
+        if (ras_count_q != '0) begin
+          ras_count_q <= ras_count_q - 1'b1;
+        end
+      end
+    end
+
+    if (update_valid_i) begin
+      pred_event_valid_q <= 1'b0;
+      pred_event_is_call_q <= 1'b0;
+      pred_event_is_ret_q <= 1'b0;
+      pred_event_pc_q <= '0;
+    end else begin
+      logic pred_fire_w;
+      pred_fire_w = ifu_to_bpu_handshake_i.valid && ifu_to_bpu_handshake_i.ready && pred_slot_valid_w;
+      pred_event_valid_q <= pred_fire_w;
+      pred_event_is_call_q <= pred_fire_w && pred_slot_is_call_w;
+      pred_event_is_ret_q <= pred_fire_w && pred_slot_is_ret_w;
+      pred_event_pc_q <= pred_slot_pc_w;
     end
   end
 endmodule : bpu

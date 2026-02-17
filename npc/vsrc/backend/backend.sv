@@ -52,8 +52,8 @@ module backend #(
   localparam int unsigned RS_DEPTH = Cfg.RS_DEPTH;
   localparam int unsigned WB_WIDTH = 7;
   localparam int unsigned NUM_FUS = 7;  // ALU0, ALU1, BRU, LSU, ALU2, ALU3, CSR
-  // Commit-time call/ret update 对短函数场景延迟过大，暂默认关闭，后续以低延迟链路重启。
-  localparam bit ENABLE_COMMIT_RAS_UPDATE = 1'b0;
+  // A2.2: 开启 commit-time call/ret 更新，配合 BPU speculative RAS 降低 return miss。
+  localparam bit ENABLE_COMMIT_RAS_UPDATE = 1'b1;
 
   // =========================================================
   // IBuffer
