@@ -162,6 +162,50 @@ class ParseProfileTest(unittest.TestCase):
 
         self.assertNotIn("Suggested Next Steps", report)
 
+    def test_parse_predict_breakdown_includes_return_metrics(self):
+        mod = load_parser_module()
+        with tempfile.TemporaryDirectory() as td:
+            log = Path(td) / "coremark.log"
+            log.write_text(
+                "\n".join(
+                    [
+                        "[pred  ] cond_total=10 cond_miss=4 cond_hit=6 jump_total=6 jump_miss=3 jump_hit=3 ret_total=3 ret_miss=2 ret_hit=1 call_total=5",
+                        "IPC=0.500000 CPI=2.000000 cycles=100 commits=50",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            result = mod.parse_single_log(log)
+
+        self.assertEqual(result["predict"]["ret_total"], 3)
+        self.assertEqual(result["predict"]["ret_miss"], 2)
+        self.assertEqual(result["predict"]["ret_hit"], 1)
+        self.assertAlmostEqual(result["predict"]["ret_miss_rate"], 2 / 3)
+        self.assertEqual(result["predict"]["call_total"], 5)
+
+    def test_parse_flush_subtype_return_count(self):
+        mod = load_parser_module()
+        with tempfile.TemporaryDirectory() as td:
+            log = Path(td) / "coremark.log"
+            log.write_text(
+                "\n".join(
+                    [
+                        "[flush ] cycle=40 reason=branch_mispredict source=rob cause=0x0 src_pc=0x80000100 redirect_pc=0x80000200 miss_type=return miss_subtype=return redirect_distance=256 killed_uops=6",
+                        "[flushp] cycle=44 reason=branch_mispredict penalty=4",
+                        "IPC=0.500000 CPI=2.000000 cycles=100 commits=50",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            result = mod.parse_single_log(log)
+
+        self.assertEqual(result["mispredict_flush_count"], 1)
+        self.assertEqual(result["mispredict_ret_count"], 1)
+        self.assertEqual(result["mispredict_cond_count"], 0)
+        self.assertEqual(result["mispredict_jump_count"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -62,6 +62,8 @@ module triathlon #(
   logic bpu_update_is_cond;
   logic bpu_update_taken;
   logic [Cfg.PLEN-1:0] bpu_update_target;
+  logic bpu_update_is_call;
+  logic bpu_update_is_ret;
 
   frontend #(
       .Cfg(Cfg)
@@ -83,6 +85,8 @@ module triathlon #(
       .bpu_update_is_cond_i(bpu_update_is_cond),
       .bpu_update_taken_i(bpu_update_taken),
       .bpu_update_target_i(bpu_update_target),
+      .bpu_update_is_call_i(bpu_update_is_call),
+      .bpu_update_is_ret_i(bpu_update_is_ret),
 
       .miss_req_valid_o     (icache_miss_req_valid_o),
       .miss_req_ready_i     (icache_miss_req_ready_i),
@@ -121,6 +125,8 @@ module triathlon #(
       .bpu_update_is_cond_o(bpu_update_is_cond),
       .bpu_update_taken_o(bpu_update_taken),
       .bpu_update_target_o(bpu_update_target),
+      .bpu_update_is_call_o(bpu_update_is_call),
+      .bpu_update_is_ret_o(bpu_update_is_ret),
 
       .dcache_miss_req_valid_o(dcache_miss_req_valid_o),
       .dcache_miss_req_ready_i(dcache_miss_req_ready_i),

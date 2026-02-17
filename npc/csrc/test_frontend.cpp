@@ -143,6 +143,8 @@ int main(int argc, char **argv) {
   top->bpu_update_is_cond_i = 0;
   top->bpu_update_taken_i = 0;
   top->bpu_update_target_i = 0;
+  top->bpu_update_is_call_i = 0;
+  top->bpu_update_is_ret_i = 0;
   for (int i = 0; i < 5; i++)
     tick(top, mem);
   top->rst_ni = 1;

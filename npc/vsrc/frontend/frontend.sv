@@ -26,6 +26,8 @@ module frontend #(
     input logic                bpu_update_is_cond_i,
     input logic                bpu_update_taken_i,
     input logic [Cfg.PLEN-1:0] bpu_update_target_i,
+    input logic                bpu_update_is_call_i,
+    input logic                bpu_update_is_ret_i,
 
     // ============================================
     // 2. 存储器系统接口 (To Memory/L2/Bus)
@@ -140,6 +142,8 @@ module frontend #(
       .update_is_cond_i      (bpu_update_is_cond_i),
       .update_taken_i        (bpu_update_taken_i),
       .update_target_i       (bpu_update_target_i),
+      .update_is_call_i      (bpu_update_is_call_i),
+      .update_is_ret_i       (bpu_update_is_ret_i),
       .bpu_to_ifu_handshake_o(bpu2ifu_handshake),
       .bpu_to_ifu_o          (bpu_to_ifu_struct)
   );

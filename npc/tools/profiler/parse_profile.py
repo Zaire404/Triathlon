@@ -16,17 +16,13 @@ TIMEOUT_RE = re.compile(r"TIMEOUT after (\d+) cycles")
 FLUSH_RE = re.compile(r"^\[flush \]\s+cycle=(\d+)(?:\s+reason=([a-zA-Z0-9_]+))?")
 FLUSHP_RE = re.compile(r"^\[flushp\]\s+cycle=(\d+)\s+reason=([a-zA-Z0-9_]+)\s+penalty=(\d+)")
 BRU_RE = re.compile(r"^\[bru\s+\]\s+cycle=(\d+)")
-PRED_RE = re.compile(
-    r"^\[pred\s+\]\s+cond_total=(\d+)\s+cond_miss=(\d+)(?:\s+cond_hit=(\d+))?\s+"
-    r"jump_total=(\d+)\s+jump_miss=(\d+)(?:\s+jump_hit=(\d+))?"
-)
 COMMIT_RE = re.compile(r"^\[commit\]\s+cycle=(\d+)\s+slot=(\d+)\s+pc=0x([0-9a-fA-F]+)\s+inst=0x([0-9a-fA-F]+)")
 STALL_RE = re.compile(r"^\[stall \]")
 KV_RE = re.compile(r"([a-zA-Z_][a-zA-Z0-9_]*)=([^\s]+)")
 
 FLUSH_REASON_ALLOWLIST = {"branch_mispredict", "exception", "rob_other", "external", "unknown"}
 FLUSH_SOURCE_ALLOWLIST = {"rob", "external", "unknown"}
-MISS_TYPE_ALLOWLIST = {"cond_branch", "jump", "control_unknown", "none"}
+MISS_TYPE_ALLOWLIST = {"cond_branch", "jump", "return", "control_unknown", "none"}
 
 
 def _safe_div(numer: float, denom: float) -> float:
@@ -94,6 +90,8 @@ def _normalize_miss_type(token: str | None) -> str:
         return raw
 
     compact = _compact_alpha(raw)
+    if compact.startswith("ret") or "return" in compact:
+        return "return"
     if "jump" in compact or compact.startswith("jal"):
         return "jump"
     if "control" in compact:
@@ -150,16 +148,40 @@ def _commit_histogram(cycles: int, commit_by_cycle: dict[int, int]) -> dict[int,
 
 
 def _control_flow_metrics(commit_seq: list[tuple[int, int, int, int]]) -> dict[str, float | int]:
+    def is_call(inst: int) -> bool:
+        opcode = inst & 0x7F
+        rd = (inst >> 7) & 0x1F
+        if opcode == 0x6F:  # JAL
+            return rd in (1, 5)
+        if opcode == 0x67:  # JALR
+            return rd in (1, 5)
+        return False
+
+    def is_ret(inst: int) -> bool:
+        opcode = inst & 0x7F
+        if opcode != 0x67:  # JALR
+            return False
+        rd = (inst >> 7) & 0x1F
+        rs1 = (inst >> 15) & 0x1F
+        imm12 = (inst >> 20) & 0xFFF
+        return rd == 0 and rs1 in (1, 5) and imm12 == 0
+
     commit_seq.sort()
     branch_count = 0
     jal_count = 0
     jalr_count = 0
     branch_taken = 0
+    call_count = 0
+    ret_count = 0
 
     for i in range(len(commit_seq) - 1):
         _, _, pc, inst = commit_seq[i]
         _, _, next_pc, _ = commit_seq[i + 1]
         opcode = inst & 0x7F
+        if is_call(inst):
+            call_count += 1
+        if is_ret(inst):
+            ret_count += 1
         if opcode == 0x63:
             branch_count += 1
             if next_pc != ((pc + 4) & 0xFFFFFFFF):
@@ -178,6 +200,8 @@ def _control_flow_metrics(commit_seq: list[tuple[int, int, int, int]]) -> dict[s
         "jal_count": jal_count,
         "jalr_count": jalr_count,
         "branch_taken_count": branch_taken,
+        "call_count": call_count,
+        "ret_count": ret_count,
         "control_count": control_total,
         "control_ratio": _safe_div(control_total, commit_total),
         "est_misp_count": est_misp,
@@ -201,6 +225,7 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
     mispredict_flush_count = 0
     mispredict_cond_count = 0
     mispredict_jump_count = 0
+    mispredict_ret_count = 0
     branch_penalty_cycles = 0
     wrong_path_kill_uops = 0
     redirect_distance_sum = 0
@@ -213,6 +238,9 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
     pred_cond_miss_line: int | None = None
     pred_jump_total_line: int | None = None
     pred_jump_miss_line: int | None = None
+    pred_ret_total_line: int | None = None
+    pred_ret_miss_line: int | None = None
+    pred_call_total_line: int | None = None
 
     commit_by_cycle: dict[int, int] = defaultdict(int)
     commit_seq: list[tuple[int, int, int, int]] = []
@@ -242,7 +270,7 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
             kv = _parse_kv_pairs(flush_line)
             reason_raw = kv.get("reason", "unknown")
             source_raw = kv.get("source", "unknown")
-            miss_type_raw = kv.get("miss_type", "none")
+            miss_type_raw = kv.get("miss_subtype", kv.get("miss_type", "none"))
             redirect_distance = _parse_int(kv.get("redirect_distance"), 0)
             killed_uops = _parse_int(kv.get("killed_uops"), 0)
 
@@ -269,6 +297,8 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
                     mispredict_cond_count += 1
                 elif miss_type == "jump":
                     mispredict_jump_count += 1
+                elif miss_type == "return":
+                    mispredict_ret_count += 1
             continue
 
         flushp_pos = raw.find("[flushp]")
@@ -286,12 +316,23 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
             bru_count += 1
             continue
 
-        m = PRED_RE.match(raw)
-        if m:
-            pred_cond_total_line = int(m.group(1))
-            pred_cond_miss_line = int(m.group(2))
-            pred_jump_total_line = int(m.group(4))
-            pred_jump_miss_line = int(m.group(5))
+        pred_pos = raw.find("[pred")
+        if pred_pos >= 0:
+            pred_kv = _parse_kv_pairs(raw[pred_pos:])
+            if "cond_total" in pred_kv:
+                pred_cond_total_line = _parse_int(pred_kv.get("cond_total"), 0)
+            if "cond_miss" in pred_kv:
+                pred_cond_miss_line = _parse_int(pred_kv.get("cond_miss"), 0)
+            if "jump_total" in pred_kv:
+                pred_jump_total_line = _parse_int(pred_kv.get("jump_total"), 0)
+            if "jump_miss" in pred_kv:
+                pred_jump_miss_line = _parse_int(pred_kv.get("jump_miss"), 0)
+            if "ret_total" in pred_kv:
+                pred_ret_total_line = _parse_int(pred_kv.get("ret_total"), 0)
+            if "ret_miss" in pred_kv:
+                pred_ret_miss_line = _parse_int(pred_kv.get("ret_miss"), 0)
+            if "call_total" in pred_kv:
+                pred_call_total_line = _parse_int(pred_kv.get("call_total"), 0)
             continue
 
         m = COMMIT_RE.match(raw)
@@ -314,8 +355,11 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
 
     cond_total = int(control.get("branch_count", 0))
     jump_total = int(control.get("jal_count", 0)) + int(control.get("jalr_count", 0))
+    ret_total = int(control.get("ret_count", 0))
+    call_total = int(control.get("call_count", 0))
     cond_miss = mispredict_cond_count
     jump_miss = mispredict_jump_count
+    ret_miss = mispredict_ret_count
     if pred_cond_total_line is not None:
         cond_total = pred_cond_total_line
     if pred_cond_miss_line is not None:
@@ -324,8 +368,15 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
         jump_total = pred_jump_total_line
     if pred_jump_miss_line is not None:
         jump_miss = pred_jump_miss_line
+    if pred_ret_total_line is not None:
+        ret_total = pred_ret_total_line
+    if pred_ret_miss_line is not None:
+        ret_miss = pred_ret_miss_line
+    if pred_call_total_line is not None:
+        call_total = pred_call_total_line
     cond_hit = max(0, cond_total - cond_miss)
     jump_hit = max(0, jump_total - jump_miss)
+    ret_hit = max(0, ret_total - ret_miss)
     predict = {
         "cond_total": cond_total,
         "cond_miss": cond_miss,
@@ -335,6 +386,11 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
         "jump_miss": jump_miss,
         "jump_hit": jump_hit,
         "jump_miss_rate": _safe_div(jump_miss, jump_total),
+        "ret_total": ret_total,
+        "ret_miss": ret_miss,
+        "ret_hit": ret_hit,
+        "ret_miss_rate": _safe_div(ret_miss, ret_total),
+        "call_total": call_total,
     }
 
     # Fallback path for timeout/sample logs without final IPC line.
@@ -359,6 +415,14 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
         "flush_count": flush_count,
         "bru_count": bru_count,
         "mispredict_flush_count": mispredict_flush_count,
+        "mispredict_cond_count": mispredict_cond_count,
+        "mispredict_jump_count": mispredict_jump_count,
+        "mispredict_ret_count": mispredict_ret_count,
+        "mispredict_breakdown": {
+            "cond_branch": mispredict_cond_count,
+            "jump": mispredict_jump_count,
+            "return": mispredict_ret_count,
+        },
         "branch_penalty_cycles": branch_penalty_cycles,
         "wrong_path_kill_uops": wrong_path_kill_uops,
         "redirect_distance_sum": redirect_distance_sum,
@@ -431,6 +495,8 @@ def _bench_markdown(name: str, data: dict[str, Any]) -> str:
         f"- est_misp_per_kinst(static NT proxy): `{control.get('est_misp_per_kinst', 0):.3f}`",
         f"- predict(cond hit/miss): `{predict.get('cond_hit', 0)}` / `{predict.get('cond_miss', 0)}` (miss_rate `{predict.get('cond_miss_rate', 0) * 100.0:.2f}%`)",
         f"- predict(jump hit/miss): `{predict.get('jump_hit', 0)}` / `{predict.get('jump_miss', 0)}` (miss_rate `{predict.get('jump_miss_rate', 0) * 100.0:.2f}%`)",
+        f"- predict(ret hit/miss): `{predict.get('ret_hit', 0)}` / `{predict.get('ret_miss', 0)}` (miss_rate `{predict.get('ret_miss_rate', 0) * 100.0:.2f}%`)",
+        f"- predict(call total): `{predict.get('call_total', 0)}`",
         "",
         "Commit Width Histogram:",
         f"- width0: `{hist.get(0, 0)}`",

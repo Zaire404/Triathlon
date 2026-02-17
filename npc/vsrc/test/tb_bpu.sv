@@ -14,6 +14,8 @@ module tb_bpu (
     input logic update_is_cond_i,
     input logic update_taken_i,
     input logic [Cfg.XLEN-1:0] update_target_i,
+    input logic update_is_call_i,
+    input logic update_is_ret_i,
     // --- 输出端口  ---
     output logic [Cfg.XLEN-1:0] npc_o,
     output logic pred_slot_valid_o,
@@ -39,6 +41,8 @@ module tb_bpu (
       .update_is_cond_i(update_is_cond_i),
       .update_taken_i(update_taken_i),
       .update_target_i(update_target_i),
+      .update_is_call_i(update_is_call_i),
+      .update_is_ret_i(update_is_ret_i),
 
       .bpu_to_ifu_handshake_o(bpu_to_ifu_handshake_o),
       .bpu_to_ifu_o(bpu_to_ifu_o)
