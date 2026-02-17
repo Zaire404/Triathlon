@@ -52,6 +52,16 @@ static inline uint32_t enc_b(int32_t imm, uint32_t rs2, uint32_t rs1,
          (funct3 << 12) | (bits4_1 << 8) | (bit11 << 7) | opcode;
 }
 
+static inline uint32_t enc_j(int32_t imm, uint32_t rd, uint32_t opcode) {
+  uint32_t imm21 = static_cast<uint32_t>(imm) & 0x1FFFFF; // 21-bit
+  uint32_t bit20 = (imm21 >> 20) & 0x1;
+  uint32_t bits10_1 = (imm21 >> 1) & 0x3FF;
+  uint32_t bit11 = (imm21 >> 11) & 0x1;
+  uint32_t bits19_12 = (imm21 >> 12) & 0xFF;
+  return (bit20 << 31) | (bits19_12 << 12) | (bit11 << 20) |
+         (bits10_1 << 21) | (rd << 7) | opcode;
+}
+
 static inline uint32_t insn_addi(uint32_t rd, uint32_t rs1, int32_t imm) {
   return enc_i(imm, rs1, 0x0, rd, 0x13);
 }
@@ -70,6 +80,14 @@ static inline uint32_t insn_sw(uint32_t rs2, uint32_t rs1, int32_t imm) {
 
 static inline uint32_t insn_beq(uint32_t rs1, uint32_t rs2, int32_t imm) {
   return enc_b(imm, rs2, rs1, 0x0, 0x63);
+}
+
+static inline uint32_t insn_jal(uint32_t rd, int32_t imm) {
+  return enc_j(imm, rd, 0x6F);
+}
+
+static inline uint32_t insn_jalr(uint32_t rd, uint32_t rs1, int32_t imm) {
+  return enc_i(imm, rs1, 0x0, rd, 0x67);
 }
 
 static inline uint32_t insn_nop() { return insn_addi(0, 0, 0); }
@@ -397,6 +415,52 @@ static void test_load_miss_refill(Vtb_backend *top, MemModel &mem) {
   expect(ok, "Load miss -> refill -> commit");
 }
 
+static void test_call_ret_update(Vtb_backend *top, MemModel &mem) {
+  std::array<uint32_t, 32> rf{};
+  std::vector<uint32_t> commits;
+
+  reset(top, mem);
+
+  // JAL x1, +8  (call)
+  send_group(top, mem, rf, commits, 0xB000,
+             {insn_jal(1, 8), insn_nop(), insn_nop(), insn_nop()});
+
+  bool call_seen = false;
+  bool call_flag_ok = false;
+  for (int i = 0; i < 200; i++) {
+    tick(top, mem);
+    update_commits(top, rf, commits);
+    if (top->bpu_update_valid_o && top->bpu_update_pc_o == 0xB000) {
+      call_seen = true;
+      call_flag_ok = (top->bpu_update_is_call_o == 1) &&
+                     (top->bpu_update_is_ret_o == 0);
+      break;
+    }
+  }
+
+  // JALR x0, x1, 0 (return)
+  send_group(top, mem, rf, commits, 0xB008,
+             {insn_jalr(0, 1, 0), insn_nop(), insn_nop(), insn_nop()});
+
+  bool ret_seen = false;
+  bool ret_flag_ok = false;
+  for (int i = 0; i < 200; i++) {
+    tick(top, mem);
+    update_commits(top, rf, commits);
+    if (top->bpu_update_valid_o && top->bpu_update_pc_o == 0xB008) {
+      ret_seen = true;
+      ret_flag_ok = (top->bpu_update_is_call_o == 0) &&
+                    (top->bpu_update_is_ret_o == 1);
+      break;
+    }
+  }
+
+  expect(call_seen, "Call update observed at JAL commit");
+  expect(call_flag_ok, "Call update carries is_call=1 is_ret=0");
+  expect(ret_seen, "Return update observed at JALR commit");
+  expect(ret_flag_ok, "Return update carries is_call=0 is_ret=1");
+}
+
 int main(int argc, char **argv) {
   Verilated::commandArgs(argc, argv);
   Vtb_backend *top = new Vtb_backend;
@@ -408,6 +472,7 @@ int main(int argc, char **argv) {
   test_branch_flush(top, mem);
   test_store_load_forward(top, mem);
   test_load_miss_refill(top, mem);
+  test_call_ret_update(top, mem);
 
   std::cout << ANSI_RES_GRN << "--- [ALL BACKEND TESTS PASSED] ---" << ANSI_RES_RST << std::endl;
   delete top;
