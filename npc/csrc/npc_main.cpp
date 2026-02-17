@@ -2,6 +2,7 @@
 #include "verilated.h"
 #include "verilated_vcd_c.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstdlib>
@@ -679,6 +680,41 @@ int main(int argc, char **argv) {
   uint64_t total_commits = 0;
   uint32_t last_commit_pc = 0;
   uint32_t last_commit_inst = 0;
+  bool pending_flush_penalty = false;
+  uint64_t pending_flush_cycle = 0;
+  std::string pending_flush_reason = "unknown";
+  uint64_t pred_cond_total = 0;
+  uint64_t pred_cond_miss = 0;
+  uint64_t pred_jump_total = 0;
+  uint64_t pred_jump_miss = 0;
+  uint64_t redirect_distance_sum = 0;
+  uint64_t redirect_distance_samples = 0;
+  uint64_t redirect_distance_max = 0;
+  uint64_t wrong_path_killed_uops = 0;
+
+  auto popcount4 = [](uint32_t v) -> uint32_t {
+    v &= 0xFu;
+    return ((v >> 0) & 1u) + ((v >> 1) & 1u) + ((v >> 2) & 1u) + ((v >> 3) & 1u);
+  };
+  auto emit_pred_summary = [&]() {
+    if (!(args.commit_trace || args.bru_trace)) return;
+    uint64_t pred_cond_hit = (pred_cond_total >= pred_cond_miss) ? (pred_cond_total - pred_cond_miss) : 0;
+    uint64_t pred_jump_hit = (pred_jump_total >= pred_jump_miss) ? (pred_jump_total - pred_jump_miss) : 0;
+    std::ios::fmtflags f(std::cout.flags());
+    std::cout << "[pred  ] cond_total=" << pred_cond_total
+              << " cond_miss=" << pred_cond_miss
+              << " cond_hit=" << pred_cond_hit
+              << " jump_total=" << pred_jump_total
+              << " jump_miss=" << pred_jump_miss
+              << " jump_hit=" << pred_jump_hit
+              << "\n";
+    std::cout << "[flushm] wrong_path_killed_uops=" << wrong_path_killed_uops
+              << " redirect_distance_samples=" << redirect_distance_samples
+              << " redirect_distance_sum=" << redirect_distance_sum
+              << " redirect_distance_max=" << redirect_distance_max
+              << "\n";
+    std::cout.flags(f);
+  };
   for (uint64_t cycles = 0; cycles < args.max_cycles; cycles++) {
     tick(top, mem, tfp, sim_time);
 
@@ -695,9 +731,64 @@ int main(int argc, char **argv) {
     }
 
     if ((args.commit_trace || args.bru_trace) && top->backend_flush_o) {
+      bool rob_flush = top->dbg_rob_flush_o;
+      bool rob_mispred = top->dbg_rob_flush_is_mispred_o;
+      bool rob_exception = top->dbg_rob_flush_is_exception_o;
+      bool rob_is_branch = top->dbg_rob_flush_is_branch_o;
+      bool rob_is_jump = top->dbg_rob_flush_is_jump_o;
+      uint32_t cause = static_cast<uint32_t>(top->dbg_rob_flush_cause_o) & 0x1Fu;
+      uint32_t src_pc = top->dbg_rob_flush_src_pc_o;
+      uint32_t redirect_pc = top->backend_redirect_pc_o;
+
+      std::string flush_reason = "external";
+      std::string flush_source = rob_flush ? "rob" : "external";
+      if (rob_flush) {
+        if (rob_mispred) {
+          flush_reason = "branch_mispredict";
+        } else if (rob_exception) {
+          flush_reason = "exception";
+        } else {
+          flush_reason = "rob_other";
+        }
+      }
+
+      std::string miss_type = "none";
+      if (flush_reason == "branch_mispredict") {
+        if (rob_is_jump) {
+          miss_type = "jump";
+          pred_jump_miss++;
+        } else if (rob_is_branch) {
+          miss_type = "cond_branch";
+          pred_cond_miss++;
+        } else {
+          miss_type = "control_unknown";
+        }
+      }
+
+      uint32_t redirect_distance =
+          (redirect_pc >= src_pc) ? (redirect_pc - src_pc) : (src_pc - redirect_pc);
+      redirect_distance_sum += redirect_distance;
+      redirect_distance_samples++;
+      redirect_distance_max = std::max<uint64_t>(redirect_distance_max, redirect_distance);
+
+      uint32_t commit_pop = popcount4(static_cast<uint32_t>(top->commit_valid_o));
+      uint32_t rob_count = static_cast<uint32_t>(top->dbg_rob_count_o);
+      uint32_t killed_uops = (rob_count >= commit_pop) ? (rob_count - commit_pop) : 0;
+      if (flush_reason == "branch_mispredict") {
+        wrong_path_killed_uops += killed_uops;
+      }
+
       std::ios::fmtflags f(std::cout.flags());
       std::cout << "[flush ] cycle=" << cycles
-                << " redirect_pc=0x" << std::hex << top->backend_redirect_pc_o
+                << " reason=" << flush_reason
+                << " source=" << flush_source
+                << " cause=0x" << std::hex << cause
+                << " src_pc=0x" << src_pc
+                << " redirect_pc=0x" << redirect_pc
+                << std::dec
+                << " miss_type=" << miss_type
+                << " redirect_distance=" << redirect_distance
+                << " killed_uops=" << killed_uops
                 << std::dec << "\n";
       if (top->dbg_bru_mispred_o) {
         std::cout << "[bru   ] cycle=" << cycles
@@ -710,6 +801,9 @@ int main(int argc, char **argv) {
                   << std::dec << "\n";
       }
       std::cout.flags(f);
+      pending_flush_penalty = true;
+      pending_flush_cycle = cycles;
+      pending_flush_reason = flush_reason;
     }
 
     bool any_commit = false;
@@ -730,6 +824,12 @@ int main(int argc, char **argv) {
 
       uint32_t pc = top->commit_pc_o[i];
       uint32_t inst = mem.mem.read_word(pc);
+      uint32_t opcode = inst & 0x7Fu;
+      if (opcode == 0x63u) {
+        pred_cond_total++;
+      } else if (opcode == 0x6Fu || opcode == 0x67u) {
+        pred_jump_total++;
+      }
       last_commit_pc = pc;
       last_commit_inst = inst;
       if (args.commit_trace) {
@@ -747,6 +847,7 @@ int main(int argc, char **argv) {
       }
       if (!difftest.step_and_check(cycles, pc, inst, rf_before, rf)) {
         std::cerr << "[difftest] stop on first mismatch\n";
+        emit_pred_summary();
         if (tfp) tfp->close();
         delete top;
         return 1;
@@ -760,11 +861,13 @@ int main(int argc, char **argv) {
           std::cout << "IPC=" << ipc << " CPI=" << cpi
                     << " cycles=" << cycles
                     << " commits=" << total_commits << "\n";
+          emit_pred_summary();
           if (tfp) tfp->close();
           delete top;
           return 0;
         }
         std::cout << "HIT BAD TRAP (code=" << code << ")\n";
+        emit_pred_summary();
         if (tfp) tfp->close();
         delete top;
         return 1;
@@ -772,6 +875,15 @@ int main(int argc, char **argv) {
     }
 
     if (any_commit) {
+      if ((args.commit_trace || args.bru_trace) && pending_flush_penalty) {
+        std::ios::fmtflags f(std::cout.flags());
+        std::cout << "[flushp] cycle=" << cycles
+                  << " reason=" << pending_flush_reason
+                  << " penalty=" << (cycles - pending_flush_cycle)
+                  << "\n";
+        std::cout.flags(f);
+        pending_flush_penalty = false;
+      }
       if (difftest.enabled()) {
         DUTCSRState dut_csr = {};
         dut_csr.mtvec = top->dbg_csr_mtvec_o;
@@ -780,6 +892,7 @@ int main(int argc, char **argv) {
         dut_csr.mcause = top->dbg_csr_mcause_o;
         if (!difftest.check_arch_state(cycles, rf, dut_csr)) {
           std::cerr << "[difftest] stop on arch-state mismatch\n";
+          emit_pred_summary();
           if (tfp) tfp->close();
           delete top;
           return 1;
@@ -985,6 +1098,7 @@ int main(int argc, char **argv) {
   }
 
   std::cerr << "TIMEOUT after " << args.max_cycles << " cycles\n";
+  emit_pred_summary();
   if (tfp) tfp->close();
   delete top;
   return 1;
