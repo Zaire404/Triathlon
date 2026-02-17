@@ -26,6 +26,8 @@ module rob #(
     input logic            [DISPATCH_WIDTH-1:0]               dispatch_has_rd_i,
     input logic            [DISPATCH_WIDTH-1:0]               dispatch_is_branch_i,
     input logic            [DISPATCH_WIDTH-1:0]               dispatch_is_jump_i,
+    input logic            [DISPATCH_WIDTH-1:0]               dispatch_is_call_i,
+    input logic            [DISPATCH_WIDTH-1:0]               dispatch_is_ret_i,
 
     // [新增] 接收 Store Buffer ID
     // 只有当指令是 Store 时，这个信号才有效；否则忽略
@@ -67,6 +69,8 @@ module rob #(
     output logic [COMMIT_WIDTH-1:0][SB_IDX_WIDTH-1:0] commit_sb_id_o,
     output logic [COMMIT_WIDTH-1:0]                    commit_is_branch_o,
     output logic [COMMIT_WIDTH-1:0]                    commit_is_jump_o,
+    output logic [COMMIT_WIDTH-1:0]                    commit_is_call_o,
+    output logic [COMMIT_WIDTH-1:0]                    commit_is_ret_o,
     output logic [COMMIT_WIDTH-1:0][Cfg.PLEN-1:0]      commit_actual_npc_o,
 
     // Flush Interface
@@ -108,6 +112,8 @@ module rob #(
     logic has_rd;
     logic is_branch;
     logic is_jump;
+    logic is_call;
+    logic is_ret;
     logic [Cfg.XLEN-1:0] data;
     logic [Cfg.PLEN-1:0] pc;
 
@@ -163,6 +169,8 @@ module rob #(
     commit_sb_id_o    = '0; // 默认清零
     commit_is_branch_o = '0;
     commit_is_jump_o = '0;
+    commit_is_call_o = '0;
+    commit_is_ret_o = '0;
     commit_actual_npc_o = '0;
     commit_rob_index_o = '0;
 
@@ -226,6 +234,8 @@ module rob #(
             commit_sb_id_o[i]    = rob_ram[idx].sb_id;
             commit_is_branch_o[i] = rob_ram[idx].is_branch;
             commit_is_jump_o[i] = rob_ram[idx].is_jump;
+            commit_is_call_o[i] = rob_ram[idx].is_call;
+            commit_is_ret_o[i] = rob_ram[idx].is_ret;
             commit_actual_npc_o[i] = rob_ram[idx].redirect_pc;
 
             stop_commit          = 1'b1;
@@ -251,6 +261,8 @@ module rob #(
             commit_sb_id_o[i]    = rob_ram[idx].sb_id;
             commit_is_branch_o[i] = rob_ram[idx].is_branch;
             commit_is_jump_o[i] = rob_ram[idx].is_jump;
+            commit_is_call_o[i] = rob_ram[idx].is_call;
+            commit_is_ret_o[i] = rob_ram[idx].is_ret;
             commit_actual_npc_o[i] = rob_ram[idx].redirect_pc;
           end
         end else begin
@@ -325,6 +337,8 @@ module rob #(
             rob_ram[w_idx].has_rd      <= dispatch_has_rd_i[i];
             rob_ram[w_idx].is_branch   <= dispatch_is_branch_i[i];
             rob_ram[w_idx].is_jump     <= dispatch_is_jump_i[i];
+            rob_ram[w_idx].is_call     <= dispatch_is_call_i[i];
+            rob_ram[w_idx].is_ret      <= dispatch_is_ret_i[i];
             rob_ram[w_idx].pc          <= dispatch_pc_i[i];
 
             // [新增] 保存 SB ID

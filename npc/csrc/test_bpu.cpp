@@ -23,6 +23,8 @@ void reset(Vtb_bpu *top) {
   top->update_is_cond_i = 0;
   top->update_taken_i = 0;
   top->update_target_i = 0;
+  top->update_is_call_i = 0;
+  top->update_is_ret_i = 0;
   top->pc_i = 0x80000000;
   tick(top, 5);
   top->rst_i = 0;
@@ -37,14 +39,18 @@ static void expect_not_taken(Vtb_bpu *top, uint32_t pc) {
 }
 
 static void train(Vtb_bpu *top, uint32_t pc, bool is_cond, bool taken,
-                  uint32_t target) {
+                  uint32_t target, bool is_call = false, bool is_ret = false) {
   top->update_valid_i = 1;
   top->update_pc_i = pc;
   top->update_is_cond_i = is_cond ? 1 : 0;
   top->update_taken_i = taken ? 1 : 0;
   top->update_target_i = target;
+  top->update_is_call_i = is_call ? 1 : 0;
+  top->update_is_ret_i = is_ret ? 1 : 0;
   tick(top, 1);
   top->update_valid_i = 0;
+  top->update_is_call_i = 0;
+  top->update_is_ret_i = 0;
 }
 
 int main(int argc, char **argv) {
@@ -133,6 +139,79 @@ int main(int argc, char **argv) {
   assert(top->pred_slot_idx_o == 0);
   assert(top->pred_slot_target_o == early_target);
   assert(top->npc_o == early_target);
+
+  // 5) RAS behavior:
+  // - A committed return marks BTB entry as return (underflow is ignored).
+  // - A later committed call pushes return address onto RAS.
+  // - Predicting return should use RAS top instead of BTB target.
+  const uint32_t ret_pc = 0x80000300;
+  const uint32_t ret_btb_target = 0x90000000;
+  const uint32_t call_pc = 0x80000220;
+  const uint32_t call_target = 0x80001000;
+
+  train(top, ret_pc, false, true, ret_btb_target, false, true);   // mark as return
+  train(top, call_pc, false, true, call_target, true, false);      // push call return addr
+
+  top->pc_i = ret_pc;
+  tick(top, 1);
+  assert(top->pred_slot_valid_o == 1);
+  assert(top->pred_slot_idx_o == 0);
+  assert(top->pred_slot_target_o == call_pc + 4);
+  assert(top->npc_o == call_pc + 4);
+
+  // 6) Return underflow fallback:
+  // After a return commit pops RAS to empty, return prediction falls back BTB target.
+  train(top, ret_pc, false, true, ret_btb_target, false, true);  // pop once
+  top->pc_i = ret_pc;
+  tick(top, 1);
+  assert(top->pred_slot_valid_o == 1);
+  assert(top->pred_slot_idx_o == 0);
+  assert(top->pred_slot_target_o == ret_btb_target);
+  assert(top->npc_o == ret_btb_target);
+
+  // 7) Nested call/return should follow LIFO order.
+  const uint32_t ret2_pc = 0x80000320;
+  const uint32_t ret2_btb_target = 0x90000020;
+  const uint32_t call_a_pc = 0x80000440;
+  const uint32_t call_b_pc = 0x80000460;
+
+  train(top, ret2_pc, false, true, ret2_btb_target, false, true);  // mark as return
+  train(top, call_a_pc, false, true, 0x80002000, true, false);      // push A
+  train(top, call_b_pc, false, true, 0x80003000, true, false);      // push B
+
+  top->pc_i = ret2_pc;
+  tick(top, 1);
+  assert(top->pred_slot_valid_o == 1);
+  assert(top->pred_slot_idx_o == 0);
+  assert(top->pred_slot_target_o == call_b_pc + 4);
+  assert(top->npc_o == call_b_pc + 4);
+
+  train(top, ret2_pc, false, true, call_a_pc + 4, false, true);     // pop B, actual return to A
+  top->pc_i = ret2_pc;
+  tick(top, 1);
+  assert(top->pred_slot_valid_o == 1);
+  assert(top->pred_slot_idx_o == 0);
+  assert(top->pred_slot_target_o == call_a_pc + 4);
+  assert(top->npc_o == call_a_pc + 4);
+
+  // 8) Stale-RAS guard:
+  // If return commit observes RAS-top != actual return target, later prediction
+  // should fall back to BTB target instead of blindly trusting current RAS top.
+  const uint32_t stale_call_pc = 0x80000500;
+  const uint32_t stale_ret_pc = 0x80000520;
+  const uint32_t stale_ret_actual = 0x80000540;
+  const uint32_t later_call_pc = 0x80000580;
+
+  train(top, stale_call_pc, false, true, 0x80003000, true, false);      // push stale_call_pc+4
+  train(top, stale_ret_pc, false, true, stale_ret_actual, false, true);  // mismatch + pop
+  train(top, later_call_pc, false, true, 0x80004000, true, false);       // push later_call_pc+4
+
+  top->pc_i = stale_ret_pc;
+  tick(top, 1);
+  assert(top->pred_slot_valid_o == 1);
+  assert(top->pred_slot_idx_o == 0);
+  assert(top->pred_slot_target_o == stale_ret_actual);
+  assert(top->npc_o == stale_ret_actual);
 
   std::cout << "--- [PASSED] All checks passed successfully! ---" << std::endl;
   delete top;

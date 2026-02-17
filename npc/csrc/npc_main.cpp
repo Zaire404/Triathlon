@@ -687,6 +687,9 @@ int main(int argc, char **argv) {
   uint64_t pred_cond_miss = 0;
   uint64_t pred_jump_total = 0;
   uint64_t pred_jump_miss = 0;
+  uint64_t pred_ret_total = 0;
+  uint64_t pred_ret_miss = 0;
+  uint64_t pred_call_total = 0;
   uint64_t redirect_distance_sum = 0;
   uint64_t redirect_distance_samples = 0;
   uint64_t redirect_distance_max = 0;
@@ -696,10 +699,27 @@ int main(int argc, char **argv) {
     v &= 0xFu;
     return ((v >> 0) & 1u) + ((v >> 1) & 1u) + ((v >> 2) & 1u) + ((v >> 3) & 1u);
   };
+  auto is_call_inst = [](uint32_t inst) -> bool {
+    uint32_t opcode = inst & 0x7Fu;
+    uint32_t rd = (inst >> 7) & 0x1Fu;
+    if (opcode == 0x6Fu || opcode == 0x67u) {
+      return (rd == 1u || rd == 5u);
+    }
+    return false;
+  };
+  auto is_ret_inst = [](uint32_t inst) -> bool {
+    uint32_t opcode = inst & 0x7Fu;
+    if (opcode != 0x67u) return false;  // JALR only
+    uint32_t rd = (inst >> 7) & 0x1Fu;
+    uint32_t rs1 = (inst >> 15) & 0x1Fu;
+    uint32_t imm12 = (inst >> 20) & 0xFFFu;
+    return (rd == 0u) && (rs1 == 1u || rs1 == 5u) && (imm12 == 0u);
+  };
   auto emit_pred_summary = [&]() {
     if (!(args.commit_trace || args.bru_trace)) return;
     uint64_t pred_cond_hit = (pred_cond_total >= pred_cond_miss) ? (pred_cond_total - pred_cond_miss) : 0;
     uint64_t pred_jump_hit = (pred_jump_total >= pred_jump_miss) ? (pred_jump_total - pred_jump_miss) : 0;
+    uint64_t pred_ret_hit = (pred_ret_total >= pred_ret_miss) ? (pred_ret_total - pred_ret_miss) : 0;
     std::ios::fmtflags f(std::cout.flags());
     std::cout << "[pred  ] cond_total=" << pred_cond_total
               << " cond_miss=" << pred_cond_miss
@@ -707,6 +727,10 @@ int main(int argc, char **argv) {
               << " jump_total=" << pred_jump_total
               << " jump_miss=" << pred_jump_miss
               << " jump_hit=" << pred_jump_hit
+              << " ret_total=" << pred_ret_total
+              << " ret_miss=" << pred_ret_miss
+              << " ret_hit=" << pred_ret_hit
+              << " call_total=" << pred_call_total
               << "\n";
     std::cout << "[flushm] wrong_path_killed_uops=" << wrong_path_killed_uops
               << " redirect_distance_samples=" << redirect_distance_samples
@@ -753,15 +777,26 @@ int main(int argc, char **argv) {
       }
 
       std::string miss_type = "none";
+      std::string miss_subtype = "none";
       if (flush_reason == "branch_mispredict") {
         if (rob_is_jump) {
-          miss_type = "jump";
-          pred_jump_miss++;
+          uint32_t src_inst = mem.mem.read_word(src_pc);
+          if (is_ret_inst(src_inst)) {
+            miss_type = "return";
+            miss_subtype = "return";
+            pred_ret_miss++;
+          } else {
+            miss_type = "jump";
+            miss_subtype = "jump";
+            pred_jump_miss++;
+          }
         } else if (rob_is_branch) {
           miss_type = "cond_branch";
+          miss_subtype = "cond_branch";
           pred_cond_miss++;
         } else {
           miss_type = "control_unknown";
+          miss_subtype = "control_unknown";
         }
       }
 
@@ -787,6 +822,7 @@ int main(int argc, char **argv) {
                 << " redirect_pc=0x" << redirect_pc
                 << std::dec
                 << " miss_type=" << miss_type
+                << " miss_subtype=" << miss_subtype
                 << " redirect_distance=" << redirect_distance
                 << " killed_uops=" << killed_uops
                 << std::dec << "\n";
@@ -828,7 +864,14 @@ int main(int argc, char **argv) {
       if (opcode == 0x63u) {
         pred_cond_total++;
       } else if (opcode == 0x6Fu || opcode == 0x67u) {
-        pred_jump_total++;
+        if (is_ret_inst(inst)) {
+          pred_ret_total++;
+        } else {
+          pred_jump_total++;
+        }
+      }
+      if (is_call_inst(inst)) {
+        pred_call_total++;
       }
       last_commit_pc = pc;
       last_commit_inst = inst;

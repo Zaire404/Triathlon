@@ -2,7 +2,8 @@ import global_config_pkg::*;
 module bpu #(
     parameter config_pkg::cfg_t Cfg = config_pkg::EmptyCfg,
     parameter int unsigned BTB_ENTRIES = 64,
-    parameter int unsigned BHT_ENTRIES = 128
+    parameter int unsigned BHT_ENTRIES = 128,
+    parameter int unsigned RAS_DEPTH = 16
 ) (
     input logic clk_i,
     input logic rst_i,
@@ -16,6 +17,8 @@ module bpu #(
     input logic                update_is_cond_i,
     input logic                update_taken_i,
     input logic [Cfg.PLEN-1:0] update_target_i,
+    input logic                update_is_call_i,
+    input logic                update_is_ret_i,
 
     // from IFU
     output handshake_t  bpu_to_ifu_handshake_o,
@@ -27,12 +30,17 @@ module bpu #(
   localparam int unsigned BHT_IDX_W = (BHT_ENTRIES > 1) ? $clog2(BHT_ENTRIES) : 1;
   localparam int unsigned INSTR_BYTES = Cfg.ILEN / 8;
   localparam int unsigned BTB_TAG_W = Cfg.PLEN - BTB_IDX_W - 2;
+  localparam int unsigned RAS_CNT_W = (RAS_DEPTH > 0) ? $clog2(RAS_DEPTH + 1) : 1;
 
   logic [BTB_ENTRIES-1:0] btb_valid_q;
   logic [BTB_ENTRIES-1:0] btb_is_cond_q;
+  logic [BTB_ENTRIES-1:0] btb_is_ret_q;
+  logic [BTB_ENTRIES-1:0] btb_use_ras_q;
   logic [BTB_ENTRIES-1:0][BTB_TAG_W-1:0] btb_tag_q;
   logic [BTB_ENTRIES-1:0][Cfg.PLEN-1:0] btb_target_q;
   logic [BHT_ENTRIES-1:0][1:0] bht_q;
+  logic [RAS_DEPTH-1:0][Cfg.PLEN-1:0] ras_stack_q;
+  logic [RAS_CNT_W-1:0] ras_count_q;
 
   function automatic logic [BTB_IDX_W-1:0] btb_index(input logic [Cfg.PLEN-1:0] pc);
     btb_index = pc[2 +: BTB_IDX_W];
@@ -60,10 +68,20 @@ module bpu #(
   logic [Cfg.INSTR_PER_FETCH-1:0] predict_taken;
   logic [Cfg.INSTR_PER_FETCH-1:0][Cfg.PLEN-1:0] predict_pc;
   logic [Cfg.INSTR_PER_FETCH-1:0][Cfg.PLEN-1:0] predict_target;
+  logic [Cfg.PLEN-1:0] ras_top_w;
+  logic ras_has_entry_w;
   logic [SLOT_IDX_W-1:0] pred_slot_idx_w;
   logic pred_slot_valid_w;
   logic [Cfg.PLEN-1:0] pred_slot_target_w;
   logic [Cfg.PLEN-1:0] pred_npc_w;
+
+  always_comb begin
+    ras_has_entry_w = (ras_count_q != '0);
+    ras_top_w = '0;
+    if (ras_has_entry_w) begin
+      ras_top_w = ras_stack_q[ras_count_q-1];
+    end
+  end
 
   always_comb begin
     for (int i = 0; i < Cfg.INSTR_PER_FETCH; i++) begin
@@ -80,7 +98,12 @@ module bpu #(
 
       predict_taken[i] = 1'b0;
       if (predict_hit[i]) begin
-        if (!btb_is_cond_q[idx]) begin
+        if (btb_is_ret_q[idx]) begin
+          predict_taken[i] = 1'b1;
+          if (btb_use_ras_q[idx] && ras_has_entry_w) begin
+            predict_target[i] = ras_top_w;
+          end
+        end else if (!btb_is_cond_q[idx]) begin
           predict_taken[i] = 1'b1;
         end else begin
           predict_taken[i] = bht_q[bht_idx][1];
@@ -115,8 +138,12 @@ module bpu #(
     if (rst_i) begin
       btb_valid_q   <= '0;
       btb_is_cond_q <= '0;
+      btb_is_ret_q  <= '0;
+      btb_use_ras_q <= '0;
       btb_tag_q     <= '0;
       btb_target_q  <= '0;
+      ras_stack_q   <= '0;
+      ras_count_q   <= '0;
       for (int i = 0; i < BHT_ENTRIES; i++) begin
         bht_q[i] <= 2'b01;
       end
@@ -131,8 +158,36 @@ module bpu #(
       if (do_btb_write) begin
         btb_valid_q[up_btb_idx] <= 1'b1;
         btb_is_cond_q[up_btb_idx] <= update_is_cond_i;
+        btb_is_ret_q[up_btb_idx] <= update_is_ret_i;
+        // Commit-time RAS 可能滞后于 fetch。策略：
+        // - 首次学习 return 且当下无 RAS 证据时，先保持 optimistic；
+        // - 一旦观察到 RAS top 与实际返回目标不一致，关闭该 entry 的 RAS 使用。
+        if (update_is_ret_i) begin
+          btb_use_ras_q[up_btb_idx] <= !ras_has_entry_w || (ras_top_w == update_target_i);
+        end else begin
+          btb_use_ras_q[up_btb_idx] <= 1'b0;
+        end
         btb_tag_q[up_btb_idx] <= btb_tag(update_pc_i);
         btb_target_q[up_btb_idx] <= update_target_i;
+      end
+
+      if (update_is_call_i) begin
+        logic [Cfg.PLEN-1:0] call_ret_addr;
+        call_ret_addr = update_pc_i + Cfg.PLEN'(INSTR_BYTES);
+        if (ras_count_q < RAS_DEPTH) begin
+          ras_stack_q[ras_count_q] <= call_ret_addr;
+          ras_count_q <= ras_count_q + 1'b1;
+        end else begin
+          for (int i = 0; i < RAS_DEPTH - 1; i++) begin
+            ras_stack_q[i] <= ras_stack_q[i+1];
+          end
+          ras_stack_q[RAS_DEPTH-1] <= call_ret_addr;
+          ras_count_q <= RAS_DEPTH[RAS_CNT_W-1:0];
+        end
+      end else if (update_is_ret_i) begin
+        if (ras_count_q != '0) begin
+          ras_count_q <= ras_count_q - 1'b1;
+        end
       end
 
       if (update_is_cond_i) begin
