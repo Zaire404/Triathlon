@@ -138,6 +138,11 @@ int main(int argc, char **argv) {
   top->ibuffer_ready_i = 0;
   top->flush_i = 0;
   top->redirect_pc_i = 0;
+  top->bpu_update_valid_i = 0;
+  top->bpu_update_pc_i = 0;
+  top->bpu_update_is_cond_i = 0;
+  top->bpu_update_taken_i = 0;
+  top->bpu_update_target_i = 0;
   for (int i = 0; i < 5; i++)
     tick(top, mem);
   top->rst_ni = 1;

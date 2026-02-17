@@ -1,5 +1,6 @@
 import config_pkg::*;
 import build_config_pkg::*;
+import global_config_pkg::*;
 
 module tb_bpu (
     // --- 输入端口  ---
@@ -8,8 +9,16 @@ module tb_bpu (
     input logic ifu_ready_i,
     input logic ifu_valid_i,
     input logic [Cfg.XLEN - 1:0] pc_i,
+    input logic update_valid_i,
+    input logic [Cfg.XLEN-1:0] update_pc_i,
+    input logic update_is_cond_i,
+    input logic update_taken_i,
+    input logic [Cfg.XLEN-1:0] update_target_i,
     // --- 输出端口  ---
-    output logic [Cfg.XLEN-1:0] npc_o
+    output logic [Cfg.XLEN-1:0] npc_o,
+    output logic pred_slot_valid_o,
+    output logic [$clog2(Cfg.INSTR_PER_FETCH)-1:0] pred_slot_idx_o,
+    output logic [Cfg.XLEN-1:0] pred_slot_target_o
 );
   handshake_t  ifu_to_bpu_handshake_i;
   handshake_t  bpu_to_ifu_handshake_o;
@@ -25,9 +34,17 @@ module tb_bpu (
       .rst_i(rst_i),
       .ifu_to_bpu_handshake_i(ifu_to_bpu_handshake_i),
       .ifu_to_bpu_i(ifu_to_bpu_i),
+      .update_valid_i(update_valid_i),
+      .update_pc_i(update_pc_i),
+      .update_is_cond_i(update_is_cond_i),
+      .update_taken_i(update_taken_i),
+      .update_target_i(update_target_i),
 
       .bpu_to_ifu_handshake_o(bpu_to_ifu_handshake_o),
       .bpu_to_ifu_o(bpu_to_ifu_o)
   );
   assign npc_o = bpu_to_ifu_o.npc;
+  assign pred_slot_valid_o = bpu_to_ifu_o.pred_slot_valid;
+  assign pred_slot_idx_o = bpu_to_ifu_o.pred_slot_idx;
+  assign pred_slot_target_o = bpu_to_ifu_o.pred_slot_target;
 endmodule

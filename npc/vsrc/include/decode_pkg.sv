@@ -85,6 +85,7 @@ package decode_pkg;
 
     // PC & 控制流信息
     logic [Cfg.PLEN-1:0] pc;
+    logic [Cfg.PLEN-1:0] pred_npc;
 
     // 其它 flag（后面可以扩展）
     logic is_word_op;

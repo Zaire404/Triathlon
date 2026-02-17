@@ -42,6 +42,11 @@ int main(int argc, char **argv) {
   std::cout << "Checking ICACHE_TAG_WIDTH..." << std::endl;
   assert(top->o_ICACHE_TAG_WIDTH == expected_tag_width);
 
+  std::cout << "Checking metadata fields are wired..." << std::endl;
+  assert(top->o_UOP_PRED_NPC == 0);
+  assert(top->o_IBUF_SLOT_VALID == 0);
+  assert(top->o_IBUF_PRED_NPC == 0);
+
   std::cout << "--- [PASSED] All checks passed successfully! ---" << std::endl;
 
   // 5. 清理

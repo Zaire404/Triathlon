@@ -15,10 +15,17 @@ module frontend #(
     input  logic                                         ibuffer_ready_i,
     output logic [Cfg.INSTR_PER_FETCH-1:0][Cfg.ILEN-1:0] ibuffer_data_o,
     output logic [           Cfg.PLEN-1:0]               ibuffer_pc_o,     // Fetch Group 的 PC
+    output logic [Cfg.INSTR_PER_FETCH-1:0]               ibuffer_slot_valid_o,
+    output logic [Cfg.INSTR_PER_FETCH-1:0][Cfg.PLEN-1:0] ibuffer_pred_npc_o,
 
     // 冲刷与重定向 (Input from Backend)
     input logic                flush_i,
     input logic [Cfg.PLEN-1:0] redirect_pc_i,
+    input logic                bpu_update_valid_i,
+    input logic [Cfg.PLEN-1:0] bpu_update_pc_i,
+    input logic                bpu_update_is_cond_i,
+    input logic                bpu_update_taken_i,
+    input logic [Cfg.PLEN-1:0] bpu_update_target_i,
 
     // ============================================
     // 2. 存储器系统接口 (To Memory/L2/Bus)
@@ -47,6 +54,9 @@ module frontend #(
   handshake_t bpu2ifu_handshake;
   logic [Cfg.PLEN-1:0] ifu2bpu_pc;
   logic [Cfg.PLEN-1:0] bpu2ifu_predicted_pc;
+  logic bpu2ifu_pred_slot_valid;
+  logic [$clog2(Cfg.INSTR_PER_FETCH)-1:0] bpu2ifu_pred_slot_idx;
+  logic [Cfg.PLEN-1:0] bpu2ifu_pred_target;
 
   // BPU 接口结构体 (用于适配 BPU 端口定义)
   ifu_to_bpu_t ifu_to_bpu_struct;
@@ -68,6 +78,9 @@ module frontend #(
   assign ifu_to_bpu_struct.pc = ifu2bpu_pc;
   // BPU 输出的结构体 -> 解包给 IFU 的扁平 Predicted PC
   assign bpu2ifu_predicted_pc = bpu_to_ifu_struct.npc;
+  assign bpu2ifu_pred_slot_valid = bpu_to_ifu_struct.pred_slot_valid;
+  assign bpu2ifu_pred_slot_idx = bpu_to_ifu_struct.pred_slot_idx;
+  assign bpu2ifu_pred_target = bpu_to_ifu_struct.pred_slot_target;
 
   // =================================================================
   // 模块实例化
@@ -87,6 +100,9 @@ module frontend #(
       .bpu2ifu_handshake_i   (bpu2ifu_handshake),
       .ifu2bpu_pc_o          (ifu2bpu_pc),
       .bpu2ifu_predicted_pc_i(bpu2ifu_predicted_pc),
+      .bpu2ifu_pred_slot_valid_i(bpu2ifu_pred_slot_valid),
+      .bpu2ifu_pred_slot_idx_i(bpu2ifu_pred_slot_idx),
+      .bpu2ifu_pred_target_i(bpu2ifu_pred_target),
 
       // --- ICache Request Interface ---
       .ifu2icache_req_handshake_o(ifu2icache_req_handshake),
@@ -100,6 +116,8 @@ module frontend #(
       .ifu_ibuffer_rsp_pc_o   (ibuffer_pc_o),
       .ibuffer_ifu_rsp_ready_i(ibuffer_ready_i),
       .ifu_ibuffer_rsp_data_o (ibuffer_data_o),
+      .ifu_ibuffer_rsp_slot_valid_o(ibuffer_slot_valid_o),
+      .ifu_ibuffer_rsp_pred_npc_o(ibuffer_pred_npc_o),
 
       // --- Backend Control ---
       .flush_i      (flush_i),
@@ -117,6 +135,11 @@ module frontend #(
 
       .ifu_to_bpu_i          (ifu_to_bpu_struct),
       .ifu_to_bpu_handshake_i(ifu2bpu_handshake),
+      .update_valid_i        (bpu_update_valid_i),
+      .update_pc_i           (bpu_update_pc_i),
+      .update_is_cond_i      (bpu_update_is_cond_i),
+      .update_taken_i        (bpu_update_taken_i),
+      .update_target_i       (bpu_update_target_i),
       .bpu_to_ifu_handshake_o(bpu2ifu_handshake),
       .bpu_to_ifu_o          (bpu_to_ifu_struct)
   );

@@ -23,6 +23,8 @@ module rename #(
     output decode_pkg::fu_e [3:0]               rob_dispatch_fu_type_o,
     output logic            [3:0][         4:0] rob_dispatch_areg_o,
     output logic            [3:0]               rob_dispatch_has_rd_o,
+    output logic            [3:0]               rob_dispatch_is_branch_o,
+    output logic            [3:0]               rob_dispatch_is_jump_o,
 
     // [新增] 傳遞 Store 信息給 ROB
     output logic [3:0]                   rob_dispatch_is_store_o,
@@ -192,6 +194,8 @@ module rename #(
         rob_dispatch_fu_type_o[i]  = dec_uops_i[i].fu;
         rob_dispatch_areg_o[i]     = dec_uops_i[i].rd;
         rob_dispatch_has_rd_o[i]   = dec_uops_i[i].has_rd;
+        rob_dispatch_is_branch_o[i] = dec_uops_i[i].is_branch;
+        rob_dispatch_is_jump_o[i] = dec_uops_i[i].is_jump;
 
         // Store 信息傳遞
         rob_dispatch_is_store_o[i] = dec_uops_i[i].is_store;
@@ -225,6 +229,8 @@ module rename #(
         rob_dispatch_fu_type_o[i]  = decode_pkg::FU_NONE;
         rob_dispatch_areg_o[i]     = '0;
         rob_dispatch_has_rd_o[i]   = 1'b0;
+        rob_dispatch_is_branch_o[i] = 1'b0;
+        rob_dispatch_is_jump_o[i] = 1'b0;
         rob_dispatch_is_store_o[i] = 1'b0;
         rob_dispatch_sb_id_o[i]    = '0;
 

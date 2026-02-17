@@ -11,9 +11,16 @@ module backend #(
     output logic frontend_ibuf_ready,
     input logic [Cfg.INSTR_PER_FETCH-1:0][Cfg.ILEN-1:0] frontend_ibuf_instrs,
     input logic [Cfg.PLEN-1:0] frontend_ibuf_pc,
+    input logic [Cfg.INSTR_PER_FETCH-1:0] frontend_ibuf_slot_valid,
+    input logic [Cfg.INSTR_PER_FETCH-1:0][Cfg.PLEN-1:0] frontend_ibuf_pred_npc,
     // Redirect/flush to frontend
     output logic backend_flush_o,
     output logic [Cfg.PLEN-1:0] backend_redirect_pc_o,
+    output logic bpu_update_valid_o,
+    output logic [Cfg.PLEN-1:0] bpu_update_pc_o,
+    output logic bpu_update_is_cond_o,
+    output logic bpu_update_taken_o,
+    output logic [Cfg.PLEN-1:0] bpu_update_target_o,
 
     // D-Cache miss/refill/writeback interface (to memory system)
     output logic                                  dcache_miss_req_valid_o,
@@ -51,6 +58,8 @@ module backend #(
   logic decode_ibuf_ready;
   logic [Cfg.INSTR_PER_FETCH-1:0][Cfg.ILEN-1:0] decode_ibuf_instrs;
   logic [Cfg.INSTR_PER_FETCH-1:0][Cfg.PLEN-1:0] decode_ibuf_pcs;
+  logic [Cfg.INSTR_PER_FETCH-1:0] decode_ibuf_slot_valid;
+  logic [Cfg.INSTR_PER_FETCH-1:0][Cfg.PLEN-1:0] decode_ibuf_pred_npc;
 
   logic backend_flush;
 
@@ -66,11 +75,15 @@ module backend #(
       .fe_ready_o (frontend_ibuf_ready),
       .fe_instrs_i(frontend_ibuf_instrs),
       .fe_pc_i    (frontend_ibuf_pc),
+      .fe_slot_valid_i(frontend_ibuf_slot_valid),
+      .fe_pred_npc_i(frontend_ibuf_pred_npc),
 
       .ibuf_valid_o (decode_ibuf_valid),
       .ibuf_ready_i (decode_ibuf_ready),
       .ibuf_instrs_o(decode_ibuf_instrs),
       .ibuf_pcs_o   (decode_ibuf_pcs),
+      .ibuf_slot_valid_o(decode_ibuf_slot_valid),
+      .ibuf_pred_npc_o(decode_ibuf_pred_npc),
 
       .flush_i(backend_flush)
   );
@@ -93,6 +106,8 @@ module backend #(
       .dec2ibuf_ready_o(decode_ibuf_ready),
       .ibuf_instrs_i   (decode_ibuf_instrs),
       .ibuf_pcs_i      (decode_ibuf_pcs),
+      .ibuf_slot_valid_i(decode_ibuf_slot_valid),
+      .ibuf_pred_npc_i(decode_ibuf_pred_npc),
 
       .dec2backend_valid_o(dec_valid),
       .backend2dec_ready_i(rename_ready),
@@ -114,10 +129,18 @@ module backend #(
   logic [COMMIT_WIDTH-1:0][ROB_IDX_WIDTH-1:0] commit_rob_index;
   logic [COMMIT_WIDTH-1:0]               commit_is_store;
   logic [COMMIT_WIDTH-1:0][SB_IDX_WIDTH-1:0] commit_sb_id;
+  logic [COMMIT_WIDTH-1:0]               commit_is_branch;
+  logic [COMMIT_WIDTH-1:0]               commit_is_jump;
+  logic [COMMIT_WIDTH-1:0][Cfg.PLEN-1:0] commit_actual_npc;
 
   logic rob_flush;
   logic [Cfg.PLEN-1:0] rob_flush_pc;
   logic [4:0] rob_flush_cause;
+  logic rob_flush_is_mispred;
+  logic rob_flush_is_exception;
+  logic rob_flush_is_branch;
+  logic rob_flush_is_jump;
+  logic [Cfg.PLEN-1:0] rob_flush_src_pc;
 
   // ROB operand query (late subscription fix)
   logic [DISPATCH_WIDTH*2-1:0][ROB_IDX_WIDTH-1:0] rob_query_idx;
@@ -142,6 +165,8 @@ module backend #(
       .dispatch_fu_type_i(rob_dispatch_fu_type),
       .dispatch_areg_i (rob_dispatch_areg),
       .dispatch_has_rd_i(rob_dispatch_has_rd),
+      .dispatch_is_branch_i(rob_dispatch_is_branch),
+      .dispatch_is_jump_i(rob_dispatch_is_jump),
       .dispatch_is_store_i(rob_dispatch_is_store),
       .dispatch_sb_id_i(rob_dispatch_sb_id),
 
@@ -164,10 +189,18 @@ module backend #(
       .commit_rob_index_o(commit_rob_index),
       .commit_is_store_o(commit_is_store),
       .commit_sb_id_o   (commit_sb_id),
+      .commit_is_branch_o(commit_is_branch),
+      .commit_is_jump_o(commit_is_jump),
+      .commit_actual_npc_o(commit_actual_npc),
 
       .flush_o      (rob_flush),
       .flush_pc_o   (rob_flush_pc),
       .flush_cause_o(rob_flush_cause),
+      .flush_is_mispred_o(rob_flush_is_mispred),
+      .flush_is_exception_o(rob_flush_is_exception),
+      .flush_is_branch_o(rob_flush_is_branch),
+      .flush_is_jump_o(rob_flush_is_jump),
+      .flush_src_pc_o(rob_flush_src_pc),
 
       .query_rob_idx_i(rob_query_idx),
       .query_ready_o  (rob_query_ready),
@@ -181,6 +214,26 @@ module backend #(
   assign backend_flush = flush_from_backend | rob_flush;
   assign backend_flush_o = backend_flush;
   assign backend_redirect_pc_o = rob_flush_pc;
+
+  always_comb begin
+    bpu_update_valid_o = 1'b0;
+    bpu_update_pc_o = '0;
+    bpu_update_is_cond_o = 1'b0;
+    bpu_update_taken_o = 1'b0;
+    bpu_update_target_o = '0;
+
+    for (int i = 0; i < COMMIT_WIDTH; i++) begin
+      logic [Cfg.PLEN-1:0] fallthrough_pc;
+      fallthrough_pc = commit_pc[i] + Cfg.PLEN'(4);
+      if (!bpu_update_valid_o && commit_valid[i] && commit_is_branch[i]) begin
+        bpu_update_valid_o = 1'b1;
+        bpu_update_pc_o = commit_pc[i];
+        bpu_update_is_cond_o = !commit_is_jump[i];
+        bpu_update_taken_o = commit_is_jump[i] ? 1'b1 : (commit_actual_npc[i] != fallthrough_pc);
+        bpu_update_target_o = commit_actual_npc[i];
+      end
+    end
+  end
 
   // =========================================================
   // Store Buffer (allocation + commit + forwarding)
@@ -269,6 +322,8 @@ module backend #(
   decode_pkg::fu_e [DISPATCH_WIDTH-1:0]    rob_dispatch_fu_type;
   logic [DISPATCH_WIDTH-1:0][4:0]          rob_dispatch_areg;
   logic [DISPATCH_WIDTH-1:0]               rob_dispatch_has_rd;
+  logic [DISPATCH_WIDTH-1:0]               rob_dispatch_is_branch;
+  logic [DISPATCH_WIDTH-1:0]               rob_dispatch_is_jump;
   logic [DISPATCH_WIDTH-1:0]               rob_dispatch_is_store;
   logic [DISPATCH_WIDTH-1:0][SB_IDX_WIDTH-1:0] rob_dispatch_sb_id;
 
@@ -304,6 +359,8 @@ module backend #(
       .rob_dispatch_fu_type_o(rob_dispatch_fu_type),
       .rob_dispatch_areg_o (rob_dispatch_areg),
       .rob_dispatch_has_rd_o(rob_dispatch_has_rd),
+      .rob_dispatch_is_branch_o(rob_dispatch_is_branch),
+      .rob_dispatch_is_jump_o(rob_dispatch_is_jump),
       .rob_dispatch_is_store_o(rob_dispatch_is_store),
       .rob_dispatch_sb_id_o(rob_dispatch_sb_id),
 

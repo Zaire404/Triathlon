@@ -1,6 +1,8 @@
 // vsrc/test/tb_build_config.sv
 import config_pkg::*;
 import build_config_pkg::*;
+import decode_pkg::*;
+import global_config_pkg::*;
 
 module tb_build_config (
     // --- 输入端口  ---
@@ -25,7 +27,12 @@ module tb_build_config (
     output int unsigned o_ICACHE_INDEX_WIDTH,
     output int unsigned o_ICACHE_TAG_WIDTH,
     output int unsigned o_ICACHE_LINE_WIDTH,
-    output int unsigned o_ICACHE_OFFSET_WIDTH
+    output int unsigned o_ICACHE_OFFSET_WIDTH,
+
+    // Metadata field existence checks
+    output logic [31:0] o_UOP_PRED_NPC,
+    output logic        o_IBUF_SLOT_VALID,
+    output logic [31:0] o_IBUF_PRED_NPC
 );
 
   // 1. 在模块内部，将输入的扁平信号打包成 user_cfg_t 结构体
@@ -42,6 +49,10 @@ module tb_build_config (
   cfg_t cfg_out;
   assign cfg_out                  = build_config(user_cfg_in);
 
+  // Compile-time field existence checks for new metadata plumbing.
+  decode_pkg::uop_t uop_probe;
+  global_config_pkg::ibuf_entry_t ibuf_probe;
+
   // 3. 将输出的 cfg_t 结构体解包到独立的输出端口
   assign o_XLEN                   = cfg_out.XLEN;
   assign o_VLEN                   = cfg_out.VLEN;
@@ -56,5 +67,8 @@ module tb_build_config (
   assign o_ICACHE_TAG_WIDTH       = cfg_out.ICACHE_TAG_WIDTH;
   assign o_ICACHE_LINE_WIDTH      = cfg_out.ICACHE_LINE_WIDTH;
   assign o_ICACHE_OFFSET_WIDTH    = cfg_out.ICACHE_OFFSET_WIDTH;
+  assign o_UOP_PRED_NPC           = uop_probe.pred_npc;
+  assign o_IBUF_SLOT_VALID        = ibuf_probe.slot_valid;
+  assign o_IBUF_PRED_NPC          = ibuf_probe.pred_npc;
 
 endmodule

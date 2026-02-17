@@ -17,6 +17,9 @@ module ifu #(
     input  handshake_t                bpu2ifu_handshake_i,    // BPU -> IFU: 握手信号
     output logic       [Cfg.PLEN-1:0] ifu2bpu_pc_o,           // IFU -> BPU: 当前的PC值
     input  logic       [Cfg.PLEN-1:0] bpu2ifu_predicted_pc_i, // BPU -> IFU: 预测的PC值
+    input  logic                       bpu2ifu_pred_slot_valid_i,
+    input  logic [$clog2(Cfg.INSTR_PER_FETCH)-1:0] bpu2ifu_pred_slot_idx_i,
+    input  logic       [Cfg.PLEN-1:0] bpu2ifu_pred_target_i,
 
     //--- 2.ICache请求接口 ---
     output handshake_t ifu2icache_req_handshake_o,  // IFU -> ICache: 握手信号
@@ -30,6 +33,8 @@ module ifu #(
     output logic [Cfg.PLEN-1:0] ifu_ibuffer_rsp_pc_o,  // IFU -> IBuffer: fetch group的pc
     input  logic                      ibuffer_ifu_rsp_ready_i, // IBuffer -> IFU: "我准备好接收你的指令数据了"
     output logic [Cfg.INSTR_PER_FETCH-1:0][Cfg.ILEN-1:0] ifu_ibuffer_rsp_data_o, // IFU -> IBuffer: "这是你请求的指令数据"
+    output logic [Cfg.INSTR_PER_FETCH-1:0] ifu_ibuffer_rsp_slot_valid_o,
+    output logic [Cfg.INSTR_PER_FETCH-1:0][Cfg.PLEN-1:0] ifu_ibuffer_rsp_pred_npc_o,
 
     //--- 4.后端冲刷/重定向接口 ---
     input logic                flush_i,       // 后端 -> IFU: 冲刷信号
@@ -50,8 +55,13 @@ module ifu #(
   //pc寄存器
   logic [Cfg.PLEN-1:0] pc_reg;
   logic                pcg_stage_valid;
+  localparam int unsigned INSTR_BYTES = Cfg.ILEN / 8;
+  localparam int unsigned SLOT_IDX_W = (Cfg.INSTR_PER_FETCH > 1) ? $clog2(Cfg.INSTR_PER_FETCH) : 1;
   // Latch PC for the outstanding ICache request
   logic [Cfg.PLEN-1:0] req_pc_q;
+  logic req_pred_slot_valid_q;
+  logic [SLOT_IDX_W-1:0] req_pred_slot_idx_q;
+  logic [Cfg.PLEN-1:0] req_pred_target_q;
 
   wire req_fire = (current_state == S_START) && pcg_stage_valid &&
                   bpu2ifu_handshake_i.valid && icache2ifu_rsp_handshake_i.ready;
@@ -61,10 +71,16 @@ module ifu #(
       pc_reg <= 'h80000000;
       pcg_stage_valid <= 1'b1;
       req_pc_q <= 'h80000000;
+      req_pred_slot_valid_q <= 1'b0;
+      req_pred_slot_idx_q <= '0;
+      req_pred_target_q <= '0;
     end else begin
       if (flush_i) begin
         pc_reg <= redirect_pc_i;
         pcg_stage_valid <= 1'b1;
+        req_pred_slot_valid_q <= 1'b0;
+        req_pred_slot_idx_q <= '0;
+        req_pred_target_q <= '0;
       end else if (ifu2bpu_handshake_o.ready && bpu2ifu_handshake_i.valid) begin
         pc_reg <= bpu2ifu_predicted_pc_i;
         pcg_stage_valid <= 1'b1;
@@ -75,6 +91,9 @@ module ifu #(
         req_pc_q <= redirect_pc_i;
       end else if (req_fire) begin
         req_pc_q <= pc_reg;
+        req_pred_slot_valid_q <= bpu2ifu_pred_slot_valid_i;
+        req_pred_slot_idx_q   <= bpu2ifu_pred_slot_idx_i;
+        req_pred_target_q     <= bpu2ifu_pred_target_i;
       end
     end
 `ifdef TRIATHLON_VERBOSE
@@ -104,6 +123,20 @@ module ifu #(
   assign ifu2bpu_pc_o = pc_reg;
   assign ifu_ibuffer_rsp_pc_o = req_pc_q;
   assign ifu_ibuffer_rsp_data_o = icache2ifu_rsp_data_i;
+  always_comb begin
+    for (int i = 0; i < Cfg.INSTR_PER_FETCH; i++) begin
+      ifu_ibuffer_rsp_slot_valid_o[i] = 1'b1;
+      ifu_ibuffer_rsp_pred_npc_o[i] = req_pc_q + Cfg.PLEN'(INSTR_BYTES * (i + 1));
+      if (req_pred_slot_valid_q) begin
+        ifu_ibuffer_rsp_slot_valid_o[i] = (i <= int'(req_pred_slot_idx_q));
+        if (i > int'(req_pred_slot_idx_q)) begin
+          ifu_ibuffer_rsp_pred_npc_o[i] = '0;
+        end else if (i == int'(req_pred_slot_idx_q)) begin
+          ifu_ibuffer_rsp_pred_npc_o[i] = req_pred_target_q;
+        end
+      end
+    end
+  end
 
   always_comb begin
     next_state = current_state;
