@@ -32,6 +32,10 @@ module tb_bpu (
 `else
   localparam bit TB_BPU_USE_GSHARE = 1'b0;
 `endif
+  localparam int unsigned TB_BPU_BTB_ENTRIES = 128;
+  localparam int unsigned TB_BPU_BHT_ENTRIES = 512;
+  localparam bit TB_BPU_BTB_HASH_ENABLE = 1'b1;
+  localparam bit TB_BPU_BHT_HASH_ENABLE = 1'b1;
 
   handshake_t  ifu_to_bpu_handshake_i;
   handshake_t  bpu_to_ifu_handshake_o;
@@ -42,6 +46,10 @@ module tb_bpu (
   assign ifu_to_bpu_handshake_i.valid = ifu_valid_i;
   bpu #(
       .Cfg(Cfg),
+      .BTB_ENTRIES(TB_BPU_BTB_ENTRIES),
+      .BHT_ENTRIES(TB_BPU_BHT_ENTRIES),
+      .BTB_HASH_ENABLE(TB_BPU_BTB_HASH_ENABLE),
+      .BHT_HASH_ENABLE(TB_BPU_BHT_HASH_ENABLE),
       .USE_GSHARE(TB_BPU_USE_GSHARE)
   ) i_BPU (
       .clk_i(clk_i),

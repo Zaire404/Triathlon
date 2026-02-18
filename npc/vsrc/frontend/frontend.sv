@@ -56,6 +56,8 @@ module frontend #(
 `else
   localparam bit BPU_USE_GSHARE = 1'b0;
 `endif
+  localparam int unsigned BPU_BTB_ENTRIES = 128;
+  localparam int unsigned BPU_BHT_ENTRIES = 512;
 
   // =================================================================
   // 内部信号定义
@@ -141,6 +143,8 @@ module frontend #(
   // -------------------
   bpu #(
       .Cfg(Cfg),
+      .BTB_ENTRIES(BPU_BTB_ENTRIES),
+      .BHT_ENTRIES(BPU_BHT_ENTRIES),
       .USE_GSHARE(BPU_USE_GSHARE)
   ) i_bpu (
       .clk_i(clk_i),
