@@ -23,6 +23,10 @@ module backend #(
     output logic [Cfg.PLEN-1:0] bpu_update_target_o,
     output logic bpu_update_is_call_o,
     output logic bpu_update_is_ret_o,
+    output logic [Cfg.NRET-1:0] bpu_ras_update_valid_o,
+    output logic [Cfg.NRET-1:0] bpu_ras_update_is_call_o,
+    output logic [Cfg.NRET-1:0] bpu_ras_update_is_ret_o,
+    output logic [Cfg.NRET-1:0][Cfg.PLEN-1:0] bpu_ras_update_pc_o,
 
     // D-Cache miss/refill/writeback interface (to memory system)
     output logic                                  dcache_miss_req_valid_o,
@@ -226,6 +230,8 @@ module backend #(
   assign backend_redirect_pc_o = rob_flush_pc;
 
   always_comb begin
+    int sel_idx;
+    logic [Cfg.PLEN-1:0] fallthrough_pc;
     bpu_update_valid_o = 1'b0;
     bpu_update_pc_o = '0;
     bpu_update_is_cond_o = 1'b0;
@@ -233,19 +239,36 @@ module backend #(
     bpu_update_target_o = '0;
     bpu_update_is_call_o = 1'b0;
     bpu_update_is_ret_o = 1'b0;
-
+    fallthrough_pc = '0;
+    sel_idx = -1;
     for (int i = 0; i < COMMIT_WIDTH; i++) begin
-      logic [Cfg.PLEN-1:0] fallthrough_pc;
-      fallthrough_pc = commit_pc[i] + Cfg.PLEN'(4);
-      if (!bpu_update_valid_o && commit_valid[i] && commit_is_branch[i]) begin
-        bpu_update_valid_o = 1'b1;
-        bpu_update_pc_o = commit_pc[i];
-        bpu_update_is_cond_o = !commit_is_jump[i];
-        bpu_update_taken_o = commit_is_jump[i] ? 1'b1 : (commit_actual_npc[i] != fallthrough_pc);
-        bpu_update_target_o = commit_actual_npc[i];
-        bpu_update_is_call_o = ENABLE_COMMIT_RAS_UPDATE ? commit_is_call[i] : 1'b0;
-        bpu_update_is_ret_o = ENABLE_COMMIT_RAS_UPDATE ? commit_is_ret[i] : 1'b0;
+      if (commit_valid[i] && commit_is_branch[i]) begin
+        sel_idx = i;
+        break;
       end
+    end
+
+    if (sel_idx >= 0) begin
+      fallthrough_pc = commit_pc[sel_idx] + Cfg.PLEN'(4);
+      bpu_update_valid_o = 1'b1;
+      bpu_update_pc_o = commit_pc[sel_idx];
+      bpu_update_is_cond_o = !commit_is_jump[sel_idx];
+      bpu_update_taken_o = commit_is_jump[sel_idx] ? 1'b1 : (commit_actual_npc[sel_idx] != fallthrough_pc);
+      bpu_update_target_o = commit_actual_npc[sel_idx];
+      bpu_update_is_call_o = ENABLE_COMMIT_RAS_UPDATE ? commit_is_call[sel_idx] : 1'b0;
+      bpu_update_is_ret_o = ENABLE_COMMIT_RAS_UPDATE ? commit_is_ret[sel_idx] : 1'b0;
+    end
+  end
+
+  always_comb begin
+    for (int i = 0; i < COMMIT_WIDTH; i++) begin
+      bpu_ras_update_valid_o[i] = ENABLE_COMMIT_RAS_UPDATE &&
+                                  commit_valid[i] &&
+                                  commit_is_branch[i] &&
+                                  (commit_is_call[i] || commit_is_ret[i]);
+      bpu_ras_update_is_call_o[i] = commit_is_call[i];
+      bpu_ras_update_is_ret_o[i] = commit_is_ret[i];
+      bpu_ras_update_pc_o[i] = commit_pc[i];
     end
   end
 

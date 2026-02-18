@@ -427,6 +427,8 @@ static void test_call_ret_update(Vtb_backend *top, MemModel &mem) {
 
   bool call_seen = false;
   bool call_flag_ok = false;
+  bool call_ras_seen = false;
+  bool call_ras_flag_ok = false;
   for (int i = 0; i < 200; i++) {
     tick(top, mem);
     update_commits(top, rf, commits);
@@ -434,6 +436,16 @@ static void test_call_ret_update(Vtb_backend *top, MemModel &mem) {
       call_seen = true;
       call_flag_ok = (top->bpu_update_is_call_o == 1) &&
                      (top->bpu_update_is_ret_o == 0);
+    }
+    for (int slot = 0; slot < NRET; slot++) {
+      bool ras_v = (top->bpu_ras_update_valid_o >> slot) & 0x1;
+      if (ras_v && top->bpu_ras_update_pc_o[slot] == 0xB000) {
+        call_ras_seen = true;
+        call_ras_flag_ok = (((top->bpu_ras_update_is_call_o >> slot) & 0x1) == 1) &&
+                           (((top->bpu_ras_update_is_ret_o >> slot) & 0x1) == 0);
+      }
+    }
+    if (call_seen && call_ras_seen) {
       break;
     }
   }
@@ -444,6 +456,8 @@ static void test_call_ret_update(Vtb_backend *top, MemModel &mem) {
 
   bool ret_seen = false;
   bool ret_flag_ok = false;
+  bool ret_ras_seen = false;
+  bool ret_ras_flag_ok = false;
   for (int i = 0; i < 200; i++) {
     tick(top, mem);
     update_commits(top, rf, commits);
@@ -451,14 +465,28 @@ static void test_call_ret_update(Vtb_backend *top, MemModel &mem) {
       ret_seen = true;
       ret_flag_ok = (top->bpu_update_is_call_o == 0) &&
                     (top->bpu_update_is_ret_o == 1);
+    }
+    for (int slot = 0; slot < NRET; slot++) {
+      bool ras_v = (top->bpu_ras_update_valid_o >> slot) & 0x1;
+      if (ras_v && top->bpu_ras_update_pc_o[slot] == 0xB008) {
+        ret_ras_seen = true;
+        ret_ras_flag_ok = (((top->bpu_ras_update_is_call_o >> slot) & 0x1) == 0) &&
+                          (((top->bpu_ras_update_is_ret_o >> slot) & 0x1) == 1);
+      }
+    }
+    if (ret_seen && ret_ras_seen) {
       break;
     }
   }
 
   expect(call_seen, "Call update observed at JAL commit");
   expect(call_flag_ok, "Call update carries is_call=1 is_ret=0");
+  expect(call_ras_seen, "Call RAS batch update observed at JAL commit");
+  expect(call_ras_flag_ok, "Call RAS batch update carries is_call=1 is_ret=0");
   expect(ret_seen, "Return update observed at JALR commit");
   expect(ret_flag_ok, "Return update carries is_call=0 is_ret=1");
+  expect(ret_ras_seen, "Return RAS batch update observed at JALR commit");
+  expect(ret_ras_flag_ok, "Return RAS batch update carries is_call=0 is_ret=1");
 }
 
 int main(int argc, char **argv) {

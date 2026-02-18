@@ -5,6 +5,7 @@
 #include <iostream>
 
 const int INSTR_PER_FETCH = 4;
+const int NRET = 4;
 void tick(Vtb_bpu *top, int cnt = 1) {
   while (cnt--) {
     top->clk_i = 0;
@@ -25,6 +26,13 @@ void reset(Vtb_bpu *top) {
   top->update_target_i = 0;
   top->update_is_call_i = 0;
   top->update_is_ret_i = 0;
+  top->ras_update_valid_i = 0;
+  top->ras_update_is_call_i = 0;
+  top->ras_update_is_ret_i = 0;
+  for (int i = 0; i < NRET; i++) {
+    top->ras_update_pc_i[i] = 0;
+  }
+  top->flush_i = 0;
   top->pc_i = 0x80000000;
   tick(top, 5);
   top->rst_i = 0;
@@ -47,10 +55,18 @@ static void train(Vtb_bpu *top, uint32_t pc, bool is_cond, bool taken,
   top->update_target_i = target;
   top->update_is_call_i = is_call ? 1 : 0;
   top->update_is_ret_i = is_ret ? 1 : 0;
+  top->ras_update_valid_i = (is_call || is_ret) ? 0x1 : 0x0;
+  top->ras_update_is_call_i = is_call ? 0x1 : 0x0;
+  top->ras_update_is_ret_i = is_ret ? 0x1 : 0x0;
+  top->ras_update_pc_i[0] = pc;
   tick(top, 1);
   top->update_valid_i = 0;
   top->update_is_call_i = 0;
   top->update_is_ret_i = 0;
+  top->ras_update_valid_i = 0;
+  top->ras_update_is_call_i = 0;
+  top->ras_update_is_ret_i = 0;
+  top->ras_update_pc_i[0] = 0;
 }
 
 int main(int argc, char **argv) {
@@ -272,6 +288,158 @@ int main(int argc, char **argv) {
   assert(top->pred_slot_idx_o == 0);
   assert(top->pred_slot_target_o == spec_call_pc + 4);
   assert(top->npc_o == spec_call_pc + 4);
+
+  // 10) Flush-aware speculative RAS recover:
+  // Pollute speculative top with wrong call, then flush should recover spec RAS
+  // back to architectural RAS snapshot.
+  reset(top);
+  const uint32_t rec_ret_pc = 0x80000700;
+  const uint32_t rec_ret_btb_target = 0x90000700;
+  const uint32_t rec_base_call_pc = 0x80000720;
+  const uint32_t rec_wrong_call_pc = 0x80000740;
+
+  train(top, rec_ret_pc, false, true, rec_ret_btb_target, false, true);             // mark return
+  train(top, rec_base_call_pc, false, true, 0x80007000, true, false);                // arch push base+4
+  train(top, rec_wrong_call_pc, false, true, 0x80008000, true, false);               // arch push wrong+4
+  train(top, rec_ret_pc, false, true, rec_wrong_call_pc + 4, false, true);           // arch pop wrong, arch back to base
+
+  top->pc_i = rec_base_call_pc;  // spec push base+4
+  tick(top, 1);
+  assert(top->pred_slot_valid_o == 1);
+  assert(top->pred_slot_target_o == 0x80007000);
+
+  top->pc_i = rec_wrong_call_pc;  // spec push wrong+4 (pollute)
+  tick(top, 1);
+  assert(top->pred_slot_valid_o == 1);
+  assert(top->pred_slot_target_o == 0x80008000);
+
+  top->pc_i = rec_ret_pc;  // polluted top should win before flush
+  tick(top, 1);
+  assert(top->pred_slot_valid_o == 1);
+  assert(top->pred_slot_target_o == rec_wrong_call_pc + 4);
+
+  top->flush_i = 1;  // recover speculative stack from architectural stack
+  tick(top, 1);
+  top->flush_i = 0;
+
+  top->pc_i = rec_ret_pc;
+  tick(top, 1);
+  assert(top->pred_slot_valid_o == 1);
+  assert(top->pred_slot_target_o == rec_base_call_pc + 4);
+  assert(top->npc_o == rec_base_call_pc + 4);
+
+  // 11) flush + commit-update same cycle:
+  // flush recover should observe architectural update effect in the same cycle.
+  const uint32_t sync_ret_target = 0x80000990;
+  top->update_valid_i = 1;
+  top->update_pc_i = rec_ret_pc;
+  top->update_is_cond_i = 0;
+  top->update_taken_i = 1;
+  top->update_target_i = sync_ret_target;
+  top->update_is_call_i = 0;
+  top->update_is_ret_i = 1;  // pop architectural stack from base-only to empty
+  top->ras_update_valid_i = 0x1;
+  top->ras_update_is_call_i = 0x0;
+  top->ras_update_is_ret_i = 0x1;
+  top->ras_update_pc_i[0] = rec_ret_pc;
+  top->flush_i = 1;
+  tick(top, 1);
+  top->update_valid_i = 0;
+  top->update_is_call_i = 0;
+  top->update_is_ret_i = 0;
+  top->ras_update_valid_i = 0;
+  top->ras_update_is_call_i = 0;
+  top->ras_update_is_ret_i = 0;
+  top->ras_update_pc_i[0] = 0;
+  top->flush_i = 0;
+
+  top->pc_i = rec_ret_pc;
+  tick(top, 1);
+  assert(top->pred_slot_valid_o == 1);
+  // If recover uses updated architectural state, stack is empty and return falls back BTB target.
+  assert(top->pred_slot_target_o == sync_ret_target);
+  assert(top->npc_o == sync_ret_target);
+
+  // 12) IFU protocol compatibility:
+  // IFU consumes prediction with ready-pulse while valid can be low (WAIT state).
+  // BPU must still record speculative call/ret events in this pattern.
+  reset(top);
+  const uint32_t ifu_proto_call_pc = 0x80000a00;
+  const uint32_t ifu_proto_call_target = 0x8000a000;
+  const uint32_t ifu_proto_ret_pc = 0x80000a20;
+  const uint32_t ifu_proto_ret_btb_target = 0x90000a20;
+
+  train(top, ifu_proto_ret_pc, false, true, ifu_proto_ret_btb_target, false, true);
+  train(top, ifu_proto_call_pc, false, true, ifu_proto_call_target, true, false);
+
+  // START state: valid=1, ready=0 (request in-flight)
+  top->ifu_valid_i = 1;
+  top->ifu_ready_i = 0;
+  top->pc_i = ifu_proto_call_pc;
+  tick(top, 1);
+  assert(top->pred_slot_valid_o == 1);
+  assert(top->pred_slot_target_o == ifu_proto_call_target);
+
+  // WAIT state consume: valid=0, ready=1
+  top->ifu_valid_i = 0;
+  top->ifu_ready_i = 1;
+  tick(top, 1);
+
+  // Next return should observe speculative push from the consumed call.
+  top->ifu_valid_i = 1;
+  top->ifu_ready_i = 1;
+  top->pc_i = ifu_proto_ret_pc;
+  tick(top, 1);
+  assert(top->pred_slot_valid_o == 1);
+  assert(top->pred_slot_target_o == ifu_proto_call_pc + 4);
+  assert(top->npc_o == ifu_proto_call_pc + 4);
+
+  // 13) Multi-commit RAS updates in one cycle must be replayed in-order.
+  reset(top);
+  const uint32_t batch_ret_pc = 0x80000b00;
+  const uint32_t batch_ret_btb_target = 0x90000b00;
+  const uint32_t batch_call_a_pc = 0x80000b20;
+  const uint32_t batch_call_b_pc = 0x80000b40;
+
+  train(top, batch_ret_pc, false, true, batch_ret_btb_target, false, true);
+
+  top->ras_update_valid_i = 0x3;     // slot0 + slot1
+  top->ras_update_is_call_i = 0x3;   // push A then B
+  top->ras_update_is_ret_i = 0x0;
+  top->ras_update_pc_i[0] = batch_call_a_pc;
+  top->ras_update_pc_i[1] = batch_call_b_pc;
+  tick(top, 1);
+  top->ras_update_valid_i = 0;
+  top->ras_update_is_call_i = 0;
+  top->ras_update_is_ret_i = 0;
+  top->ras_update_pc_i[0] = 0;
+  top->ras_update_pc_i[1] = 0;
+
+  top->flush_i = 1;
+  tick(top, 1);
+  top->flush_i = 0;
+
+  top->pc_i = batch_ret_pc;
+  tick(top, 1);
+  assert(top->pred_slot_valid_o == 1);
+  assert(top->pred_slot_target_o == batch_call_b_pc + 4);
+
+  top->ras_update_valid_i = 0x3;    // pop twice
+  top->ras_update_is_call_i = 0x0;
+  top->ras_update_is_ret_i = 0x3;
+  tick(top, 1);
+  top->ras_update_valid_i = 0;
+  top->ras_update_is_call_i = 0;
+  top->ras_update_is_ret_i = 0;
+
+  top->flush_i = 1;
+  tick(top, 1);
+  top->flush_i = 0;
+
+  top->pc_i = batch_ret_pc;
+  tick(top, 1);
+  assert(top->pred_slot_valid_o == 1);
+  assert(top->pred_slot_target_o == batch_ret_btb_target);
 
   std::cout << "--- [PASSED] All checks passed successfully! ---" << std::endl;
   delete top;

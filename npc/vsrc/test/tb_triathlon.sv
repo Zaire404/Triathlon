@@ -132,6 +132,11 @@ module tb_triathlon #(
     output logic                               dbg_sb_head_addr_valid_o,
     output logic                               dbg_sb_head_data_valid_o,
     output logic [Cfg.PLEN-1:0]                dbg_sb_head_addr_o,
+    // Debug (BPU RAS)
+    output logic [7:0]                         dbg_bpu_arch_ras_count_o,
+    output logic [7:0]                         dbg_bpu_spec_ras_count_o,
+    output logic [Cfg.PLEN-1:0]                dbg_bpu_arch_ras_top_o,
+    output logic [Cfg.PLEN-1:0]                dbg_bpu_spec_ras_top_o,
     // Debug (BRU mispred info)
     output logic                               dbg_bru_mispred_o,
     output logic [Cfg.PLEN-1:0]                dbg_bru_pc_o,
@@ -333,6 +338,10 @@ module tb_triathlon #(
   assign dbg_sb_head_addr_valid_o = dut.u_backend.u_sb.mem[dut.u_backend.u_sb.head_ptr].addr_valid;
   assign dbg_sb_head_data_valid_o = dut.u_backend.u_sb.mem[dut.u_backend.u_sb.head_ptr].data_valid;
   assign dbg_sb_head_addr_o      = dut.u_backend.u_sb.mem[dut.u_backend.u_sb.head_ptr].addr;
+  assign dbg_bpu_arch_ras_count_o = {3'b0, dut.u_frontend.i_bpu.arch_ras_count_q};
+  assign dbg_bpu_spec_ras_count_o = {3'b0, dut.u_frontend.i_bpu.spec_ras_count_q};
+  assign dbg_bpu_arch_ras_top_o = dut.u_frontend.i_bpu.arch_ras_top_w;
+  assign dbg_bpu_spec_ras_top_o = dut.u_frontend.i_bpu.spec_ras_top_w;
 
   // Debug: BRU info (from backend execute)
   assign dbg_bru_mispred_o  = dut.u_backend.bru_mispred;
