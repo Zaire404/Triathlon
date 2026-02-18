@@ -22,6 +22,7 @@ constexpr uint32_t kSerialPort = 0xA00003F8u;
 constexpr uint32_t kPmemSize = 0x08000000u;
 constexpr uint32_t kMmioBase = 0xA0000000u;
 constexpr uint32_t kMmioEnd = 0xAFFFFFFFu;
+constexpr uint32_t kSeed4Addr = 0x80003C3Cu;
 
 struct SimArgs {
   std::string img_path;
@@ -499,7 +500,7 @@ struct ICacheModel {
       refill_pulse = false;
     }
 
-    if (!pending && top->icache_miss_req_valid_o) {
+    if (top->icache_miss_req_valid_o && top->icache_miss_req_ready_i) {
       pending = true;
       delay = 2;
       miss_addr = top->icache_miss_req_paddr_o;
@@ -561,7 +562,7 @@ struct DCacheModel {
       refill_pulse = false;
     }
 
-    if (!pending && top->dcache_miss_req_valid_o) {
+    if (top->dcache_miss_req_valid_o && top->dcache_miss_req_ready_i) {
       pending = true;
       delay = 2;
       miss_addr = top->dcache_miss_req_paddr_o;
@@ -747,11 +748,45 @@ int main(int argc, char **argv) {
       uint32_t data = top->dbg_sb_dcache_req_data_o;
       uint32_t op = top->dbg_sb_dcache_req_op_o;
       mem.mem.write_store(addr, data, op);
+      if (args.commit_trace) {
+        std::ios::fmtflags f(std::cout.flags());
+        std::cout << "[stwb  ] cycle=" << cycles
+                  << " addr=0x" << std::hex << addr
+                  << " data=0x" << data
+                  << std::dec
+                  << " op=" << op
+                  << ((addr == kSeed4Addr) ? " <seed4>" : "")
+                  << "\n";
+        std::cout.flags(f);
+      }
       // avoid double printing when difftest also prints the log
       if (addr == kSerialPort && !difftest.enabled()) {
         uint8_t ch = static_cast<uint8_t>(data & 0xFFu);
         std::cout << static_cast<char>(ch) << std::flush;
       }
+    }
+
+    if (args.commit_trace && top->dbg_lsu_ld_fire_o) {
+      std::ios::fmtflags f(std::cout.flags());
+      std::cout << "[ldreq ] cycle=" << cycles
+                << " addr=0x" << std::hex << top->dbg_lsu_ld_req_addr_o
+                << " tag=0x" << static_cast<uint32_t>(top->dbg_lsu_inflight_tag_o)
+                << ((top->dbg_lsu_ld_req_addr_o == kSeed4Addr) ? " <seed4>" : "")
+                << std::dec << "\n";
+      std::cout.flags(f);
+    }
+
+    if (args.commit_trace && top->dbg_lsu_rsp_fire_o) {
+      std::ios::fmtflags f(std::cout.flags());
+      std::cout << "[ldrsp ] cycle=" << cycles
+                << " addr=0x" << std::hex << top->dbg_lsu_inflight_addr_o
+                << " tag=0x" << static_cast<uint32_t>(top->dbg_lsu_inflight_tag_o)
+                << " data=0x" << top->dbg_lsu_ld_rsp_data_o
+                << std::dec
+                << " err=" << static_cast<int>(top->dbg_lsu_ld_rsp_err_o)
+                << ((top->dbg_lsu_inflight_addr_o == kSeed4Addr) ? " <seed4>" : "")
+                << "\n";
+      std::cout.flags(f);
     }
 
     if ((args.commit_trace || args.bru_trace) && top->backend_flush_o) {
@@ -1012,6 +1047,11 @@ int main(int argc, char **argv) {
                   << " lsu_inflight(tag/addr)=0x" << std::hex
                   << static_cast<uint32_t>(top->dbg_lsu_inflight_tag_o)
                   << "/0x" << top->dbg_lsu_inflight_addr_o
+                  << " lsug(busy/alloc_fire/alloc_lane/ld_owner)=0x"
+                  << static_cast<uint32_t>(top->dbg_lsu_grp_lane_busy_o)
+                  << std::dec << "/" << static_cast<int>(top->dbg_lsu_grp_alloc_fire_o)
+                  << "/0x" << std::hex << static_cast<uint32_t>(top->dbg_lsu_grp_alloc_lane_o)
+                  << "/0x" << static_cast<uint32_t>(top->dbg_lsu_grp_ld_owner_o)
                   << " lsu_rs(b/r)=0x" << std::hex
                   << static_cast<uint32_t>(top->dbg_lsu_rs_busy_o) << "/0x"
                   << static_cast<uint32_t>(top->dbg_lsu_rs_ready_o)

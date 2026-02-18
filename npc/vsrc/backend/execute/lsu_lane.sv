@@ -7,11 +7,12 @@ import decode_pkg::*;
 // - Loads: optional store-buffer forwarding, otherwise blocking D$ request
 // - Stores: write address/data into Store Buffer, then complete in ROB
 // - Single in-flight load, no load queue
-module lsu #(
+module lsu_lane #(
     parameter config_pkg::cfg_t Cfg           = config_pkg::EmptyCfg,
     parameter int unsigned      ROB_IDX_WIDTH = 6,
     parameter int unsigned      SB_DEPTH      = 16,
-    parameter int unsigned      SB_IDX_WIDTH  = $clog2(SB_DEPTH)
+    parameter int unsigned      SB_IDX_WIDTH  = $clog2(SB_DEPTH),
+    parameter int unsigned      ECAUSE_WIDTH  = 5
 ) (
     input logic clk_i,
     input logic rst_ni,
@@ -64,7 +65,7 @@ module lsu #(
     output logic [ROB_IDX_WIDTH-1:0] wb_rob_idx_o,
     output logic [     Cfg.XLEN-1:0] wb_data_o,
     output logic                     wb_exception_o,
-    output logic [              4:0] wb_ecause_o,
+    output logic [ECAUSE_WIDTH-1:0]  wb_ecause_o,
     output logic                     wb_is_mispred_o,
     output logic [     Cfg.PLEN-1:0] wb_redirect_pc_o,
     input  logic                     wb_ready_i
@@ -73,9 +74,9 @@ module lsu #(
   // ---------------------------------------------------------
   // Exception cause (RISC-V standard)
   // ---------------------------------------------------------
-  localparam logic [4:0] EXC_LD_ADDR_MISALIGNED = 5'd4;
-  localparam logic [4:0] EXC_LD_ACCESS_FAULT = 5'd5;
-  localparam logic [4:0] EXC_ST_ADDR_MISALIGNED = 5'd6;
+  localparam logic [ECAUSE_WIDTH-1:0] EXC_LD_ADDR_MISALIGNED = ECAUSE_WIDTH'(4);
+  localparam logic [ECAUSE_WIDTH-1:0] EXC_LD_ACCESS_FAULT = ECAUSE_WIDTH'(5);
+  localparam logic [ECAUSE_WIDTH-1:0] EXC_ST_ADDR_MISALIGNED = ECAUSE_WIDTH'(6);
 
   // ---------------------------------------------------------
   // Helpers
@@ -174,7 +175,7 @@ module lsu #(
   // Response holding regs
   logic                [     Cfg.XLEN-1:0] resp_data_q;
   logic                                    resp_exc_q;
-  logic                [              4:0] resp_ecause_q;
+  logic                [ECAUSE_WIDTH-1:0]  resp_ecause_q;
   logic                [ROB_IDX_WIDTH-1:0] resp_tag_q;
 
   // ---------------------------------------------------------
