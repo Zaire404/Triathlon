@@ -144,6 +144,7 @@ module frontend #(
       .update_target_i       (bpu_update_target_i),
       .update_is_call_i      (bpu_update_is_call_i),
       .update_is_ret_i       (bpu_update_is_ret_i),
+      .flush_i               (flush_i),
       .bpu_to_ifu_handshake_o(bpu2ifu_handshake),
       .bpu_to_ifu_o          (bpu_to_ifu_struct)
   );

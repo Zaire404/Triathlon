@@ -823,6 +823,11 @@ int main(int argc, char **argv) {
                 << std::dec
                 << " miss_type=" << miss_type
                 << " miss_subtype=" << miss_subtype
+                << " bpu_arch_ras_count=" << static_cast<uint32_t>(top->dbg_bpu_arch_ras_count_o)
+                << " bpu_spec_ras_count=" << static_cast<uint32_t>(top->dbg_bpu_spec_ras_count_o)
+                << " bpu_arch_ras_top=0x" << std::hex << static_cast<uint32_t>(top->dbg_bpu_arch_ras_top_o)
+                << " bpu_spec_ras_top=0x" << static_cast<uint32_t>(top->dbg_bpu_spec_ras_top_o)
+                << std::dec
                 << " redirect_distance=" << redirect_distance
                 << " killed_uops=" << killed_uops
                 << std::dec << "\n";
