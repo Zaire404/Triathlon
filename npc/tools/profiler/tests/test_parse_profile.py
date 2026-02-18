@@ -206,6 +206,127 @@ class ParseProfileTest(unittest.TestCase):
         self.assertEqual(result["mispredict_cond_count"], 0)
         self.assertEqual(result["mispredict_jump_count"], 0)
 
+    def test_decode_blocked_post_flush_window_metrics(self):
+        mod = load_parser_module()
+        with tempfile.TemporaryDirectory() as td:
+            log = Path(td) / "coremark.log"
+            log.write_text(
+                "\n".join(
+                    [
+                        "[flush ] cycle=10 reason=branch_mispredict source=rob cause=0x0 src_pc=0x80000000 redirect_pc=0x80000010 miss_type=cond_branch redirect_distance=16 killed_uops=4",
+                        "[stall ] cycle=12 no_commit=20 dec(v/r)=1/0 rob_ready=1 flush=0",
+                        "[stall ] cycle=40 no_commit=20 dec(v/r)=1/0 rob_ready=1 flush=0",
+                        "IPC=0.500000 CPI=2.000000 cycles=100 commits=50",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            result = mod.parse_single_log(log)
+
+        self.assertEqual(result["stall_decode_blocked_total"], 2)
+        self.assertEqual(result["stall_decode_blocked_post_flush"], 1)
+        self.assertAlmostEqual(result["stall_decode_blocked_post_flush_ratio"], 0.5)
+        self.assertEqual(result["stall_decode_blocked_post_branch_flush"], 1)
+        self.assertAlmostEqual(result["stall_decode_blocked_post_branch_flush_ratio"], 0.5)
+        self.assertEqual(result["stall_post_flush_window_cycles"], 16)
+
+    def test_decode_blocked_detail_breakdown(self):
+        mod = load_parser_module()
+        with tempfile.TemporaryDirectory() as td:
+            log = Path(td) / "coremark.log"
+            log.write_text(
+                "\n".join(
+                    [
+                        "[stall ] cycle=10 no_commit=20 dec(v/r)=1/0 rob_ready=1 sb_alloc(req/ready/fire)=0x1/0/0",
+                        "[stall ] cycle=20 no_commit=20 dec(v/r)=1/0 rob_ready=1 lsu_rs_head(v/idx/dst)=1/0x2/0x3 lsu_rs_head(rs1r/rs2r/has1/has2)=0/1/1/0",
+                        "[stall ] cycle=30 no_commit=20 dec(v/r)=1/0 rob_ready=1 lsu_rs(b/r)=0xff/0x0",
+                        "[stall ] cycle=40 no_commit=20 dec(v/r)=1/0 rob_ready=1 lsu_rs_head(rs1r/rs2r/has1/has2)=1/0/1/1 rob_q2(v/idx/fu/comp/st/pc)=1/0x1/0x2/0/0/0x80000010",
+                        "[stall ] cycle=50 no_commit=20 dec(v/r)=1/0 rob_ready=1",
+                        "IPC=0.500000 CPI=2.000000 cycles=100 commits=50",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            result = mod.parse_single_log(log)
+
+        self.assertEqual(result["stall_decode_blocked_total"], 5)
+        detail = result["stall_decode_blocked_detail"]
+        self.assertEqual(detail["sb_alloc_blocked"], 1)
+        self.assertEqual(detail["lsu_operand_wait"], 1)
+        self.assertEqual(detail["lsu_rs_pressure"], 1)
+        self.assertEqual(detail["rob_q2_wait"], 1)
+        self.assertEqual(detail["other"], 1)
+
+    def test_decode_blocked_detail_rob_q2_without_rs2_dependency(self):
+        mod = load_parser_module()
+        with tempfile.TemporaryDirectory() as td:
+            log = Path(td) / "coremark.log"
+            log.write_text(
+                "\n".join(
+                    [
+                        "[stall ] cycle=40 no_commit=20 dec(v/r)=1/0 rob_ready=1 lsu_rs_head(rs1r/rs2r/has1/has2)=1/1/1/0 rob_q2(v/idx/fu/comp/st/pc)=1/0x1/0x2/0/0/0x80000010",
+                        "IPC=0.500000 CPI=2.000000 cycles=100 commits=50",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            result = mod.parse_single_log(log)
+
+        detail = result["stall_decode_blocked_detail"]
+        self.assertEqual(detail["other"], 1)
+        self.assertEqual(detail.get("rob_q2_wait", 0), 0)
+
+    def test_decode_blocked_detail_secondary_split(self):
+        mod = load_parser_module()
+        with tempfile.TemporaryDirectory() as td:
+            log = Path(td) / "coremark.log"
+            log.write_text(
+                "\n".join(
+                    [
+                        "[stall ] cycle=10 no_commit=20 dec(v/r)=1/0 rob_ready=1 gate(alu/bru/lsu/mdu/csr)=1/1/0/1/1 need(alu/bru/lsu/mdu/csr)=0/0/1/0/0 free(alu/bru/lsu/csr)=8/8/0/8",
+                        "[stall ] cycle=20 no_commit=20 dec(v/r)=1/0 rob_ready=1 gate(alu/bru/lsu/mdu/csr)=0/1/1/1/1 need(alu/bru/lsu/mdu/csr)=1/0/0/0/0 free(alu/bru/lsu/csr)=0/8/8/8",
+                        "[stall ] cycle=30 no_commit=20 dec(v/r)=1/0 rob_ready=1 lsu_sm=1 lsu_ld_fire=0 lsu_rsp_fire=0",
+                        "[stall ] cycle=40 no_commit=20 dec(v/r)=1/0 rob_ready=1 lsu_sm=2 lsu_ld_fire=0 lsu_rsp_fire=0",
+                        "[stall ] cycle=50 no_commit=20 dec(v/r)=1/0 rob_ready=1",
+                        "IPC=0.500000 CPI=2.000000 cycles=100 commits=50",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            result = mod.parse_single_log(log)
+
+        detail = result["stall_decode_blocked_detail"]
+        self.assertEqual(detail["dispatch_gate_lsu"], 1)
+        self.assertEqual(detail["dispatch_gate_alu"], 1)
+        self.assertEqual(detail["lsu_wait_ld_req"], 1)
+        self.assertEqual(detail["lsu_wait_ld_rsp"], 1)
+        self.assertEqual(detail["other"], 1)
+
+    def test_decode_blocked_detail_pending_replay_split(self):
+        mod = load_parser_module()
+        with tempfile.TemporaryDirectory() as td:
+            log = Path(td) / "coremark.log"
+            log.write_text(
+                "\n".join(
+                    [
+                        "[stall ] cycle=10 no_commit=20 dec(v/r)=1/0 rob_ready=1 ren(pend/src/sel/fire/rdy)=1/2/1/1/1",
+                        "[stall ] cycle=20 no_commit=20 dec(v/r)=1/0 rob_ready=1 ren(pend/src/sel/fire/rdy)=1/1/0/0/0",
+                        "IPC=0.500000 CPI=2.000000 cycles=100 commits=50",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            result = mod.parse_single_log(log)
+
+        detail = result["stall_decode_blocked_detail"]
+        self.assertEqual(detail["pending_replay_progress"], 1)
+        self.assertEqual(detail["pending_replay_wait"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

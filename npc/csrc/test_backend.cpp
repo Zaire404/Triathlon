@@ -102,6 +102,7 @@ struct MemModel {
   uint32_t miss_way = 0;
   uint32_t pattern = 0;
   bool refill_pulse = false;
+  bool block_miss_req = false;
 
   void reset() {
     pending = false;
@@ -117,7 +118,7 @@ struct MemModel {
   }
 
   void drive(Vtb_backend *top) {
-    top->dcache_miss_req_ready_i = 1;
+    top->dcache_miss_req_ready_i = block_miss_req ? 0 : 1;
     top->dcache_wb_req_ready_i = 1;
 
     if (refill_pulse) {
@@ -240,6 +241,32 @@ static void send_group(Vtb_backend *top, MemModel &mem,
     }
   }
   top->frontend_ibuf_valid = 0;
+}
+
+static bool try_send_group_limited(Vtb_backend *top, MemModel &mem,
+                                   std::array<uint32_t, 32> &rf,
+                                   std::vector<uint32_t> &commit_log,
+                                   uint32_t base_pc,
+                                   const std::array<uint32_t, 4> &instrs,
+                                   int max_cycles) {
+  for (int cyc = 0; cyc < max_cycles; cyc++) {
+    top->frontend_ibuf_valid = 1;
+    top->frontend_ibuf_pc = base_pc;
+    top->frontend_ibuf_slot_valid = 0;
+    for (int i = 0; i < INSTR_PER_FETCH; i++) {
+      top->frontend_ibuf_instrs[i] = instrs[i];
+      top->frontend_ibuf_slot_valid |= (1u << i);
+      top->frontend_ibuf_pred_npc[i] = base_pc + static_cast<uint32_t>((i + 1) * 4);
+    }
+    bool ready = tick_sample_frontend_ready(top, mem);
+    update_commits(top, rf, commit_log);
+    if (ready) {
+      top->frontend_ibuf_valid = 0;
+      return true;
+    }
+  }
+  top->frontend_ibuf_valid = 0;
+  return false;
 }
 
 static void send_group_with_pred(Vtb_backend *top, MemModel &mem,
@@ -584,6 +611,41 @@ static void test_flush_stress_no_wrong_path_commit(Vtb_backend *top, MemModel &m
          "Flush stress: additional wrong-path writes are squashed");
 }
 
+static void test_partial_dispatch_accepts_non_lsu_prefix_when_lsu_blocked(Vtb_backend *top, MemModel &mem) {
+  std::array<uint32_t, 32> rf{};
+  std::vector<uint32_t> commits;
+
+  reset(top, mem);
+  mem.block_miss_req = true;
+
+  const std::array<uint32_t, 4> load_group = {
+      insn_lw(10, 0, 0x100),
+      insn_lw(11, 0, 0x104),
+      insn_lw(12, 0, 0x108),
+      insn_lw(13, 0, 0x10c)};
+
+  bool saw_backpressure = false;
+  for (int g = 0; g < 32; g++) {
+    uint32_t pc = 0xD000 + static_cast<uint32_t>(g * 16);
+    bool accepted = try_send_group_limited(top, mem, rf, commits, pc, load_group, 20);
+    if (!accepted) {
+      saw_backpressure = true;
+      break;
+    }
+  }
+  expect(saw_backpressure, "LSU pressure: load-only groups eventually blocked");
+
+  const std::array<uint32_t, 4> mixed_group = {
+      insn_addi(1, 0, 1),
+      insn_addi(2, 0, 2),
+      insn_lw(3, 0, 0x110),
+      insn_lw(4, 0, 0x114)};
+
+  bool mixed_accepted = try_send_group_limited(top, mem, rf, commits, 0xE000, mixed_group, 40);
+  expect(mixed_accepted, "Partial dispatch: mixed group accepted under LSU pressure");
+  mem.block_miss_req = false;
+}
+
 int main(int argc, char **argv) {
   Verilated::commandArgs(argc, argv);
   Vtb_backend *top = new Vtb_backend;
@@ -597,6 +659,7 @@ int main(int argc, char **argv) {
   test_load_miss_refill(top, mem);
   test_call_ret_update(top, mem);
   test_flush_stress_no_wrong_path_commit(top, mem);
+  test_partial_dispatch_accepts_non_lsu_prefix_when_lsu_blocked(top, mem);
 
   std::cout << ANSI_RES_GRN << "--- [ALL BACKEND TESTS PASSED] ---" << ANSI_RES_RST << std::endl;
   delete top;

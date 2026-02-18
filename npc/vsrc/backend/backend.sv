@@ -102,6 +102,7 @@ module backend #(
   logic dec_valid;
   logic [DISPATCH_WIDTH-1:0] dec_slot_valid;
   decode_pkg::uop_t [DISPATCH_WIDTH-1:0] dec_uops;
+  logic decode_backend_ready;
 
   decoder #(
       .Cfg(Cfg),
@@ -118,7 +119,7 @@ module backend #(
       .ibuf_pred_npc_i  (decode_ibuf_pred_npc),
 
       .dec2backend_valid_o(dec_valid),
-      .backend2dec_ready_i(rename_ready),
+      .backend2dec_ready_i(decode_backend_ready),
       .dec_slot_valid_o   (dec_slot_valid),
       .dec_uops_o         (dec_uops)
   );
@@ -380,6 +381,156 @@ module backend #(
   logic                                                    rob_ready_gated;
   logic            [DISPATCH_WIDTH-1:0]                    rs1_tag_allocated;
   logic            [DISPATCH_WIDTH-1:0]                    rs2_tag_allocated;
+  logic            [DISPATCH_WIDTH-1:0]                    rename_src_valid;
+  decode_pkg::uop_t [DISPATCH_WIDTH-1:0]                   rename_src_uops;
+  logic            [DISPATCH_WIDTH-1:0]                    rename_sel_valid;
+  decode_pkg::uop_t [DISPATCH_WIDTH-1:0]                   rename_sel_uops;
+  logic            [DISPATCH_WIDTH-1:0]                    rename_left_valid;
+  decode_pkg::uop_t [DISPATCH_WIDTH-1:0]                   rename_left_uops;
+  logic            [DISPATCH_WIDTH-1:0]                    rename_pending_valid_q;
+  logic            [DISPATCH_WIDTH-1:0]                    rename_pending_valid_d;
+  decode_pkg::uop_t [DISPATCH_WIDTH-1:0]                   rename_pending_uops_q;
+  decode_pkg::uop_t [DISPATCH_WIDTH-1:0]                   rename_pending_uops_d;
+  logic                                                     rename_src_from_pending;
+  logic [2:0]                                              rename_sel_count;
+  logic                                                     rename_fire;
+
+  logic [$clog2(RS_DEPTH+1)-1:0]                           alu_free_count;
+  logic [$clog2(RS_DEPTH+1)-1:0]                           bru_free_count;
+  logic [$clog2(RS_DEPTH+1)-1:0]                           lsu_free_count;
+  logic [$clog2(RS_DEPTH+1)-1:0]                           csr_free_count;
+
+  logic                                                     alu_issue_ready;
+  logic                                                     bru_issue_ready;
+  logic                                                     lsu_issue_ready;
+  logic                                                     csr_issue_ready;
+
+  logic                                                     alu_can_accept;
+  logic                                                     bru_can_accept;
+  logic                                                     lsu_can_accept;
+  logic                                                     mdu_can_accept;
+  logic                                                     csr_can_accept;
+
+  always_comb begin
+    int left_k;
+    int alu_budget;
+    int bru_budget;
+    int lsu_budget;
+    int mdu_budget;
+    int csr_budget;
+    logic stop_accept;
+    logic can_take;
+
+    rename_src_from_pending = (|rename_pending_valid_q);
+    rename_sel_count = '0;
+
+    for (int i = 0; i < DISPATCH_WIDTH; i++) begin
+      if (rename_src_from_pending) begin
+        rename_src_valid[i] = rename_pending_valid_q[i];
+        rename_src_uops[i]  = rename_pending_uops_q[i];
+      end else begin
+        rename_src_valid[i] = dec_slot_valid[i];
+        rename_src_uops[i]  = dec_uops[i];
+      end
+      rename_sel_valid[i] = 1'b0;
+      rename_sel_uops[i]  = rename_src_uops[i];
+      rename_left_valid[i] = 1'b0;
+      rename_left_uops[i]  = '0;
+    end
+
+    alu_budget = alu_free_count;
+    bru_budget = bru_free_count;
+    lsu_budget = lsu_free_count;
+    mdu_budget = 0;
+    csr_budget = csr_free_count;
+    stop_accept = 1'b0;
+
+    for (int i = 0; i < DISPATCH_WIDTH; i++) begin
+      can_take = 1'b0;
+      if (!stop_accept && rename_src_valid[i]) begin
+        unique case (rename_src_uops[i].fu)
+          FU_ALU: begin
+            can_take = (alu_budget > 0);
+            if (can_take) alu_budget--;
+          end
+          FU_BRANCH: begin
+            can_take = (bru_budget > 0);
+            if (can_take) bru_budget--;
+          end
+          FU_LSU: begin
+            can_take = (lsu_budget > 0);
+            if (can_take) lsu_budget--;
+          end
+          FU_MUL,
+          FU_DIV: begin
+            can_take = (mdu_budget > 0);
+            if (can_take) mdu_budget--;
+          end
+          FU_CSR: begin
+            can_take = (csr_budget > 0);
+            if (can_take) csr_budget--;
+          end
+          default: begin
+            can_take = (alu_budget > 0);
+            if (can_take) alu_budget--;
+          end
+        endcase
+
+        if (can_take) begin
+          rename_sel_valid[i] = 1'b1;
+          rename_sel_count++;
+        end else begin
+          stop_accept = 1'b1;
+        end
+      end else if (rename_src_valid[i] == 1'b0) begin
+        stop_accept = 1'b1;
+      end
+    end
+
+    left_k = 0;
+    for (int i = 0; i < DISPATCH_WIDTH; i++) begin
+      if (rename_src_valid[i] && !rename_sel_valid[i]) begin
+        rename_left_valid[left_k] = 1'b1;
+        rename_left_uops[left_k] = rename_src_uops[i];
+        left_k++;
+      end
+    end
+  end
+
+  always_comb begin
+    rename_fire = rename_ready && (rename_sel_count != 0);
+    decode_backend_ready = !rename_src_from_pending && rename_ready &&
+                           (!dec_valid || (rename_sel_count != 0));
+    for (int i = 0; i < DISPATCH_WIDTH; i++) begin
+      rename_pending_valid_d[i] = rename_pending_valid_q[i];
+      rename_pending_uops_d[i]  = rename_pending_uops_q[i];
+    end
+    if (rename_fire) begin
+      for (int i = 0; i < DISPATCH_WIDTH; i++) begin
+        rename_pending_valid_d[i] = rename_left_valid[i];
+        rename_pending_uops_d[i]  = rename_left_uops[i];
+      end
+    end
+  end
+
+  always_ff @(posedge clk_i or negedge rst_ni) begin
+    if (!rst_ni) begin
+      rename_pending_valid_q <= '0;
+      for (int i = 0; i < DISPATCH_WIDTH; i++) begin
+        rename_pending_uops_q[i] <= '0;
+      end
+    end else if (backend_flush) begin
+      rename_pending_valid_q <= '0;
+      for (int i = 0; i < DISPATCH_WIDTH; i++) begin
+        rename_pending_uops_q[i] <= '0;
+      end
+    end else begin
+      rename_pending_valid_q <= rename_pending_valid_d;
+      for (int i = 0; i < DISPATCH_WIDTH; i++) begin
+        rename_pending_uops_q[i] <= rename_pending_uops_d[i];
+      end
+    end
+  end
 
   rename #(
       .Cfg(Cfg),
@@ -389,8 +540,8 @@ module backend #(
       .clk_i (clk_i),
       .rst_ni(rst_ni),
 
-      .dec_valid_i(dec_slot_valid),
-      .dec_uops_i(dec_uops),
+      .dec_valid_i(rename_sel_valid),
+      .dec_uops_i(rename_sel_uops),
       .rename_ready_o(rename_ready),
 
       .rob_dispatch_valid_o(rob_dispatch_valid),
@@ -405,7 +556,7 @@ module backend #(
       .rob_dispatch_is_store_o(rob_dispatch_is_store),
       .rob_dispatch_sb_id_o(rob_dispatch_sb_id),
 
-      .rob_ready_i   (rob_ready_gated),
+      .rob_ready_i   (rob_ready),
       .rob_tail_ptr_i(rob_dispatch_rob_index[0]),
 
       .sb_alloc_req_o(sb_alloc_req),
@@ -429,7 +580,7 @@ module backend #(
   );
 
   // Store Buffer allocation fires only when rename accepts the bundle.
-  assign sb_alloc_fire = rename_ready && (|sb_alloc_req);
+  assign sb_alloc_fire = rename_fire && (|sb_alloc_req);
 
   // =========================================================
   // ARF (8 read ports)
@@ -558,8 +709,8 @@ module backend #(
     csr_need_cnt = 0;
 
     for (int i = 0; i < DISPATCH_WIDTH; i++) begin
-      if (dec_slot_valid[i]) begin
-        unique case (dec_uops[i].fu)
+      if (rename_src_valid[i]) begin
+        unique case (rename_src_uops[i].fu)
           FU_ALU:    alu_need_cnt++;
           FU_BRANCH: bru_need_cnt++;
           FU_LSU:    lsu_need_cnt++;
@@ -672,10 +823,10 @@ module backend #(
 
     for (int i = 0; i < DISPATCH_WIDTH; i++) begin
       if (issue_valid[i]) begin
-        unique case (dec_uops[i].fu)
+        unique case (rename_sel_uops[i].fu)
           FU_ALU: begin
             alu_dispatch_valid[alu_k] = 1'b1;
-            alu_dispatch_op[alu_k]    = dec_uops[i];
+            alu_dispatch_op[alu_k]    = rename_sel_uops[i];
             alu_dispatch_dst[alu_k]   = issue_rd_rob_idx[i];
             alu_dispatch_v1[alu_k]    = issue_v1[i];
             alu_dispatch_q1[alu_k]    = issue_q1[i];
@@ -687,7 +838,7 @@ module backend #(
           end
           FU_BRANCH: begin
             bru_dispatch_valid[bru_k] = 1'b1;
-            bru_dispatch_op[bru_k]    = dec_uops[i];
+            bru_dispatch_op[bru_k]    = rename_sel_uops[i];
             bru_dispatch_dst[bru_k]   = issue_rd_rob_idx[i];
             bru_dispatch_v1[bru_k]    = issue_v1[i];
             bru_dispatch_q1[bru_k]    = issue_q1[i];
@@ -699,7 +850,7 @@ module backend #(
           end
           FU_LSU: begin
             lsu_dispatch_valid[lsu_k] = 1'b1;
-            lsu_dispatch_op[lsu_k]    = dec_uops[i];
+            lsu_dispatch_op[lsu_k]    = rename_sel_uops[i];
             lsu_dispatch_dst[lsu_k]   = issue_rd_rob_idx[i];
             lsu_dispatch_v1[lsu_k]    = issue_v1[i];
             lsu_dispatch_q1[lsu_k]    = issue_q1[i];
@@ -713,7 +864,7 @@ module backend #(
           end
           FU_CSR: begin
             csr_dispatch_valid[csr_k] = 1'b1;
-            csr_dispatch_op[csr_k]    = dec_uops[i];
+            csr_dispatch_op[csr_k]    = rename_sel_uops[i];
             csr_dispatch_dst[csr_k]   = issue_rd_rob_idx[i];
             csr_dispatch_v1[csr_k]    = issue_v1[i];
             csr_dispatch_q1[csr_k]    = issue_q1[i];
@@ -725,7 +876,7 @@ module backend #(
           end
           default: begin
             alu_dispatch_valid[alu_k] = 1'b1;
-            alu_dispatch_op[alu_k]    = dec_uops[i];
+            alu_dispatch_op[alu_k]    = rename_sel_uops[i];
             alu_dispatch_dst[alu_k]   = issue_rd_rob_idx[i];
             alu_dispatch_v1[alu_k]    = issue_v1[i];
             alu_dispatch_q1[alu_k]    = issue_q1[i];
@@ -743,16 +894,6 @@ module backend #(
   // =========================================================
   // Issue Queues
   // =========================================================
-  logic [$clog2(RS_DEPTH+1)-1:0] alu_free_count;
-  logic [$clog2(RS_DEPTH+1)-1:0] bru_free_count;
-  logic [$clog2(RS_DEPTH+1)-1:0] lsu_free_count;
-  logic [$clog2(RS_DEPTH+1)-1:0] csr_free_count;
-
-  logic alu_issue_ready;
-  logic bru_issue_ready;
-  logic lsu_issue_ready;
-  logic csr_issue_ready;
-
   // CDB broadcast
   logic [WB_WIDTH-1:0] cdb_valid;
   logic [ROB_IDX_WIDTH-1:0] cdb_tag[0:WB_WIDTH-1];
@@ -929,12 +1070,6 @@ module backend #(
 
 
   // Backpressure calculation (MDU not implemented yet)
-  logic alu_can_accept;
-  logic bru_can_accept;
-  logic lsu_can_accept;
-  logic mdu_can_accept;
-  logic csr_can_accept;
-
   always_comb begin
     alu_can_accept = (alu_need_cnt == 0) ? 1'b1 : (alu_free_count >= alu_need_cnt);
     bru_can_accept = (bru_need_cnt == 0) ? 1'b1 : (bru_free_count >= bru_need_cnt);

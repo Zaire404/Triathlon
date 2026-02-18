@@ -23,6 +23,7 @@ KV_RE = re.compile(r"([a-zA-Z_][a-zA-Z0-9_]*)=([^\s]+)")
 FLUSH_REASON_ALLOWLIST = {"branch_mispredict", "exception", "rob_other", "external", "unknown"}
 FLUSH_SOURCE_ALLOWLIST = {"rob", "external", "unknown"}
 MISS_TYPE_ALLOWLIST = {"cond_branch", "jump", "return", "control_unknown", "none"}
+STALL_POST_FLUSH_WINDOW_CYCLES = 16
 
 
 def _safe_div(numer: float, denom: float) -> float:
@@ -138,6 +139,90 @@ def _classify_stall(line: str) -> str:
     return "other"
 
 
+def _extract_cycle(line: str) -> int | None:
+    m = re.search(r"\bcycle=(\d+)", line)
+    if not m:
+        return None
+    return int(m.group(1))
+
+
+def _classify_decode_blocked_detail(line: str) -> str:
+    rs2_ready: int | None = None
+    has_rs2: int | None = None
+
+    m = re.search(r"ren\(pend/src/sel/fire/rdy\)=(\d)/(\d+)/(\d+)/(\d)/(\d)", line)
+    if m:
+        pend = int(m.group(1))
+        sel = int(m.group(3))
+        fire = int(m.group(4))
+        if pend == 1:
+            if fire == 1 and sel > 0:
+                return "pending_replay_progress"
+            return "pending_replay_wait"
+
+    m = re.search(r"sb_alloc\(req/ready/fire\)=0x([0-9a-fA-F]+)/(\d)/(\d)", line)
+    if m:
+        alloc_req = int(m.group(1), 16)
+        alloc_ready = int(m.group(2))
+        if alloc_req != 0 and alloc_ready == 0:
+            return "sb_alloc_blocked"
+
+    m_head = re.search(r"lsu_rs_head\(v/idx/dst\)=(\d)/0x[0-9a-fA-F]+/0x[0-9a-fA-F]+", line)
+    m_dep = re.search(r"lsu_rs_head\(rs1r/rs2r/has1/has2\)=(\d)/(\d)/(\d)/(\d)", line)
+    if m_dep:
+        rs2_ready = int(m_dep.group(2))
+        has_rs2 = int(m_dep.group(4))
+    if m_head and m_dep and int(m_head.group(1)) == 1:
+        rs1_ready = int(m_dep.group(1))
+        rs2_ready = int(m_dep.group(2))
+        has_rs1 = int(m_dep.group(3))
+        has_rs2 = int(m_dep.group(4))
+        if (has_rs1 and not rs1_ready) or (has_rs2 and not rs2_ready):
+            return "lsu_operand_wait"
+
+    m = re.search(r"lsu_rs\(b/r\)=0x([0-9a-fA-F]+)/0x([0-9a-fA-F]+)", line)
+    if m:
+        busy_mask = int(m.group(1), 16)
+        ready_mask = int(m.group(2), 16)
+        if busy_mask != 0 and ready_mask == 0:
+            return "lsu_rs_pressure"
+
+    m = re.search(r"rob_q2\(v/idx/fu/comp/st/pc\)=(\d)/0x[0-9a-fA-F]+/0x[0-9a-fA-F]+/(\d)/(\d)/0x[0-9a-fA-F]+", line)
+    if m:
+        q2_valid = int(m.group(1))
+        q2_complete = int(m.group(2))
+        if q2_valid == 1 and q2_complete == 0 and has_rs2 == 1 and rs2_ready == 0:
+            return "rob_q2_wait"
+
+    m_gate = re.search(r"gate\(alu/bru/lsu/mdu/csr\)=(\d)/(\d)/(\d)/(\d)/(\d)", line)
+    if m_gate:
+        gate = [int(m_gate.group(i)) for i in range(1, 6)]
+        need = None
+        m_need = re.search(r"need\(alu/bru/lsu/mdu/csr\)=(\d+)/(\d+)/(\d+)/(\d+)/(\d+)", line)
+        if m_need:
+            need = [int(m_need.group(i)) for i in range(1, 6)]
+        gate_priority = [(2, "lsu"), (0, "alu"), (1, "bru"), (4, "csr"), (3, "mdu")]
+        if need is not None:
+            for idx, fu in gate_priority:
+                if gate[idx] == 0 and need[idx] > 0:
+                    return f"dispatch_gate_{fu}"
+        for idx, fu in gate_priority:
+            if gate[idx] == 0:
+                return f"dispatch_gate_{fu}"
+
+    m_sm = re.search(r"\slsu_sm=(\d+)", line)
+    if m_sm:
+        sm = int(m_sm.group(1))
+        m_ld_fire = re.search(r"\slsu_ld_fire=(\d)", line)
+        m_rsp_fire = re.search(r"\slsu_rsp_fire=(\d)", line)
+        if sm == 1 and m_ld_fire and int(m_ld_fire.group(1)) == 0:
+            return "lsu_wait_ld_req"
+        if sm == 2 and m_rsp_fire and int(m_rsp_fire.group(1)) == 0:
+            return "lsu_wait_ld_rsp"
+
+    return "other"
+
+
 def _commit_histogram(cycles: int, commit_by_cycle: dict[int, int]) -> dict[int, int]:
     hist = Counter(commit_by_cycle.values())
     if cycles > 0:
@@ -246,6 +331,12 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
     commit_seq: list[tuple[int, int, int, int]] = []
 
     stall_counter: Counter[str] = Counter()
+    stall_decode_blocked_total = 0
+    stall_decode_blocked_post_flush = 0
+    stall_decode_blocked_post_branch_flush = 0
+    stall_decode_blocked_detail: Counter[str] = Counter()
+    last_flush_cycle: int | None = None
+    last_branch_flush_cycle: int | None = None
     hotspot_pc: Counter[int] = Counter()
     hotspot_inst: Counter[int] = Counter()
 
@@ -268,6 +359,7 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
             flush_line = raw[flush_pos:]
             flush_count += 1
             kv = _parse_kv_pairs(flush_line)
+            flush_cycle = _extract_cycle(flush_line)
             reason_raw = kv.get("reason", "unknown")
             source_raw = kv.get("source", "unknown")
             miss_type_raw = kv.get("miss_subtype", kv.get("miss_type", "none"))
@@ -283,6 +375,8 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
             reason = _normalize_flush_reason(reason_raw, flush_line)
             source = _normalize_flush_source(source_raw)
             miss_type = _normalize_miss_type(miss_type_raw)
+            if flush_cycle is not None:
+                last_flush_cycle = flush_cycle
 
             flush_reason_hist[reason] += 1
             flush_source_hist[source] += 1
@@ -293,6 +387,8 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
             if reason == "branch_mispredict":
                 mispredict_flush_count += 1
                 wrong_path_kill_uops += killed_uops
+                if flush_cycle is not None:
+                    last_branch_flush_cycle = flush_cycle
                 if miss_type == "cond_branch":
                     mispredict_cond_count += 1
                 elif miss_type == "jump":
@@ -348,7 +444,26 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
             continue
 
         if STALL_RE.match(raw):
-            stall_counter[_classify_stall(raw)] += 1
+            stall_kind = _classify_stall(raw)
+            stall_counter[stall_kind] += 1
+            if stall_kind == "decode_blocked":
+                stall_decode_blocked_total += 1
+                stall_decode_blocked_detail[_classify_decode_blocked_detail(raw)] += 1
+                stall_cycle = _extract_cycle(raw)
+                if (
+                    stall_cycle is not None
+                    and last_flush_cycle is not None
+                    and stall_cycle >= last_flush_cycle
+                    and (stall_cycle - last_flush_cycle) <= STALL_POST_FLUSH_WINDOW_CYCLES
+                ):
+                    stall_decode_blocked_post_flush += 1
+                if (
+                    stall_cycle is not None
+                    and last_branch_flush_cycle is not None
+                    and stall_cycle >= last_branch_flush_cycle
+                    and (stall_cycle - last_branch_flush_cycle) <= STALL_POST_FLUSH_WINDOW_CYCLES
+                ):
+                    stall_decode_blocked_post_branch_flush += 1
 
     commit_width_hist = _commit_histogram(cycles, commit_by_cycle)
     control = _control_flow_metrics(commit_seq)
@@ -436,6 +551,15 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
         "commit_width_hist": commit_width_hist,
         "stall_category": dict(stall_counter),
         "stall_total": sum(stall_counter.values()),
+        "stall_post_flush_window_cycles": STALL_POST_FLUSH_WINDOW_CYCLES,
+        "stall_decode_blocked_total": stall_decode_blocked_total,
+        "stall_decode_blocked_post_flush": stall_decode_blocked_post_flush,
+        "stall_decode_blocked_post_flush_ratio": _safe_div(stall_decode_blocked_post_flush, stall_decode_blocked_total),
+        "stall_decode_blocked_post_branch_flush": stall_decode_blocked_post_branch_flush,
+        "stall_decode_blocked_post_branch_flush_ratio": _safe_div(
+            stall_decode_blocked_post_branch_flush, stall_decode_blocked_total
+        ),
+        "stall_decode_blocked_detail": dict(stall_decode_blocked_detail),
         "top_pc": [{"pc": f"0x{pc:08x}", "count": cnt} for pc, cnt in hotspot_pc.most_common(10)],
         "top_inst": [{"inst": f"0x{inst:08x}", "count": cnt} for inst, cnt in hotspot_inst.most_common(10)],
         "control": control,
@@ -475,6 +599,13 @@ def _bench_markdown(name: str, data: dict[str, Any]) -> str:
     hist = data.get("commit_width_hist", {})
     stall = data.get("stall_category", {})
     stall_total = data.get("stall_total", 0)
+    stall_post_flush_window = data.get("stall_post_flush_window_cycles", STALL_POST_FLUSH_WINDOW_CYCLES)
+    decode_blocked_total = data.get("stall_decode_blocked_total", 0)
+    decode_blocked_post_flush = data.get("stall_decode_blocked_post_flush", 0)
+    decode_blocked_post_flush_ratio = data.get("stall_decode_blocked_post_flush_ratio", 0.0)
+    decode_blocked_post_branch_flush = data.get("stall_decode_blocked_post_branch_flush", 0)
+    decode_blocked_post_branch_flush_ratio = data.get("stall_decode_blocked_post_branch_flush_ratio", 0.0)
+    decode_blocked_detail = data.get("stall_decode_blocked_detail", {})
     control = data.get("control", {})
     flush_hist = data.get("flush_reason_histogram", {})
     flush_src_hist = data.get("flush_source_histogram", {})
@@ -513,6 +644,22 @@ def _bench_markdown(name: str, data: dict[str, Any]) -> str:
     else:
         for key, val in sorted(stall.items(), key=lambda x: x[1], reverse=True):
             lines.append(f"- {key}: `{val}` ({_fmt_pct(val, stall_total)})")
+
+    lines.append("")
+    lines.append("Decode-Blocked Correlation:")
+    if decode_blocked_total == 0:
+        lines.append("- (no decode_blocked stall samples)")
+    else:
+        lines.append(
+            f"- post_flush<={stall_post_flush_window}c: `{decode_blocked_post_flush}` / `{decode_blocked_total}` ({decode_blocked_post_flush_ratio * 100.0:.2f}%)"
+        )
+        lines.append(
+            f"- post_branch_flush<={stall_post_flush_window}c: `{decode_blocked_post_branch_flush}` / `{decode_blocked_total}` ({decode_blocked_post_branch_flush_ratio * 100.0:.2f}%)"
+        )
+        if decode_blocked_detail:
+            lines.append("- detail_breakdown:")
+            for key, val in sorted(decode_blocked_detail.items(), key=lambda x: x[1], reverse=True):
+                lines.append(f"  - {key}: `{val}` ({_fmt_pct(val, decode_blocked_total)})")
 
     lines.append("")
     lines.append("Flush Reasons:")
