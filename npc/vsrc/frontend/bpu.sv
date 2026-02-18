@@ -4,6 +4,8 @@ module bpu #(
     parameter int unsigned BTB_ENTRIES = 64,
     parameter int unsigned BHT_ENTRIES = 128,
     parameter int unsigned RAS_DEPTH = 16,
+    parameter bit BTB_HASH_ENABLE = 1'b1,
+    parameter bit BHT_HASH_ENABLE = 1'b1,
     parameter bit USE_GSHARE = 1'b0,
     parameter int unsigned GHR_BITS = 8
 ) (
@@ -41,6 +43,7 @@ module bpu #(
   localparam int unsigned GHR_W = (GHR_BITS > 0) ? GHR_BITS : 1;
   logic [BTB_ENTRIES-1:0] btb_valid_q;
   logic [BTB_ENTRIES-1:0] btb_is_cond_q;
+  logic [BTB_ENTRIES-1:0] btb_is_backward_q;
   logic [BTB_ENTRIES-1:0] btb_is_call_q;
   logic [BTB_ENTRIES-1:0] btb_is_ret_q;
   logic [BTB_ENTRIES-1:0] btb_use_ras_q;
@@ -58,7 +61,16 @@ module bpu #(
   logic [GHR_W-1:0] ghr_q;
 
   function automatic logic [BTB_IDX_W-1:0] btb_index(input logic [Cfg.PLEN-1:0] pc);
-    btb_index = pc[2 +: BTB_IDX_W];
+    logic [BTB_IDX_W-1:0] pc_idx;
+    logic [BTB_IDX_W-1:0] fold_idx;
+    begin
+      pc_idx = pc[2 +: BTB_IDX_W];
+      fold_idx = '0;
+      for (int i = 2 + BTB_IDX_W; i < Cfg.PLEN; i++) begin
+        fold_idx[(i - (2 + BTB_IDX_W)) % BTB_IDX_W] ^= pc[i];
+      end
+      btb_index = BTB_HASH_ENABLE ? (pc_idx ^ fold_idx) : pc_idx;
+    end
   endfunction
 
   function automatic logic [BTB_TAG_W-1:0] btb_tag(input logic [Cfg.PLEN-1:0] pc);
@@ -68,14 +80,21 @@ module bpu #(
   function automatic logic [BHT_IDX_W-1:0] bht_index(input logic [Cfg.PLEN-1:0] pc,
                                                       input logic [GHR_W-1:0] ghr);
     logic [BHT_IDX_W-1:0] pc_idx;
+    logic [BHT_IDX_W-1:0] fold_idx;
+    logic [BHT_IDX_W-1:0] mixed_pc_idx;
     logic [BHT_IDX_W-1:0] ghr_idx;
     begin
       pc_idx = pc[2+:BHT_IDX_W];
+      fold_idx = '0;
+      for (int i = 2 + BHT_IDX_W; i < Cfg.PLEN; i++) begin
+        fold_idx[(i - (2 + BHT_IDX_W)) % BHT_IDX_W] ^= pc[i];
+      end
+      mixed_pc_idx = BHT_HASH_ENABLE ? (pc_idx ^ fold_idx) : pc_idx;
       ghr_idx = '0;
       for (int i = 0; i < BHT_IDX_W; i++) begin
         ghr_idx[i] = ghr[i%GHR_W];
       end
-      bht_index = USE_GSHARE ? (pc_idx ^ ghr_idx) : pc_idx;
+      bht_index = USE_GSHARE ? (mixed_pc_idx ^ ghr_idx) : mixed_pc_idx;
     end
   endfunction
 
@@ -148,7 +167,8 @@ module bpu #(
         end else if (!btb_is_cond_q[idx]) begin
           predict_taken[i] = 1'b1;
         end else begin
-          predict_taken[i] = bht_q[bht_idx][1];
+          predict_taken[i] = bht_q[bht_idx][1] ||
+                             ((bht_q[bht_idx] == 2'b01) && btb_is_backward_q[idx]);
         end
       end
     end
@@ -186,6 +206,7 @@ module bpu #(
     if (rst_i) begin
       btb_valid_q   <= '0;
       btb_is_cond_q <= '0;
+      btb_is_backward_q <= '0;
       btb_is_call_q <= '0;
       btb_is_ret_q  <= '0;
       btb_use_ras_q <= '0;
@@ -226,6 +247,7 @@ module bpu #(
         if (do_btb_write) begin
           btb_valid_q[up_btb_idx] <= 1'b1;
           btb_is_cond_q[up_btb_idx] <= update_is_cond_i;
+          btb_is_backward_q[up_btb_idx] <= update_is_cond_i && (update_target_i < update_pc_i);
           btb_is_call_q[up_btb_idx] <= update_is_call_i;
           btb_is_ret_q[up_btb_idx] <= update_is_ret_i;
           if (update_is_ret_i) begin

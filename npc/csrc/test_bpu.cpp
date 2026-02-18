@@ -46,6 +46,16 @@ static void expect_not_taken(Vtb_bpu *top, uint32_t pc) {
   assert(top->npc_o == pc + 16);
 }
 
+static void expect_taken(Vtb_bpu *top, uint32_t pc, uint32_t target,
+                         uint32_t slot_idx = 0) {
+  top->pc_i = pc;
+  tick(top, 1);
+  assert(top->pred_slot_valid_o == 1);
+  assert(top->pred_slot_idx_o == slot_idx);
+  assert(top->pred_slot_target_o == target);
+  assert(top->npc_o == target);
+}
+
 static void train(Vtb_bpu *top, uint32_t pc, bool is_cond, bool taken,
                   uint32_t target, bool is_call = false, bool is_ret = false) {
   top->update_valid_i = 1;
@@ -67,6 +77,50 @@ static void train(Vtb_bpu *top, uint32_t pc, bool is_cond, bool taken,
   top->ras_update_is_call_i = 0;
   top->ras_update_is_ret_i = 0;
   top->ras_update_pc_i[0] = 0;
+}
+
+static void test_cond_alias_isolation(Vtb_bpu *top) {
+  reset(top);
+
+  const uint32_t pc_a = 0x80000120;
+  const uint32_t pc_b = 0x80001120;
+  const uint32_t target_a = 0x80004000;
+  const uint32_t target_b = 0x80005000;
+
+  // Train A to strongly-taken.
+  train(top, pc_a, true, true, target_a);
+  train(top, pc_a, true, true, target_a);
+
+  // Train B on the same legacy index: overwrite BTB tag, then pull BHT to NT.
+  train(top, pc_b, true, true, target_b);
+  train(top, pc_b, true, false, target_b);
+  train(top, pc_b, true, false, target_b);
+
+  // With hashed indexing, A and B should no longer destroy each other.
+  expect_taken(top, pc_a, target_a, 0);
+  expect_not_taken(top, pc_b);
+}
+
+static void test_backward_cond_bias(Vtb_bpu *top) {
+  reset(top);
+
+  const uint32_t backward_pc = 0x80002000;
+  const uint32_t backward_target = 0x80001fe0;
+  const uint32_t forward_pc = 0x80002200;
+  const uint32_t forward_target = 0x80002240;
+
+  // Force weak-NT(01): taken once then not-taken once.
+  train(top, backward_pc, true, true, backward_target);
+  train(top, backward_pc, true, false, backward_target);
+
+  // Backward loop branch should still be predicted taken with bias.
+  expect_taken(top, backward_pc, backward_target, 0);
+
+  train(top, forward_pc, true, true, forward_target);
+  train(top, forward_pc, true, false, forward_target);
+
+  // Forward weak-NT should remain not-taken.
+  expect_not_taken(top, forward_pc);
 }
 
 int main(int argc, char **argv) {
@@ -440,6 +494,12 @@ int main(int argc, char **argv) {
   tick(top, 1);
   assert(top->pred_slot_valid_o == 1);
   assert(top->pred_slot_target_o == batch_ret_btb_target);
+
+  // 14) Hashed index should isolate previously aliased conditional branches.
+  test_cond_alias_isolation(top);
+
+  // 15) Backward-branch bias should rescue weak-NT loops only.
+  test_backward_cond_bias(top);
 
   std::cout << "--- [PASSED] All checks passed successfully! ---" << std::endl;
   delete top;
