@@ -73,6 +73,11 @@ module tb_triathlon #(
     output logic                               dbg_dec_valid_o,
     output logic                               dbg_dec_ready_o,
     output logic                               dbg_rob_ready_o,
+    output logic                               dbg_ren_src_from_pending_o,
+    output logic [$clog2(Cfg.INSTR_PER_FETCH+1)-1:0] dbg_ren_src_count_o,
+    output logic [$clog2(Cfg.INSTR_PER_FETCH+1)-1:0] dbg_ren_sel_count_o,
+    output logic                               dbg_ren_fire_o,
+    output logic                               dbg_ren_ready_o,
     // Debug (dispatch gate/capacity)
     output logic                               dbg_gate_alu_o,
     output logic                               dbg_gate_bru_o,
@@ -241,6 +246,20 @@ module tb_triathlon #(
   assign dbg_dec_valid_o = dut.u_backend.decode_ibuf_valid;
   assign dbg_dec_ready_o = dut.u_backend.decode_ibuf_ready;
   assign dbg_rob_ready_o = dut.u_backend.rob_ready;
+  assign dbg_ren_src_from_pending_o = dut.u_backend.rename_src_from_pending;
+  assign dbg_ren_sel_count_o = dut.u_backend.rename_sel_count;
+  assign dbg_ren_fire_o = dut.u_backend.rename_fire;
+  assign dbg_ren_ready_o = dut.u_backend.rename_ready;
+
+  always_comb begin
+    dbg_ren_src_count_o = '0;
+    for (int i = 0; i < Cfg.INSTR_PER_FETCH; i++) begin
+      if (dut.u_backend.rename_src_valid[i]) begin
+        dbg_ren_src_count_o++;
+      end
+    end
+  end
+
   assign dbg_gate_alu_o = dut.u_backend.alu_can_accept;
   assign dbg_gate_bru_o = dut.u_backend.bru_can_accept;
   assign dbg_gate_lsu_o = dut.u_backend.lsu_can_accept;

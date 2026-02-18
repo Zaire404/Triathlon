@@ -150,6 +150,16 @@ def _classify_decode_blocked_detail(line: str) -> str:
     rs2_ready: int | None = None
     has_rs2: int | None = None
 
+    m = re.search(r"ren\(pend/src/sel/fire/rdy\)=(\d)/(\d+)/(\d+)/(\d)/(\d)", line)
+    if m:
+        pend = int(m.group(1))
+        sel = int(m.group(3))
+        fire = int(m.group(4))
+        if pend == 1:
+            if fire == 1 and sel > 0:
+                return "pending_replay_progress"
+            return "pending_replay_wait"
+
     m = re.search(r"sb_alloc\(req/ready/fire\)=0x([0-9a-fA-F]+)/(\d)/(\d)", line)
     if m:
         alloc_req = int(m.group(1), 16)

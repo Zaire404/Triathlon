@@ -978,6 +978,12 @@ int main(int argc, char **argv) {
                   << " dec(v/r)=" << std::dec << static_cast<int>(top->dbg_dec_valid_o) << "/"
                   << static_cast<int>(top->dbg_dec_ready_o)
                   << " rob_ready=" << static_cast<int>(top->dbg_rob_ready_o)
+                  << " ren(pend/src/sel/fire/rdy)="
+                  << static_cast<int>(top->dbg_ren_src_from_pending_o) << "/"
+                  << static_cast<uint32_t>(top->dbg_ren_src_count_o) << "/"
+                  << static_cast<uint32_t>(top->dbg_ren_sel_count_o) << "/"
+                  << static_cast<int>(top->dbg_ren_fire_o) << "/"
+                  << static_cast<int>(top->dbg_ren_ready_o)
                   << " gate(alu/bru/lsu/mdu/csr)="
                   << static_cast<int>(top->dbg_gate_alu_o) << "/"
                   << static_cast<int>(top->dbg_gate_bru_o) << "/"
