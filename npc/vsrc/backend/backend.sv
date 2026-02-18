@@ -56,6 +56,7 @@ module backend #(
   localparam int unsigned RS_DEPTH = Cfg.RS_DEPTH;
   localparam int unsigned WB_WIDTH = 7;
   localparam int unsigned NUM_FUS = 7;  // ALU0, ALU1, BRU, LSU, ALU2, ALU3, CSR
+  localparam int unsigned LSU_GROUP_SIZE = 2;
   // A2.2: 开启 commit-time call/ret 更新，配合 BPU speculative RAS 降低 return miss。
   localparam bit ENABLE_COMMIT_RAS_UPDATE = 1'b1;
 
@@ -1238,11 +1239,12 @@ module backend #(
   logic [Cfg.XLEN-1:0] lsu_ld_rsp_data;
   logic lsu_ld_rsp_err;
 
-  lsu #(
+  lsu_group #(
       .Cfg(Cfg),
       .ROB_IDX_WIDTH(ROB_IDX_WIDTH),
-      .SB_DEPTH(SB_DEPTH)
-  ) u_lsu (
+      .SB_DEPTH(SB_DEPTH),
+      .N_LSU(LSU_GROUP_SIZE)
+  ) u_lsu_group (
       .clk_i  (clk_i),
       .rst_ni (rst_ni),
       .flush_i(backend_flush),

@@ -646,6 +646,36 @@ static void test_partial_dispatch_accepts_non_lsu_prefix_when_lsu_blocked(Vtb_ba
   mem.block_miss_req = false;
 }
 
+static void test_dual_lane_can_hold_two_blocked_loads(Vtb_backend *top, MemModel &mem) {
+  std::array<uint32_t, 32> rf{};
+  std::vector<uint32_t> commits;
+
+  reset(top, mem);
+  mem.block_miss_req = true;
+
+  send_group(top, mem, rf, commits, 0xF000,
+             {insn_lw(10, 0, 0x100), insn_nop(), insn_nop(), insn_nop()});
+
+  bool first_lane_busy = run_until(top, mem, rf, commits, [&]() {
+    return (top->dbg_lsu_grp_lane_busy_o & 0x1) != 0;
+  }, 200);
+  expect(first_lane_busy, "Dual lane: first blocked load occupies lane0");
+
+  send_group(top, mem, rf, commits, 0xF010,
+             {insn_lw(11, 0, 0x104), insn_nop(), insn_nop(), insn_nop()});
+
+  uint32_t max_busy_mask = 0;
+  for (int i = 0; i < 200; i++) {
+    tick(top, mem);
+    update_commits(top, rf, commits);
+    max_busy_mask |= static_cast<uint32_t>(top->dbg_lsu_grp_lane_busy_o);
+  }
+
+  expect((max_busy_mask & 0x3u) == 0x3u,
+         "Dual lane: two blocked loads can occupy two lanes simultaneously");
+  mem.block_miss_req = false;
+}
+
 int main(int argc, char **argv) {
   Verilated::commandArgs(argc, argv);
   Vtb_backend *top = new Vtb_backend;
@@ -660,6 +690,7 @@ int main(int argc, char **argv) {
   test_call_ret_update(top, mem);
   test_flush_stress_no_wrong_path_commit(top, mem);
   test_partial_dispatch_accepts_non_lsu_prefix_when_lsu_blocked(top, mem);
+  test_dual_lane_can_hold_two_blocked_loads(top, mem);
 
   std::cout << ANSI_RES_GRN << "--- [ALL BACKEND TESTS PASSED] ---" << ANSI_RES_RST << std::endl;
   delete top;

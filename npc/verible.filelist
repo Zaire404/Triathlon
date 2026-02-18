@@ -4,7 +4,8 @@
 ./vsrc/backend/decode/decoder.sv
 ./vsrc/backend/execute/alu.sv
 ./vsrc/backend/execute/csr.sv
-./vsrc/backend/execute/lsu.sv
+./vsrc/backend/execute/lsu_group.sv
+./vsrc/backend/execute/lsu_lane.sv
 ./vsrc/backend/issue/issue_lsu.sv
 ./vsrc/backend/issue/issue_select.sv
 ./vsrc/backend/issue/issue_single.sv

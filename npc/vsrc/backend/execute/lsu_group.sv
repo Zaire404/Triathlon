@@ -1,0 +1,371 @@
+// vsrc/backend/execute/lsu_group.sv
+import config_pkg::*;
+import decode_pkg::*;
+
+module lsu_group #(
+    parameter config_pkg::cfg_t Cfg           = config_pkg::EmptyCfg,
+    parameter int unsigned      ROB_IDX_WIDTH = 6,
+    parameter int unsigned      SB_DEPTH      = 16,
+    parameter int unsigned      SB_IDX_WIDTH  = $clog2(SB_DEPTH),
+    parameter int unsigned      N_LSU         = 1,
+    parameter int unsigned      ECAUSE_WIDTH  = 5
+) (
+    input logic clk_i,
+    input logic rst_ni,
+    input logic flush_i,
+
+    // =========================================================
+    // 1) Request from Issue/Execute
+    // =========================================================
+    input  logic                                 req_valid_i,
+    output logic                                 req_ready_o,
+    input  decode_pkg::uop_t                     uop_i,
+    input  logic             [     Cfg.XLEN-1:0] rs1_data_i,
+    input  logic             [     Cfg.XLEN-1:0] rs2_data_i,
+    input  logic             [ROB_IDX_WIDTH-1:0] rob_tag_i,
+    input  logic             [ SB_IDX_WIDTH-1:0] sb_id_i,
+
+    // =========================================================
+    // 2) Store Buffer interface (execute fill)
+    // =========================================================
+    output logic                                    sb_ex_valid_o,
+    output logic                [ SB_IDX_WIDTH-1:0] sb_ex_sb_id_o,
+    output logic                [     Cfg.PLEN-1:0] sb_ex_addr_o,
+    output logic                [     Cfg.XLEN-1:0] sb_ex_data_o,
+    output decode_pkg::lsu_op_e                     sb_ex_op_o,
+    output logic                [ROB_IDX_WIDTH-1:0] sb_ex_rob_idx_o,
+
+    // Store-to-Load Forwarding (query)
+    output logic [     Cfg.PLEN-1:0] sb_load_addr_o,
+    output logic [ROB_IDX_WIDTH-1:0] sb_load_rob_idx_o,
+    input  logic                     sb_load_hit_i,
+    input  logic [     Cfg.XLEN-1:0] sb_load_data_i,
+
+    // =========================================================
+    // 3) D-Cache Load interface
+    // =========================================================
+    output logic                               ld_req_valid_o,
+    input  logic                               ld_req_ready_i,
+    output logic                [Cfg.PLEN-1:0] ld_req_addr_o,
+    output decode_pkg::lsu_op_e                ld_req_op_o,
+
+    input  logic                ld_rsp_valid_i,
+    output logic                ld_rsp_ready_o,
+    input  logic [Cfg.XLEN-1:0] ld_rsp_data_i,
+    input  logic                ld_rsp_err_i,
+
+    // =========================================================
+    // 4) Writeback to ROB/CDB
+    // =========================================================
+    output logic                     wb_valid_o,
+    output logic [ROB_IDX_WIDTH-1:0] wb_rob_idx_o,
+    output logic [     Cfg.XLEN-1:0] wb_data_o,
+    output logic                     wb_exception_o,
+    output logic [ECAUSE_WIDTH-1:0]  wb_ecause_o,
+    output logic                     wb_is_mispred_o,
+    output logic [     Cfg.PLEN-1:0] wb_redirect_pc_o,
+    input  logic                     wb_ready_i
+);
+
+  localparam int unsigned LANE_SEL_WIDTH = (N_LSU <= 1) ? 1 : $clog2(N_LSU);
+  localparam int unsigned DBG_SEL_WIDTH = (N_LSU <= 1) ? 1 : $clog2(N_LSU + 1);
+
+  // Keep these debug names for existing testbench hierarchical probes.
+  logic                [               1:0]                    state_q;
+  logic                [ ROB_IDX_WIDTH-1:0]                    req_tag_q;
+  logic                [      Cfg.PLEN-1:0]                    req_addr_q;
+  logic                [         N_LSU-1:0]                    dbg_lane_busy;
+  logic                                                        dbg_alloc_fire;
+  logic                [ DBG_SEL_WIDTH-1:0]                    dbg_alloc_lane;
+  logic                [ DBG_SEL_WIDTH-1:0]                    dbg_ld_owner;
+
+  logic                [         N_LSU-1:0]                    lane_req_valid;
+  logic                [         N_LSU-1:0]                    lane_req_ready;
+
+  logic                [         N_LSU-1:0]                    lane_sb_ex_valid;
+  logic                [         N_LSU-1:0][ SB_IDX_WIDTH-1:0] lane_sb_ex_sb_id;
+  logic                [         N_LSU-1:0][     Cfg.PLEN-1:0] lane_sb_ex_addr;
+  logic                [         N_LSU-1:0][     Cfg.XLEN-1:0] lane_sb_ex_data;
+  decode_pkg::lsu_op_e                                         lane_sb_ex_op        [N_LSU];
+  logic                [         N_LSU-1:0][ROB_IDX_WIDTH-1:0] lane_sb_ex_rob_idx;
+
+  logic                [         N_LSU-1:0][     Cfg.PLEN-1:0] lane_sb_load_addr;
+  logic                [         N_LSU-1:0][ROB_IDX_WIDTH-1:0] lane_sb_load_rob_idx;
+
+  logic                [         N_LSU-1:0]                    lane_ld_req_valid;
+  logic                [         N_LSU-1:0]                    lane_ld_req_ready;
+  logic                [         N_LSU-1:0][     Cfg.PLEN-1:0] lane_ld_req_addr;
+  decode_pkg::lsu_op_e                                         lane_ld_req_op       [N_LSU];
+
+  logic                [         N_LSU-1:0]                    lane_ld_rsp_valid;
+  logic                [         N_LSU-1:0]                    lane_ld_rsp_ready;
+
+  logic                [         N_LSU-1:0]                    lane_wb_valid;
+  logic                [         N_LSU-1:0][ROB_IDX_WIDTH-1:0] lane_wb_rob_idx;
+  logic                [         N_LSU-1:0][     Cfg.XLEN-1:0] lane_wb_data;
+  logic                [         N_LSU-1:0]                    lane_wb_exception;
+  logic                [         N_LSU-1:0][ECAUSE_WIDTH-1:0] lane_wb_ecause;
+  logic                [         N_LSU-1:0]                    lane_wb_is_mispred;
+  logic                [         N_LSU-1:0][     Cfg.PLEN-1:0] lane_wb_redirect_pc;
+  logic                [         N_LSU-1:0]                    lane_wb_ready;
+
+  logic                [         N_LSU-1:0]                    alloc_grant;
+  logic                [LANE_SEL_WIDTH-1:0]                    alloc_lane_idx;
+  logic                                                        alloc_block_new_req;
+  logic                                                        alloc_fire;
+
+  logic                [         N_LSU-1:0]                    ld_req_grant;
+  logic                [LANE_SEL_WIDTH-1:0]                    ld_req_lane_idx;
+  logic                                                        ld_req_grant_valid;
+
+  logic                [         N_LSU-1:0]                    wb_grant;
+  logic                [LANE_SEL_WIDTH-1:0]                    wb_lane_idx;
+  logic                                                        wb_grant_valid;
+
+  logic ld_owner_valid_q, ld_owner_valid_d;
+  logic [LANE_SEL_WIDTH-1:0] ld_owner_q, ld_owner_d;
+
+  generate
+    for (genvar gi = 0; gi < N_LSU; gi++) begin : g_lanes
+      lsu_lane #(
+          .Cfg(Cfg),
+          .ROB_IDX_WIDTH(ROB_IDX_WIDTH),
+          .SB_DEPTH(SB_DEPTH),
+          .SB_IDX_WIDTH(SB_IDX_WIDTH),
+          .ECAUSE_WIDTH(ECAUSE_WIDTH)
+      ) u_lane (
+          .clk_i,
+          .rst_ni,
+          .flush_i,
+
+          .req_valid_i(lane_req_valid[gi]),
+          .req_ready_o(lane_req_ready[gi]),
+          .uop_i,
+          .rs1_data_i,
+          .rs2_data_i,
+          .rob_tag_i,
+          .sb_id_i,
+
+          .sb_ex_valid_o(lane_sb_ex_valid[gi]),
+          .sb_ex_sb_id_o(lane_sb_ex_sb_id[gi]),
+          .sb_ex_addr_o(lane_sb_ex_addr[gi]),
+          .sb_ex_data_o(lane_sb_ex_data[gi]),
+          .sb_ex_op_o(lane_sb_ex_op[gi]),
+          .sb_ex_rob_idx_o(lane_sb_ex_rob_idx[gi]),
+
+          .sb_load_addr_o(lane_sb_load_addr[gi]),
+          .sb_load_rob_idx_o(lane_sb_load_rob_idx[gi]),
+          .sb_load_hit_i,
+          .sb_load_data_i,
+
+          .ld_req_valid_o(lane_ld_req_valid[gi]),
+          .ld_req_ready_i(lane_ld_req_ready[gi]),
+          .ld_req_addr_o(lane_ld_req_addr[gi]),
+          .ld_req_op_o(lane_ld_req_op[gi]),
+
+          .ld_rsp_valid_i(lane_ld_rsp_valid[gi]),
+          .ld_rsp_ready_o(lane_ld_rsp_ready[gi]),
+          .ld_rsp_data_i,
+          .ld_rsp_err_i,
+
+          .wb_valid_o(lane_wb_valid[gi]),
+          .wb_rob_idx_o(lane_wb_rob_idx[gi]),
+          .wb_data_o(lane_wb_data[gi]),
+          .wb_exception_o(lane_wb_exception[gi]),
+          .wb_ecause_o(lane_wb_ecause[gi]),
+          .wb_is_mispred_o(lane_wb_is_mispred[gi]),
+          .wb_redirect_pc_o(lane_wb_redirect_pc[gi]),
+          .wb_ready_i(lane_wb_ready[gi])
+      );
+
+      assign dbg_lane_busy[gi] = lane_ld_req_valid[gi] | lane_ld_rsp_ready[gi] | lane_wb_valid[gi];
+    end
+  endgenerate
+
+  assign state_q    = g_lanes[0].u_lane.state_q;
+  assign req_tag_q  = g_lanes[0].u_lane.req_tag_q;
+  assign req_addr_q = g_lanes[0].u_lane.req_addr_q;
+
+  always_comb begin
+    req_ready_o = 1'b0;
+    alloc_grant = '0;
+    alloc_lane_idx = '0;
+    alloc_block_new_req = 1'b0;
+    for (int i = 0; i < N_LSU; i++) begin
+      if (!req_ready_o && lane_req_ready[i]) begin
+        req_ready_o = 1'b1;
+        alloc_grant[i] = 1'b1;
+        alloc_lane_idx = LANE_SEL_WIDTH'(i);
+      end
+    end
+
+    // Keep per-lane request order monotonic:
+    // if an older request is already waiting in a higher-index lane,
+    // do not place a newer request into a lower-index free lane.
+    if (req_ready_o) begin
+      for (int older = 0; older < N_LSU; older++) begin
+        if (lane_ld_req_valid[older]) begin
+          for (int younger = 0; younger < older; younger++) begin
+            if (alloc_grant[younger]) begin
+              alloc_block_new_req = 1'b1;
+            end
+          end
+        end
+      end
+      if (alloc_block_new_req) begin
+        req_ready_o = 1'b0;
+        alloc_grant = '0;
+        alloc_lane_idx = '0;
+      end
+    end
+  end
+
+  assign alloc_fire = req_valid_i && req_ready_o;
+  assign dbg_alloc_fire = alloc_fire;
+
+  always_comb begin
+    lane_req_valid = '0;
+    for (int i = 0; i < N_LSU; i++) begin
+      lane_req_valid[i] = alloc_fire && alloc_grant[i];
+    end
+  end
+
+  always_comb begin
+    sb_ex_valid_o = 1'b0;
+    sb_ex_sb_id_o = '0;
+    sb_ex_addr_o = '0;
+    sb_ex_data_o = '0;
+    sb_ex_op_o = decode_pkg::LSU_LW;
+    sb_ex_rob_idx_o = '0;
+    sb_load_addr_o = '0;
+    sb_load_rob_idx_o = '0;
+    for (int i = 0; i < N_LSU; i++) begin
+      if (lane_sb_ex_valid[i] && !sb_ex_valid_o) begin
+        sb_ex_valid_o = 1'b1;
+        sb_ex_sb_id_o = lane_sb_ex_sb_id[i];
+        sb_ex_addr_o = lane_sb_ex_addr[i];
+        sb_ex_data_o = lane_sb_ex_data[i];
+        sb_ex_op_o = lane_sb_ex_op[i];
+        sb_ex_rob_idx_o = lane_sb_ex_rob_idx[i];
+      end
+      if (lane_req_valid[i]) begin
+        sb_load_addr_o = lane_sb_load_addr[i];
+        sb_load_rob_idx_o = lane_sb_load_rob_idx[i];
+      end
+    end
+  end
+
+  always_comb begin
+    ld_req_grant = '0;
+    ld_req_lane_idx = '0;
+    ld_req_grant_valid = 1'b0;
+    for (int i = 0; i < N_LSU; i++) begin
+      if (!ld_req_grant_valid && lane_ld_req_valid[i]) begin
+        ld_req_grant_valid = 1'b1;
+        ld_req_grant[i] = 1'b1;
+        ld_req_lane_idx = LANE_SEL_WIDTH'(i);
+      end
+    end
+  end
+
+  assign ld_req_valid_o = (!ld_owner_valid_q) && ld_req_grant_valid;
+
+  always_comb begin
+    ld_req_addr_o = '0;
+    ld_req_op_o = decode_pkg::LSU_LW;
+    lane_ld_req_ready = '0;
+
+    if (!ld_owner_valid_q && ld_req_grant_valid) begin
+      ld_req_addr_o = lane_ld_req_addr[ld_req_lane_idx];
+      ld_req_op_o = lane_ld_req_op[ld_req_lane_idx];
+      lane_ld_req_ready[ld_req_lane_idx] = ld_req_ready_i;
+    end
+  end
+
+  always_comb begin
+    lane_ld_rsp_valid = '0;
+    if (ld_owner_valid_q && ld_rsp_valid_i) begin
+      lane_ld_rsp_valid[ld_owner_q] = 1'b1;
+    end
+  end
+
+  assign ld_rsp_ready_o = ld_owner_valid_q ? lane_ld_rsp_ready[ld_owner_q] : 1'b0;
+
+  always_comb begin
+    ld_owner_valid_d = ld_owner_valid_q;
+    ld_owner_d = ld_owner_q;
+
+    if (flush_i) begin
+      ld_owner_valid_d = 1'b0;
+      ld_owner_d = '0;
+    end else begin
+      if (!ld_owner_valid_q && ld_req_grant_valid && ld_req_ready_i) begin
+        ld_owner_valid_d = 1'b1;
+        ld_owner_d = ld_req_lane_idx;
+      end else if (ld_owner_valid_q && ld_rsp_valid_i && ld_rsp_ready_o) begin
+        ld_owner_valid_d = 1'b0;
+      end
+    end
+  end
+
+  always_ff @(posedge clk_i or negedge rst_ni) begin
+    if (!rst_ni) begin
+      ld_owner_valid_q <= 1'b0;
+      ld_owner_q <= '0;
+    end else begin
+      ld_owner_valid_q <= ld_owner_valid_d;
+      ld_owner_q <= ld_owner_d;
+    end
+  end
+
+  always_comb begin
+    wb_grant = '0;
+    wb_lane_idx = '0;
+    wb_grant_valid = 1'b0;
+    for (int i = 0; i < N_LSU; i++) begin
+      if (!wb_grant_valid && lane_wb_valid[i]) begin
+        wb_grant_valid = 1'b1;
+        wb_grant[i] = 1'b1;
+        wb_lane_idx = LANE_SEL_WIDTH'(i);
+      end
+    end
+  end
+
+  always_comb begin
+    wb_valid_o = wb_grant_valid;
+    wb_rob_idx_o = '0;
+    wb_data_o = '0;
+    wb_exception_o = 1'b0;
+    wb_ecause_o = '0;
+    wb_is_mispred_o = 1'b0;
+    wb_redirect_pc_o = '0;
+    lane_wb_ready = '0;
+
+    if (wb_grant_valid) begin
+      wb_rob_idx_o = lane_wb_rob_idx[wb_lane_idx];
+      wb_data_o = lane_wb_data[wb_lane_idx];
+      wb_exception_o = lane_wb_exception[wb_lane_idx];
+      wb_ecause_o = lane_wb_ecause[wb_lane_idx];
+      wb_is_mispred_o = lane_wb_is_mispred[wb_lane_idx];
+      wb_redirect_pc_o = lane_wb_redirect_pc[wb_lane_idx];
+      lane_wb_ready[wb_lane_idx] = wb_ready_i;
+    end
+  end
+
+  generate
+    if (N_LSU == 1) begin : g_dbg_single
+      assign dbg_alloc_lane = '0;
+      assign dbg_ld_owner = (lane_ld_req_valid[0] || lane_ld_rsp_ready[0]) ? '0 : '1;
+    end else begin : g_dbg_multi
+      assign dbg_alloc_lane = alloc_fire ? DBG_SEL_WIDTH'(alloc_lane_idx + 1'b1) : '0;
+      assign dbg_ld_owner   = ld_owner_valid_q ? DBG_SEL_WIDTH'(ld_owner_q + 1'b1) : '0;
+    end
+  endgenerate
+
+  initial begin
+    if (N_LSU < 1) begin
+      $error("lsu_group: N_LSU must be >= 1, got %0d", N_LSU);
+    end
+  end
+
+endmodule

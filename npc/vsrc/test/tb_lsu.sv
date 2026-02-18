@@ -3,7 +3,12 @@ import config_pkg::*;
 import decode_pkg::*;
 import global_config_pkg::*;
 
-module tb_lsu (
+module tb_lsu #(
+    parameter int unsigned TB_ROB_IDX_WIDTH = 6,
+    parameter int unsigned TB_SB_DEPTH = 16,
+    parameter int unsigned TB_SB_IDX_WIDTH = $clog2(TB_SB_DEPTH),
+    parameter int unsigned TB_LSU_GROUP_SIZE = 2
+) (
     input logic clk_i,
     input logic rst_ni,
     input logic flush_i,
@@ -17,12 +22,12 @@ module tb_lsu (
     input  logic [global_config_pkg::Cfg.XLEN-1:0] imm_i,
     input  logic [global_config_pkg::Cfg.XLEN-1:0] rs1_data_i,
     input  logic [global_config_pkg::Cfg.XLEN-1:0] rs2_data_i,
-    input  logic [5:0] rob_tag_i,
-    input  logic [3:0] sb_id_i,
+    input  logic [TB_ROB_IDX_WIDTH-1:0] rob_tag_i,
+    input  logic [TB_SB_IDX_WIDTH-1:0] sb_id_i,
 
     // Store buffer execute write
     output logic                        sb_ex_valid_o,
-    output logic [3:0]                  sb_ex_sb_id_o,
+    output logic [TB_SB_IDX_WIDTH-1:0]  sb_ex_sb_id_o,
     output logic [global_config_pkg::Cfg.PLEN-1:0] sb_ex_addr_o,
     output logic [global_config_pkg::Cfg.XLEN-1:0] sb_ex_data_o,
     output decode_pkg::lsu_op_e         sb_ex_op_o,
@@ -45,7 +50,7 @@ module tb_lsu (
 
     // Writeback
     output logic                       wb_valid_o,
-    output logic [5:0]                 wb_rob_idx_o,
+    output logic [TB_ROB_IDX_WIDTH-1:0] wb_rob_idx_o,
     output logic [global_config_pkg::Cfg.XLEN-1:0] wb_data_o,
     output logic                       wb_exception_o,
     output logic [4:0]                 wb_ecause_o,
@@ -64,10 +69,11 @@ module tb_lsu (
     uop.imm      = imm_i;
   end
 
-  lsu #(
+  lsu_group #(
       .Cfg(global_config_pkg::Cfg),
-      .ROB_IDX_WIDTH(6),
-      .SB_DEPTH(16)
+      .ROB_IDX_WIDTH(TB_ROB_IDX_WIDTH),
+      .SB_DEPTH(TB_SB_DEPTH),
+      .N_LSU(TB_LSU_GROUP_SIZE)
   ) dut (
       .clk_i,
       .rst_ni,
@@ -86,8 +92,10 @@ module tb_lsu (
       .sb_ex_addr_o,
       .sb_ex_data_o,
       .sb_ex_op_o,
+      .sb_ex_rob_idx_o(),
 
       .sb_load_addr_o,
+      .sb_load_rob_idx_o(),
       .sb_load_hit_i,
       .sb_load_data_i,
 

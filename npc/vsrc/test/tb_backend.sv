@@ -51,7 +51,10 @@ module tb_backend (
     output logic [Cfg.NRET-1:0]                bpu_ras_update_is_ret_o,
     output logic [Cfg.NRET-1:0][Cfg.PLEN-1:0]  bpu_ras_update_pc_o,
     output logic                               rob_flush_o,
-    output logic [Cfg.PLEN-1:0]                rob_flush_pc_o
+    output logic [Cfg.PLEN-1:0]                rob_flush_pc_o,
+    output logic                               dbg_lsu_req_ready_o,
+    output logic                               dbg_lsu_issue_fire_o,
+    output logic [3:0]                         dbg_lsu_grp_lane_busy_o
 );
 
   logic backend_flush_unused;
@@ -108,5 +111,8 @@ module tb_backend (
   assign commit_wdata_o = dut.commit_wdata;
   assign rob_flush_o    = dut.rob_flush;
   assign rob_flush_pc_o = dut.rob_flush_pc;
+  assign dbg_lsu_req_ready_o = dut.lsu_req_ready;
+  assign dbg_lsu_issue_fire_o = dut.lsu_en & dut.lsu_req_ready;
+  assign dbg_lsu_grp_lane_busy_o = {2'b0, dut.u_lsu_group.dbg_lane_busy};
 
 endmodule

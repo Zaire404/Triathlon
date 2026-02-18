@@ -160,6 +160,16 @@ def _classify_decode_blocked_detail(line: str) -> str:
                 return "pending_replay_progress"
             return "pending_replay_wait"
 
+    m = re.search(r"lsug\(busy/alloc_fire/alloc_lane/ld_owner\)=0x([0-9a-fA-F]+)/(\d)/0x([0-9a-fA-F]+)/0x([0-9a-fA-F]+)", line)
+    if m:
+        busy = int(m.group(1), 16)
+        alloc_fire = int(m.group(2))
+        ld_owner = int(m.group(4), 16)
+        if busy != 0 and alloc_fire == 0:
+            if ld_owner == 0:
+                return "lsug_wait_dcache_owner"
+            return "lsug_no_free_lane"
+
     m = re.search(r"sb_alloc\(req/ready/fire\)=0x([0-9a-fA-F]+)/(\d)/(\d)", line)
     if m:
         alloc_req = int(m.group(1), 16)
