@@ -38,7 +38,8 @@ module bpu #(
   localparam int unsigned BTB_IDX_W = (BTB_ENTRIES > 1) ? $clog2(BTB_ENTRIES) : 1;
   localparam int unsigned BHT_IDX_W = (BHT_ENTRIES > 1) ? $clog2(BHT_ENTRIES) : 1;
   localparam int unsigned INSTR_BYTES = Cfg.ILEN / 8;
-  localparam int unsigned BTB_TAG_W = Cfg.PLEN - BTB_IDX_W - 2;
+  localparam int unsigned INSTR_ADDR_LSB = $clog2(INSTR_BYTES);
+  localparam int unsigned BTB_TAG_W = Cfg.PLEN - BTB_IDX_W - INSTR_ADDR_LSB;
   localparam int unsigned RAS_CNT_W = (RAS_DEPTH > 0) ? $clog2(RAS_DEPTH + 1) : 1;
   localparam int unsigned GHR_W = (GHR_BITS > 0) ? GHR_BITS : 1;
   logic [BTB_ENTRIES-1:0] btb_valid_q;
@@ -64,17 +65,17 @@ module bpu #(
     logic [BTB_IDX_W-1:0] pc_idx;
     logic [BTB_IDX_W-1:0] fold_idx;
     begin
-      pc_idx = pc[2 +: BTB_IDX_W];
+      pc_idx = pc[INSTR_ADDR_LSB +: BTB_IDX_W];
       fold_idx = '0;
-      for (int i = 2 + BTB_IDX_W; i < Cfg.PLEN; i++) begin
-        fold_idx[(i - (2 + BTB_IDX_W)) % BTB_IDX_W] ^= pc[i];
+      for (int i = INSTR_ADDR_LSB + BTB_IDX_W; i < Cfg.PLEN; i++) begin
+        fold_idx[(i - (INSTR_ADDR_LSB + BTB_IDX_W)) % BTB_IDX_W] ^= pc[i];
       end
       btb_index = BTB_HASH_ENABLE ? (pc_idx ^ fold_idx) : pc_idx;
     end
   endfunction
 
   function automatic logic [BTB_TAG_W-1:0] btb_tag(input logic [Cfg.PLEN-1:0] pc);
-    btb_tag = pc[Cfg.PLEN-1:2+BTB_IDX_W];
+    btb_tag = pc[Cfg.PLEN-1:INSTR_ADDR_LSB+BTB_IDX_W];
   endfunction
 
   function automatic logic [BHT_IDX_W-1:0] bht_index(input logic [Cfg.PLEN-1:0] pc,
@@ -84,10 +85,10 @@ module bpu #(
     logic [BHT_IDX_W-1:0] mixed_pc_idx;
     logic [BHT_IDX_W-1:0] ghr_idx;
     begin
-      pc_idx = pc[2+:BHT_IDX_W];
+      pc_idx = pc[INSTR_ADDR_LSB+:BHT_IDX_W];
       fold_idx = '0;
-      for (int i = 2 + BHT_IDX_W; i < Cfg.PLEN; i++) begin
-        fold_idx[(i - (2 + BHT_IDX_W)) % BHT_IDX_W] ^= pc[i];
+      for (int i = INSTR_ADDR_LSB + BHT_IDX_W; i < Cfg.PLEN; i++) begin
+        fold_idx[(i - (INSTR_ADDR_LSB + BHT_IDX_W)) % BHT_IDX_W] ^= pc[i];
       end
       mixed_pc_idx = BHT_HASH_ENABLE ? (pc_idx ^ fold_idx) : pc_idx;
       ghr_idx = '0;
