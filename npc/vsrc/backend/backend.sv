@@ -23,6 +23,10 @@ module backend #(
     output logic [Cfg.PLEN-1:0] bpu_update_target_o,
     output logic bpu_update_is_call_o,
     output logic bpu_update_is_ret_o,
+    output logic [Cfg.NRET-1:0] bpu_ras_update_valid_o,
+    output logic [Cfg.NRET-1:0] bpu_ras_update_is_call_o,
+    output logic [Cfg.NRET-1:0] bpu_ras_update_is_ret_o,
+    output logic [Cfg.NRET-1:0][Cfg.PLEN-1:0] bpu_ras_update_pc_o,
 
     // D-Cache miss/refill/writeback interface (to memory system)
     output logic                                  dcache_miss_req_valid_o,
@@ -235,20 +239,12 @@ module backend #(
     bpu_update_target_o = '0;
     bpu_update_is_call_o = 1'b0;
     bpu_update_is_ret_o = 1'b0;
+    fallthrough_pc = '0;
     sel_idx = -1;
-    // RAS correctness first: if a call/ret commits this cycle, prioritize it for BPU update.
     for (int i = 0; i < COMMIT_WIDTH; i++) begin
-      if (commit_valid[i] && commit_is_branch[i] && (commit_is_call[i] || commit_is_ret[i])) begin
+      if (commit_valid[i] && commit_is_branch[i]) begin
         sel_idx = i;
         break;
-      end
-    end
-    if (sel_idx < 0) begin
-      for (int i = 0; i < COMMIT_WIDTH; i++) begin
-        if (commit_valid[i] && commit_is_branch[i]) begin
-          sel_idx = i;
-          break;
-        end
       end
     end
 
@@ -261,6 +257,18 @@ module backend #(
       bpu_update_target_o = commit_actual_npc[sel_idx];
       bpu_update_is_call_o = ENABLE_COMMIT_RAS_UPDATE ? commit_is_call[sel_idx] : 1'b0;
       bpu_update_is_ret_o = ENABLE_COMMIT_RAS_UPDATE ? commit_is_ret[sel_idx] : 1'b0;
+    end
+  end
+
+  always_comb begin
+    for (int i = 0; i < COMMIT_WIDTH; i++) begin
+      bpu_ras_update_valid_o[i] = ENABLE_COMMIT_RAS_UPDATE &&
+                                  commit_valid[i] &&
+                                  commit_is_branch[i] &&
+                                  (commit_is_call[i] || commit_is_ret[i]);
+      bpu_ras_update_is_call_o[i] = commit_is_call[i];
+      bpu_ras_update_is_ret_o[i] = commit_is_ret[i];
+      bpu_ras_update_pc_o[i] = commit_pc[i];
     end
   end
 

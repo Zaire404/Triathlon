@@ -10,6 +10,7 @@
 // 配置参数
 // =================================================================
 const int INSTR_PER_FETCH = 4;
+const int NRET = 4;
 const int LINE_WIDTH_BYTES = 32; // 256 bits
 const int LINE_WIDTH_WORDS = LINE_WIDTH_BYTES / 4;
 
@@ -145,6 +146,12 @@ int main(int argc, char **argv) {
   top->bpu_update_target_i = 0;
   top->bpu_update_is_call_i = 0;
   top->bpu_update_is_ret_i = 0;
+  top->bpu_ras_update_valid_i = 0;
+  top->bpu_ras_update_is_call_i = 0;
+  top->bpu_ras_update_is_ret_i = 0;
+  for (int i = 0; i < NRET; i++) {
+    top->bpu_ras_update_pc_i[i] = 0;
+  }
   for (int i = 0; i < 5; i++)
     tick(top, mem);
   top->rst_ni = 1;

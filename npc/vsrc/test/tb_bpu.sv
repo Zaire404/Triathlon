@@ -16,6 +16,10 @@ module tb_bpu (
     input logic [Cfg.XLEN-1:0] update_target_i,
     input logic update_is_call_i,
     input logic update_is_ret_i,
+    input logic [Cfg.NRET-1:0] ras_update_valid_i,
+    input logic [Cfg.NRET-1:0] ras_update_is_call_i,
+    input logic [Cfg.NRET-1:0] ras_update_is_ret_i,
+    input logic [Cfg.NRET-1:0][Cfg.PLEN-1:0] ras_update_pc_i,
     input logic flush_i,
     // --- 输出端口  ---
     output logic [Cfg.XLEN-1:0] npc_o,
@@ -44,6 +48,10 @@ module tb_bpu (
       .update_target_i(update_target_i),
       .update_is_call_i(update_is_call_i),
       .update_is_ret_i(update_is_ret_i),
+      .ras_update_valid_i(ras_update_valid_i),
+      .ras_update_is_call_i(ras_update_is_call_i),
+      .ras_update_is_ret_i(ras_update_is_ret_i),
+      .ras_update_pc_i(ras_update_pc_i),
       .flush_i(flush_i),
 
       .bpu_to_ifu_handshake_o(bpu_to_ifu_handshake_o),

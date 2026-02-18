@@ -46,6 +46,10 @@ module tb_backend (
     output logic [Cfg.PLEN-1:0]                bpu_update_target_o,
     output logic                               bpu_update_is_call_o,
     output logic                               bpu_update_is_ret_o,
+    output logic [Cfg.NRET-1:0]                bpu_ras_update_valid_o,
+    output logic [Cfg.NRET-1:0]                bpu_ras_update_is_call_o,
+    output logic [Cfg.NRET-1:0]                bpu_ras_update_is_ret_o,
+    output logic [Cfg.NRET-1:0][Cfg.PLEN-1:0]  bpu_ras_update_pc_o,
     output logic                               rob_flush_o,
     output logic [Cfg.PLEN-1:0]                rob_flush_pc_o
 );
@@ -74,6 +78,10 @@ module tb_backend (
       .bpu_update_target_o(bpu_update_target_o),
       .bpu_update_is_call_o(bpu_update_is_call_o),
       .bpu_update_is_ret_o(bpu_update_is_ret_o),
+      .bpu_ras_update_valid_o(bpu_ras_update_valid_o),
+      .bpu_ras_update_is_call_o(bpu_ras_update_is_call_o),
+      .bpu_ras_update_is_ret_o(bpu_ras_update_is_ret_o),
+      .bpu_ras_update_pc_o(bpu_ras_update_pc_o),
 
       .dcache_miss_req_valid_o,
       .dcache_miss_req_ready_i,

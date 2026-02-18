@@ -26,6 +26,10 @@ module tb_frontend (
     input logic [Cfg.PLEN-1:0] bpu_update_target_i,
     input logic                bpu_update_is_call_i,
     input logic                bpu_update_is_ret_i,
+    input logic [Cfg.NRET-1:0] bpu_ras_update_valid_i,
+    input logic [Cfg.NRET-1:0] bpu_ras_update_is_call_i,
+    input logic [Cfg.NRET-1:0] bpu_ras_update_is_ret_i,
+    input logic [Cfg.NRET-1:0][Cfg.PLEN-1:0] bpu_ras_update_pc_i,
 
     // ============================================
     // 2. 存储器系统接口 (To Memory/L2/Bus)
@@ -69,6 +73,10 @@ module tb_frontend (
       .bpu_update_target_i(bpu_update_target_i),
       .bpu_update_is_call_i(bpu_update_is_call_i),
       .bpu_update_is_ret_i(bpu_update_is_ret_i),
+      .bpu_ras_update_valid_i(bpu_ras_update_valid_i),
+      .bpu_ras_update_is_call_i(bpu_ras_update_is_call_i),
+      .bpu_ras_update_is_ret_i(bpu_ras_update_is_ret_i),
+      .bpu_ras_update_pc_i(bpu_ras_update_pc_i),
 
       .miss_req_valid_o     (miss_req_valid_o),
       .miss_req_ready_i     (miss_req_ready_i),

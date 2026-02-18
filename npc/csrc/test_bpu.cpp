@@ -5,6 +5,7 @@
 #include <iostream>
 
 const int INSTR_PER_FETCH = 4;
+const int NRET = 4;
 void tick(Vtb_bpu *top, int cnt = 1) {
   while (cnt--) {
     top->clk_i = 0;
@@ -25,6 +26,12 @@ void reset(Vtb_bpu *top) {
   top->update_target_i = 0;
   top->update_is_call_i = 0;
   top->update_is_ret_i = 0;
+  top->ras_update_valid_i = 0;
+  top->ras_update_is_call_i = 0;
+  top->ras_update_is_ret_i = 0;
+  for (int i = 0; i < NRET; i++) {
+    top->ras_update_pc_i[i] = 0;
+  }
   top->flush_i = 0;
   top->pc_i = 0x80000000;
   tick(top, 5);
@@ -48,10 +55,18 @@ static void train(Vtb_bpu *top, uint32_t pc, bool is_cond, bool taken,
   top->update_target_i = target;
   top->update_is_call_i = is_call ? 1 : 0;
   top->update_is_ret_i = is_ret ? 1 : 0;
+  top->ras_update_valid_i = (is_call || is_ret) ? 0x1 : 0x0;
+  top->ras_update_is_call_i = is_call ? 0x1 : 0x0;
+  top->ras_update_is_ret_i = is_ret ? 0x1 : 0x0;
+  top->ras_update_pc_i[0] = pc;
   tick(top, 1);
   top->update_valid_i = 0;
   top->update_is_call_i = 0;
   top->update_is_ret_i = 0;
+  top->ras_update_valid_i = 0;
+  top->ras_update_is_call_i = 0;
+  top->ras_update_is_ret_i = 0;
+  top->ras_update_pc_i[0] = 0;
 }
 
 int main(int argc, char **argv) {
@@ -323,11 +338,19 @@ int main(int argc, char **argv) {
   top->update_target_i = sync_ret_target;
   top->update_is_call_i = 0;
   top->update_is_ret_i = 1;  // pop architectural stack from base-only to empty
+  top->ras_update_valid_i = 0x1;
+  top->ras_update_is_call_i = 0x0;
+  top->ras_update_is_ret_i = 0x1;
+  top->ras_update_pc_i[0] = rec_ret_pc;
   top->flush_i = 1;
   tick(top, 1);
   top->update_valid_i = 0;
   top->update_is_call_i = 0;
   top->update_is_ret_i = 0;
+  top->ras_update_valid_i = 0;
+  top->ras_update_is_call_i = 0;
+  top->ras_update_is_ret_i = 0;
+  top->ras_update_pc_i[0] = 0;
   top->flush_i = 0;
 
   top->pc_i = rec_ret_pc;
@@ -370,6 +393,53 @@ int main(int argc, char **argv) {
   assert(top->pred_slot_valid_o == 1);
   assert(top->pred_slot_target_o == ifu_proto_call_pc + 4);
   assert(top->npc_o == ifu_proto_call_pc + 4);
+
+  // 13) Multi-commit RAS updates in one cycle must be replayed in-order.
+  reset(top);
+  const uint32_t batch_ret_pc = 0x80000b00;
+  const uint32_t batch_ret_btb_target = 0x90000b00;
+  const uint32_t batch_call_a_pc = 0x80000b20;
+  const uint32_t batch_call_b_pc = 0x80000b40;
+
+  train(top, batch_ret_pc, false, true, batch_ret_btb_target, false, true);
+
+  top->ras_update_valid_i = 0x3;     // slot0 + slot1
+  top->ras_update_is_call_i = 0x3;   // push A then B
+  top->ras_update_is_ret_i = 0x0;
+  top->ras_update_pc_i[0] = batch_call_a_pc;
+  top->ras_update_pc_i[1] = batch_call_b_pc;
+  tick(top, 1);
+  top->ras_update_valid_i = 0;
+  top->ras_update_is_call_i = 0;
+  top->ras_update_is_ret_i = 0;
+  top->ras_update_pc_i[0] = 0;
+  top->ras_update_pc_i[1] = 0;
+
+  top->flush_i = 1;
+  tick(top, 1);
+  top->flush_i = 0;
+
+  top->pc_i = batch_ret_pc;
+  tick(top, 1);
+  assert(top->pred_slot_valid_o == 1);
+  assert(top->pred_slot_target_o == batch_call_b_pc + 4);
+
+  top->ras_update_valid_i = 0x3;    // pop twice
+  top->ras_update_is_call_i = 0x0;
+  top->ras_update_is_ret_i = 0x3;
+  tick(top, 1);
+  top->ras_update_valid_i = 0;
+  top->ras_update_is_call_i = 0;
+  top->ras_update_is_ret_i = 0;
+
+  top->flush_i = 1;
+  tick(top, 1);
+  top->flush_i = 0;
+
+  top->pc_i = batch_ret_pc;
+  tick(top, 1);
+  assert(top->pred_slot_valid_o == 1);
+  assert(top->pred_slot_target_o == batch_ret_btb_target);
 
   std::cout << "--- [PASSED] All checks passed successfully! ---" << std::endl;
   delete top;

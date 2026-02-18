@@ -19,6 +19,10 @@ module bpu #(
     input logic [Cfg.PLEN-1:0] update_target_i,
     input logic                update_is_call_i,
     input logic                update_is_ret_i,
+    input logic [Cfg.NRET-1:0] ras_update_valid_i,
+    input logic [Cfg.NRET-1:0] ras_update_is_call_i,
+    input logic [Cfg.NRET-1:0] ras_update_is_ret_i,
+    input logic [Cfg.NRET-1:0][Cfg.PLEN-1:0] ras_update_pc_i,
     input logic                flush_i,
 
     // from IFU
@@ -218,25 +222,6 @@ module bpu #(
           btb_target_q[up_btb_idx] <= update_target_i;
         end
 
-        if (update_is_call_i) begin
-          logic [Cfg.PLEN-1:0] call_ret_addr;
-          call_ret_addr = update_pc_i + Cfg.PLEN'(INSTR_BYTES);
-          if (arch_count_n < RAS_DEPTH) begin
-            arch_stack_n[arch_count_n] = call_ret_addr;
-            arch_count_n = arch_count_n + 1'b1;
-          end else begin
-            for (int i = 0; i < RAS_DEPTH - 1; i++) begin
-              arch_stack_n[i] = arch_stack_n[i+1];
-            end
-            arch_stack_n[RAS_DEPTH-1] = call_ret_addr;
-            arch_count_n = RAS_DEPTH[RAS_CNT_W-1:0];
-          end
-        end else if (update_is_ret_i) begin
-          if (arch_count_n != '0) begin
-            arch_count_n = arch_count_n - 1'b1;
-          end
-        end
-
         if (update_is_cond_i) begin
           if (update_taken_i) begin
             bht_q[up_bht_idx] <= sat_inc(bht_q[up_bht_idx]);
@@ -245,6 +230,29 @@ module bpu #(
           end
         end else begin
           bht_q[up_bht_idx] <= 2'b11;
+        end
+      end
+
+      for (int i = 0; i < Cfg.NRET; i++) begin
+        if (ras_update_valid_i[i]) begin
+          if (ras_update_is_call_i[i]) begin
+            logic [Cfg.PLEN-1:0] call_ret_addr;
+            call_ret_addr = ras_update_pc_i[i] + Cfg.PLEN'(INSTR_BYTES);
+            if (arch_count_n < RAS_DEPTH) begin
+              arch_stack_n[arch_count_n] = call_ret_addr;
+              arch_count_n = arch_count_n + 1'b1;
+            end else begin
+              for (int j = 0; j < RAS_DEPTH - 1; j++) begin
+                arch_stack_n[j] = arch_stack_n[j+1];
+              end
+              arch_stack_n[RAS_DEPTH-1] = call_ret_addr;
+              arch_count_n = RAS_DEPTH[RAS_CNT_W-1:0];
+            end
+          end else if (ras_update_is_ret_i[i]) begin
+            if (arch_count_n != '0) begin
+              arch_count_n = arch_count_n - 1'b1;
+            end
+          end
         end
       end
 
