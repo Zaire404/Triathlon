@@ -242,6 +242,35 @@ static void send_group(Vtb_backend *top, MemModel &mem,
   top->frontend_ibuf_valid = 0;
 }
 
+static void send_group_with_pred(Vtb_backend *top, MemModel &mem,
+                                 std::array<uint32_t, 32> &rf,
+                                 std::vector<uint32_t> &commit_log,
+                                 uint32_t base_pc,
+                                 const std::array<uint32_t, 4> &instrs,
+                                 const std::array<uint32_t, 4> &pred_npcs,
+                                 bool *flush_seen = nullptr) {
+  bool sent = false;
+  while (!sent) {
+    top->frontend_ibuf_valid = 1;
+    top->frontend_ibuf_pc = base_pc;
+    top->frontend_ibuf_slot_valid = 0;
+    for (int i = 0; i < INSTR_PER_FETCH; i++) {
+      top->frontend_ibuf_instrs[i] = instrs[i];
+      top->frontend_ibuf_slot_valid |= (1u << i);
+      top->frontend_ibuf_pred_npc[i] = pred_npcs[i];
+    }
+    bool ready = tick_sample_frontend_ready(top, mem);
+    if (flush_seen && top->rob_flush_o) {
+      *flush_seen = true;
+    }
+    update_commits(top, rf, commit_log);
+    if (ready) {
+      sent = true;
+    }
+  }
+  top->frontend_ibuf_valid = 0;
+}
+
 static bool run_until(Vtb_backend *top, MemModel &mem,
                       std::array<uint32_t, 32> &rf,
                       std::vector<uint32_t> &commit_log,
@@ -489,6 +518,72 @@ static void test_call_ret_update(Vtb_backend *top, MemModel &mem) {
   expect(ret_ras_flag_ok, "Return RAS batch update carries is_call=0 is_ret=1");
 }
 
+static void test_flush_stress_no_wrong_path_commit(Vtb_backend *top, MemModel &mem) {
+  std::array<uint32_t, 32> rf{};
+  std::vector<uint32_t> commits;
+
+  reset(top, mem);
+
+  // Group-0: slot1 is taken branch (always taken) but pred_npc is set to
+  // fall-through, forcing a mispredict/flush. slot2/3 are wrong-path writes.
+  const uint32_t base0 = 0xC000;
+  const std::array<uint32_t, 4> g0 = {
+      insn_addi(10, 10, 1),    // older-than-branch: should commit
+      insn_beq(0, 0, 64),      // taken to far target
+      insn_addi(2, 2, 1),      // wrong path
+      insn_addi(3, 3, 1)       // wrong path
+  };
+  const std::array<uint32_t, 4> p0 = {
+      base0 + 4, base0 + 8, base0 + 12, base0 + 16
+  };
+
+  // Group-1/2: injected quickly as additional wrong-path traffic.
+  const uint32_t base1 = base0 + 16;
+  const std::array<uint32_t, 4> g1 = {
+      insn_addi(4, 4, 1), insn_addi(5, 5, 1), insn_addi(6, 6, 1), insn_addi(7, 7, 1)
+  };
+  const std::array<uint32_t, 4> p1 = {
+      base1 + 4, base1 + 8, base1 + 12, base1 + 16
+  };
+
+  const uint32_t base2 = base1 + 16;
+  const std::array<uint32_t, 4> g2 = {
+      insn_addi(8, 8, 1), insn_addi(9, 9, 1), insn_addi(11, 11, 1), insn_addi(12, 12, 1)
+  };
+  const std::array<uint32_t, 4> p2 = {
+      base2 + 4, base2 + 8, base2 + 12, base2 + 16
+  };
+
+  bool flush_seen = false;
+  bool wrong_path_commit = false;
+  send_group_with_pred(top, mem, rf, commits, base0, g0, p0, &flush_seen);
+  send_group_with_pred(top, mem, rf, commits, base1, g1, p1, &flush_seen);
+  send_group_with_pred(top, mem, rf, commits, base2, g2, p2, &flush_seen);
+
+  for (int cyc = 0; cyc < 500; cyc++) {
+    tick(top, mem);
+    update_commits(top, rf, commits);
+    if (top->rob_flush_o) {
+      flush_seen = true;
+    }
+    for (uint32_t rd : commits) {
+      if (rd == 2 || rd == 3 || rd == 4 || rd == 5 || rd == 6 || rd == 7 || rd == 8 || rd == 9 || rd == 11 ||
+          rd == 12) {
+        wrong_path_commit = true;
+      }
+    }
+    commits.clear();
+  }
+
+  expect(flush_seen, "Flush stress: branch mispredict flush observed");
+  expect(!wrong_path_commit, "Flush stress: wrong-path registers never committed");
+  expect(rf[10] == 1, "Flush stress: older-than-branch instruction commits exactly once");
+  expect(rf[2] == 0 && rf[3] == 0, "Flush stress: same-group younger writes are squashed");
+  expect(rf[4] == 0 && rf[5] == 0 && rf[6] == 0 && rf[7] == 0, "Flush stress: next-group wrong-path writes are squashed");
+  expect(rf[8] == 0 && rf[9] == 0 && rf[11] == 0 && rf[12] == 0,
+         "Flush stress: additional wrong-path writes are squashed");
+}
+
 int main(int argc, char **argv) {
   Verilated::commandArgs(argc, argv);
   Vtb_backend *top = new Vtb_backend;
@@ -501,6 +596,7 @@ int main(int argc, char **argv) {
   test_store_load_forward(top, mem);
   test_load_miss_refill(top, mem);
   test_call_ret_update(top, mem);
+  test_flush_stress_no_wrong_path_commit(top, mem);
 
   std::cout << ANSI_RES_GRN << "--- [ALL BACKEND TESTS PASSED] ---" << ANSI_RES_RST << std::endl;
   delete top;

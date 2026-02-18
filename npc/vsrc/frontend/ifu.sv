@@ -81,7 +81,8 @@ module ifu #(
         req_pred_slot_valid_q <= 1'b0;
         req_pred_slot_idx_q <= '0;
         req_pred_target_q <= '0;
-      end else if (ifu2bpu_handshake_o.ready && bpu2ifu_handshake_i.valid) begin
+      end else if (req_fire) begin
+        // Advance PC using the prediction sampled for this exact request.
         pc_reg <= bpu2ifu_predicted_pc_i;
         pcg_stage_valid <= 1'b1;
       end

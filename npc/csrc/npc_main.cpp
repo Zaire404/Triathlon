@@ -847,6 +847,22 @@ int main(int argc, char **argv) {
       pending_flush_reason = flush_reason;
     }
 
+    if (args.bru_trace && top->dbg_bru_wb_valid_o) {
+      std::ios::fmtflags f(std::cout.flags());
+      std::cout << "[bruwb ] cycle=" << cycles
+                << " pc=0x" << std::hex << top->dbg_bru_pc_o
+                << " v1=0x" << top->dbg_bru_v1_o
+                << " v2=0x" << top->dbg_bru_v2_o
+                << " redirect=0x" << top->dbg_bru_redirect_pc_o
+                << std::dec
+                << " mispred=" << static_cast<int>(top->dbg_bru_mispred_o)
+                << " is_jump=" << static_cast<int>(top->dbg_bru_is_jump_o)
+                << " is_branch=" << static_cast<int>(top->dbg_bru_is_branch_o)
+                << " op=" << static_cast<int>(top->dbg_bru_op_o)
+                << "\n";
+      std::cout.flags(f);
+    }
+
     bool any_commit = false;
     for (int i = 0; i < 4; i++) {
       bool valid = (top->commit_valid_o >> i) & 0x1;
@@ -1117,6 +1133,7 @@ int main(int argc, char **argv) {
       uint32_t mismatch_mask = 0;
       std::array<uint32_t, 4> fe_instrs{};
       std::array<uint32_t, 4> mem_instrs{};
+      uint32_t slot_valid = static_cast<uint32_t>(top->dbg_fe_slot_valid_o) & 0xFu;
       for (int i = 0; i < 4; i++) {
         fe_instrs[i] = top->dbg_fe_instrs_o[i];
         mem_instrs[i] = mem.mem.read_word(base_pc + static_cast<uint32_t>(i * 4));
@@ -1124,11 +1141,18 @@ int main(int argc, char **argv) {
           mismatch_mask |= (1u << i);
         }
       }
-      if (mismatch_mask != 0) {
+      if (mismatch_mask != 0 || slot_valid != 0xFu) {
         std::ios::fmtflags f(std::cout.flags());
         std::cout << "[fe   ] cycle=" << cycles
                   << " pc=0x" << std::hex << base_pc
+                  << " slot_valid=0x" << slot_valid
                   << " mismatch=0x" << mismatch_mask
+                  << " pred={";
+        for (int i = 0; i < 4; i++) {
+          if (i) std::cout << ",";
+          std::cout << "0x" << static_cast<uint32_t>(top->dbg_fe_pred_npc_o[i]);
+        }
+        std::cout << "}"
                   << " fe={";
         for (int i = 0; i < 4; i++) {
           if (i) std::cout << ",";
