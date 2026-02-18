@@ -27,6 +27,12 @@ module tb_bpu (
     output logic [$clog2(Cfg.INSTR_PER_FETCH)-1:0] pred_slot_idx_o,
     output logic [Cfg.XLEN-1:0] pred_slot_target_o
 );
+`ifdef BPU_ENABLE_GSHARE
+  localparam bit TB_BPU_USE_GSHARE = 1'b1;
+`else
+  localparam bit TB_BPU_USE_GSHARE = 1'b0;
+`endif
+
   handshake_t  ifu_to_bpu_handshake_i;
   handshake_t  bpu_to_ifu_handshake_o;
   ifu_to_bpu_t ifu_to_bpu_i;
@@ -35,7 +41,8 @@ module tb_bpu (
   assign ifu_to_bpu_handshake_i.ready = ifu_ready_i;
   assign ifu_to_bpu_handshake_i.valid = ifu_valid_i;
   bpu #(
-      .Cfg(Cfg)
+      .Cfg(Cfg),
+      .USE_GSHARE(TB_BPU_USE_GSHARE)
   ) i_BPU (
       .clk_i(clk_i),
       .rst_i(rst_i),

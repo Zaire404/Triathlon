@@ -3,7 +3,9 @@ module bpu #(
     parameter config_pkg::cfg_t Cfg = config_pkg::EmptyCfg,
     parameter int unsigned BTB_ENTRIES = 64,
     parameter int unsigned BHT_ENTRIES = 128,
-    parameter int unsigned RAS_DEPTH = 16
+    parameter int unsigned RAS_DEPTH = 16,
+    parameter bit USE_GSHARE = 1'b0,
+    parameter int unsigned GHR_BITS = 8
 ) (
     input logic clk_i,
     input logic rst_i,
@@ -36,6 +38,7 @@ module bpu #(
   localparam int unsigned INSTR_BYTES = Cfg.ILEN / 8;
   localparam int unsigned BTB_TAG_W = Cfg.PLEN - BTB_IDX_W - 2;
   localparam int unsigned RAS_CNT_W = (RAS_DEPTH > 0) ? $clog2(RAS_DEPTH + 1) : 1;
+  localparam int unsigned GHR_W = (GHR_BITS > 0) ? GHR_BITS : 1;
   logic [BTB_ENTRIES-1:0] btb_valid_q;
   logic [BTB_ENTRIES-1:0] btb_is_cond_q;
   logic [BTB_ENTRIES-1:0] btb_is_call_q;
@@ -52,6 +55,7 @@ module bpu #(
   logic pred_event_is_call_q;
   logic pred_event_is_ret_q;
   logic [Cfg.PLEN-1:0] pred_event_pc_q;
+  logic [GHR_W-1:0] ghr_q;
 
   function automatic logic [BTB_IDX_W-1:0] btb_index(input logic [Cfg.PLEN-1:0] pc);
     btb_index = pc[2 +: BTB_IDX_W];
@@ -61,8 +65,18 @@ module bpu #(
     btb_tag = pc[Cfg.PLEN-1:2+BTB_IDX_W];
   endfunction
 
-  function automatic logic [BHT_IDX_W-1:0] bht_index(input logic [Cfg.PLEN-1:0] pc);
-    bht_index = pc[2+:BHT_IDX_W];
+  function automatic logic [BHT_IDX_W-1:0] bht_index(input logic [Cfg.PLEN-1:0] pc,
+                                                      input logic [GHR_W-1:0] ghr);
+    logic [BHT_IDX_W-1:0] pc_idx;
+    logic [BHT_IDX_W-1:0] ghr_idx;
+    begin
+      pc_idx = pc[2+:BHT_IDX_W];
+      ghr_idx = '0;
+      for (int i = 0; i < BHT_IDX_W; i++) begin
+        ghr_idx[i] = ghr[i%GHR_W];
+      end
+      bht_index = USE_GSHARE ? (pc_idx ^ ghr_idx) : pc_idx;
+    end
   endfunction
 
   function automatic logic [1:0] sat_inc(input logic [1:0] val);
@@ -116,7 +130,7 @@ module bpu #(
       logic [Cfg.PLEN-1:0] slot_pc;
       slot_pc = ifu_to_bpu_i.pc + Cfg.PLEN'(INSTR_BYTES * i);
       idx = btb_index(slot_pc);
-      bht_idx = bht_index(slot_pc);
+      bht_idx = bht_index(slot_pc, ghr_q);
 
       predict_pc[i] = slot_pc;
       predict_target[i] = btb_target_q[idx];
@@ -185,6 +199,7 @@ module bpu #(
       pred_event_is_call_q <= 1'b0;
       pred_event_is_ret_q <= 1'b0;
       pred_event_pc_q <= '0;
+      ghr_q <= '0;
       for (int i = 0; i < BHT_ENTRIES; i++) begin
         bht_q[i] <= 2'b01;
       end
@@ -205,7 +220,7 @@ module bpu #(
 
       if (update_valid_i) begin
         up_btb_idx = btb_index(update_pc_i);
-        up_bht_idx = bht_index(update_pc_i);
+        up_bht_idx = bht_index(update_pc_i, ghr_q);
         do_btb_write = (!update_is_cond_i) || update_taken_i;
 
         if (do_btb_write) begin
@@ -227,6 +242,11 @@ module bpu #(
             bht_q[up_bht_idx] <= sat_inc(bht_q[up_bht_idx]);
           end else begin
             bht_q[up_bht_idx] <= sat_dec(bht_q[up_bht_idx]);
+          end
+          if (GHR_W == 1) begin
+            ghr_q <= update_taken_i;
+          end else begin
+            ghr_q <= {ghr_q[GHR_W-2:0], update_taken_i};
           end
         end else begin
           bht_q[up_bht_idx] <= 2'b11;

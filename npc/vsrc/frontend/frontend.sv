@@ -51,6 +51,12 @@ module frontend #(
     input  logic [     Cfg.ICACHE_LINE_WIDTH-1:0] refill_data_i
 );
 
+`ifdef BPU_ENABLE_GSHARE
+  localparam bit BPU_USE_GSHARE = 1'b1;
+`else
+  localparam bit BPU_USE_GSHARE = 1'b0;
+`endif
+
   // =================================================================
   // 内部信号定义
   // =================================================================
@@ -134,7 +140,8 @@ module frontend #(
   // 2. Branch Prediction Unit (BPU)
   // -------------------
   bpu #(
-      .Cfg(Cfg)
+      .Cfg(Cfg),
+      .USE_GSHARE(BPU_USE_GSHARE)
   ) i_bpu (
       .clk_i(clk_i),
       .rst_i(~rst_ni), // 高电平复位

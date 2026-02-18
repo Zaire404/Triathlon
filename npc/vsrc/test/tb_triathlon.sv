@@ -68,6 +68,8 @@ module tb_triathlon #(
     output logic                               dbg_fe_ready_o,
     output logic [Cfg.PLEN-1:0]                dbg_fe_pc_o,
     output logic [Cfg.INSTR_PER_FETCH-1:0][Cfg.ILEN-1:0] dbg_fe_instrs_o,
+    output logic [Cfg.INSTR_PER_FETCH-1:0]     dbg_fe_slot_valid_o,
+    output logic [Cfg.INSTR_PER_FETCH-1:0][Cfg.PLEN-1:0] dbg_fe_pred_npc_o,
     output logic                               dbg_dec_valid_o,
     output logic                               dbg_dec_ready_o,
     output logic                               dbg_rob_ready_o,
@@ -144,7 +146,11 @@ module tb_triathlon #(
     output logic [$bits(decode_pkg::branch_op_e)-1:0] dbg_bru_op_o,
     output logic                               dbg_bru_is_jump_o,
     output logic                               dbg_bru_is_branch_o,
-    output logic                               dbg_bru_valid_o
+    output logic                               dbg_bru_valid_o,
+    output logic                               dbg_bru_wb_valid_o,
+    output logic [Cfg.PLEN-1:0]                dbg_bru_redirect_pc_o,
+    output logic [Cfg.XLEN-1:0]                dbg_bru_v1_o,
+    output logic [Cfg.XLEN-1:0]                dbg_bru_v2_o
 );
 
   // localparams provided via module parameters
@@ -210,6 +216,8 @@ module tb_triathlon #(
   assign dbg_fe_ready_o = dut.fe_ibuf_ready;
   assign dbg_fe_pc_o    = dut.fe_ibuf_pc;
   assign dbg_fe_instrs_o = dut.fe_ibuf_instrs;
+  assign dbg_fe_slot_valid_o = dut.fe_ibuf_slot_valid;
+  assign dbg_fe_pred_npc_o = dut.fe_ibuf_pred_npc;
   assign dbg_dec_valid_o = dut.u_backend.decode_ibuf_valid;
   assign dbg_dec_ready_o = dut.u_backend.decode_ibuf_ready;
   assign dbg_rob_ready_o = dut.u_backend.rob_ready;
@@ -351,5 +359,9 @@ module tb_triathlon #(
   assign dbg_bru_is_jump_o  = dut.u_backend.bru_uop.is_jump;
   assign dbg_bru_is_branch_o = dut.u_backend.bru_uop.is_branch;
   assign dbg_bru_valid_o    = dut.u_backend.bru_en;
+  assign dbg_bru_wb_valid_o = dut.u_backend.bru_wb_valid;
+  assign dbg_bru_redirect_pc_o = dut.u_backend.bru_redirect_pc;
+  assign dbg_bru_v1_o = dut.u_backend.bru_v1;
+  assign dbg_bru_v2_o = dut.u_backend.bru_v2;
 
 endmodule
