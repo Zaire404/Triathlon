@@ -978,11 +978,34 @@ int main(int argc, char **argv) {
                   << " dec(v/r)=" << std::dec << static_cast<int>(top->dbg_dec_valid_o) << "/"
                   << static_cast<int>(top->dbg_dec_ready_o)
                   << " rob_ready=" << static_cast<int>(top->dbg_rob_ready_o)
+                  << " gate(alu/bru/lsu/mdu/csr)="
+                  << static_cast<int>(top->dbg_gate_alu_o) << "/"
+                  << static_cast<int>(top->dbg_gate_bru_o) << "/"
+                  << static_cast<int>(top->dbg_gate_lsu_o) << "/"
+                  << static_cast<int>(top->dbg_gate_mdu_o) << "/"
+                  << static_cast<int>(top->dbg_gate_csr_o)
+                  << " need(alu/bru/lsu/mdu/csr)="
+                  << static_cast<uint32_t>(top->dbg_need_alu_o) << "/"
+                  << static_cast<uint32_t>(top->dbg_need_bru_o) << "/"
+                  << static_cast<uint32_t>(top->dbg_need_lsu_o) << "/"
+                  << static_cast<uint32_t>(top->dbg_need_mdu_o) << "/"
+                  << static_cast<uint32_t>(top->dbg_need_csr_o)
+                  << " free(alu/bru/lsu/csr)="
+                  << static_cast<uint32_t>(top->dbg_free_alu_o) << "/"
+                  << static_cast<uint32_t>(top->dbg_free_bru_o) << "/"
+                  << static_cast<uint32_t>(top->dbg_free_lsu_o) << "/"
+                  << static_cast<uint32_t>(top->dbg_free_csr_o)
                   << " lsu_ld(v/r/addr)=" << static_cast<int>(top->dbg_lsu_ld_req_valid_o) << "/"
                   << static_cast<int>(top->dbg_lsu_ld_req_ready_o) << "/0x" << std::hex
                   << top->dbg_lsu_ld_req_addr_o
                   << " lsu_rsp(v/r)=" << std::dec << static_cast<int>(top->dbg_lsu_ld_rsp_valid_o)
                   << "/" << static_cast<int>(top->dbg_lsu_ld_rsp_ready_o)
+                  << " lsu_sm=" << static_cast<uint32_t>(top->dbg_lsu_state_o)
+                  << " lsu_ld_fire=" << static_cast<int>(top->dbg_lsu_ld_fire_o)
+                  << " lsu_rsp_fire=" << static_cast<int>(top->dbg_lsu_rsp_fire_o)
+                  << " lsu_inflight(tag/addr)=0x" << std::hex
+                  << static_cast<uint32_t>(top->dbg_lsu_inflight_tag_o)
+                  << "/0x" << top->dbg_lsu_inflight_addr_o
                   << " lsu_rs(b/r)=0x" << std::hex
                   << static_cast<uint32_t>(top->dbg_lsu_rs_busy_o) << "/0x"
                   << static_cast<uint32_t>(top->dbg_lsu_rs_ready_o)

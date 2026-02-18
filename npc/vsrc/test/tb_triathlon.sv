@@ -73,6 +73,21 @@ module tb_triathlon #(
     output logic                               dbg_dec_valid_o,
     output logic                               dbg_dec_ready_o,
     output logic                               dbg_rob_ready_o,
+    // Debug (dispatch gate/capacity)
+    output logic                               dbg_gate_alu_o,
+    output logic                               dbg_gate_bru_o,
+    output logic                               dbg_gate_lsu_o,
+    output logic                               dbg_gate_mdu_o,
+    output logic                               dbg_gate_csr_o,
+    output logic [2:0]                         dbg_need_alu_o,
+    output logic [2:0]                         dbg_need_bru_o,
+    output logic [2:0]                         dbg_need_lsu_o,
+    output logic [2:0]                         dbg_need_mdu_o,
+    output logic [2:0]                         dbg_need_csr_o,
+    output logic [$clog2(Cfg.RS_DEPTH+1)-1:0]  dbg_free_alu_o,
+    output logic [$clog2(Cfg.RS_DEPTH+1)-1:0]  dbg_free_bru_o,
+    output logic [$clog2(Cfg.RS_DEPTH+1)-1:0]  dbg_free_lsu_o,
+    output logic [$clog2(Cfg.RS_DEPTH+1)-1:0]  dbg_free_csr_o,
 
     // Debug (LSU load path)
     output logic                               dbg_lsu_ld_req_valid_o,
@@ -80,6 +95,11 @@ module tb_triathlon #(
     output logic [Cfg.PLEN-1:0]                dbg_lsu_ld_req_addr_o,
     output logic                               dbg_lsu_ld_rsp_valid_o,
     output logic                               dbg_lsu_ld_rsp_ready_o,
+    output logic [1:0]                         dbg_lsu_state_o,
+    output logic                               dbg_lsu_ld_fire_o,
+    output logic                               dbg_lsu_rsp_fire_o,
+    output logic [ROB_IDX_W-1:0]               dbg_lsu_inflight_tag_o,
+    output logic [Cfg.PLEN-1:0]                dbg_lsu_inflight_addr_o,
     output logic                               dbg_lsu_issue_valid_o,
     output logic                               dbg_lsu_req_ready_o,
     output logic                               dbg_lsu_issue_ready_o,
@@ -221,6 +241,20 @@ module tb_triathlon #(
   assign dbg_dec_valid_o = dut.u_backend.decode_ibuf_valid;
   assign dbg_dec_ready_o = dut.u_backend.decode_ibuf_ready;
   assign dbg_rob_ready_o = dut.u_backend.rob_ready;
+  assign dbg_gate_alu_o = dut.u_backend.alu_can_accept;
+  assign dbg_gate_bru_o = dut.u_backend.bru_can_accept;
+  assign dbg_gate_lsu_o = dut.u_backend.lsu_can_accept;
+  assign dbg_gate_mdu_o = dut.u_backend.mdu_can_accept;
+  assign dbg_gate_csr_o = dut.u_backend.csr_can_accept;
+  assign dbg_need_alu_o = dut.u_backend.alu_need_cnt;
+  assign dbg_need_bru_o = dut.u_backend.bru_need_cnt;
+  assign dbg_need_lsu_o = dut.u_backend.lsu_need_cnt;
+  assign dbg_need_mdu_o = dut.u_backend.mdu_need_cnt;
+  assign dbg_need_csr_o = dut.u_backend.csr_need_cnt;
+  assign dbg_free_alu_o = dut.u_backend.alu_free_count;
+  assign dbg_free_bru_o = dut.u_backend.bru_free_count;
+  assign dbg_free_lsu_o = dut.u_backend.lsu_free_count;
+  assign dbg_free_csr_o = dut.u_backend.csr_free_count;
 
   // Debug: LSU load path
   assign dbg_lsu_ld_req_valid_o = dut.u_backend.lsu_ld_req_valid;
@@ -228,6 +262,11 @@ module tb_triathlon #(
   assign dbg_lsu_ld_req_addr_o  = dut.u_backend.lsu_ld_req_addr;
   assign dbg_lsu_ld_rsp_valid_o = dut.u_backend.lsu_ld_rsp_valid;
   assign dbg_lsu_ld_rsp_ready_o = dut.u_backend.lsu_ld_rsp_ready;
+  assign dbg_lsu_state_o        = dut.u_backend.u_lsu.state_q;
+  assign dbg_lsu_ld_fire_o      = dut.u_backend.lsu_ld_req_valid & dut.u_backend.lsu_ld_req_ready;
+  assign dbg_lsu_rsp_fire_o     = dut.u_backend.lsu_ld_rsp_valid & dut.u_backend.lsu_ld_rsp_ready;
+  assign dbg_lsu_inflight_tag_o = dut.u_backend.u_lsu.req_tag_q;
+  assign dbg_lsu_inflight_addr_o = dut.u_backend.u_lsu.req_addr_q;
   assign dbg_lsu_issue_valid_o  = dut.u_backend.lsu_en;
   assign dbg_lsu_req_ready_o    = dut.u_backend.lsu_req_ready;
   assign dbg_lsu_issue_ready_o  = dut.u_backend.lsu_issue_ready;
