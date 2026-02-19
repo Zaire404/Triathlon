@@ -57,6 +57,7 @@ module backend #(
   localparam int unsigned WB_WIDTH = 7;
   localparam int unsigned NUM_FUS = 7;  // ALU0, ALU1, BRU, LSU, ALU2, ALU3, CSR
   localparam int unsigned LSU_GROUP_SIZE = 2;
+  localparam int unsigned DCACHE_MSHR_SIZE = 2;
   // A2.2: 开启 commit-time call/ret 更新，配合 BPU speculative RAS 降低 return miss。
   localparam bit ENABLE_COMMIT_RAS_UPDATE = 1'b1;
 
@@ -393,7 +394,7 @@ module backend #(
   decode_pkg::uop_t [DISPATCH_WIDTH-1:0]                   rename_pending_uops_q;
   decode_pkg::uop_t [DISPATCH_WIDTH-1:0]                   rename_pending_uops_d;
   logic                                                     rename_src_from_pending;
-  logic [2:0]                                              rename_sel_count;
+  logic [$clog2(DISPATCH_WIDTH+1)-1:0]                     rename_sel_count;
   logic                                                     rename_fire;
 
   logic [$clog2(RS_DEPTH+1)-1:0]                           alu_free_count;
@@ -499,18 +500,46 @@ module backend #(
   end
 
   always_comb begin
+    int pending_tail;
+    logic [$clog2(DISPATCH_WIDTH+1)-1:0] pending_base_count;
+    logic [$clog2(DISPATCH_WIDTH+1)-1:0] dec_slot_count;
+    logic [$clog2(DISPATCH_WIDTH+1)-1:0] pending_free_slots;
+    logic can_accept_decode_into_pending;
+
     rename_fire = rename_ready && (rename_sel_count != 0);
-    decode_backend_ready = !rename_src_from_pending && rename_ready &&
-                           (!dec_valid || (rename_sel_count != 0));
+    pending_base_count = '0;
+    dec_slot_count = '0;
+    pending_free_slots = '0;
+    can_accept_decode_into_pending = 1'b0;
+    pending_tail = 0;
+
     for (int i = 0; i < DISPATCH_WIDTH; i++) begin
-      rename_pending_valid_d[i] = rename_pending_valid_q[i];
-      rename_pending_uops_d[i]  = rename_pending_uops_q[i];
-    end
-    if (rename_fire) begin
-      for (int i = 0; i < DISPATCH_WIDTH; i++) begin
-        rename_pending_valid_d[i] = rename_left_valid[i];
-        rename_pending_uops_d[i]  = rename_left_uops[i];
+      rename_pending_valid_d[i] = rename_fire ? rename_left_valid[i] : rename_pending_valid_q[i];
+      rename_pending_uops_d[i]  = rename_fire ? rename_left_uops[i]  : rename_pending_uops_q[i];
+      if (rename_pending_valid_d[i]) begin
+        pending_base_count++;
       end
+      if (dec_slot_valid[i]) begin
+        dec_slot_count++;
+      end
+    end
+
+    if (rename_src_from_pending) begin
+      pending_free_slots = $clog2(DISPATCH_WIDTH+1)'(DISPATCH_WIDTH) - pending_base_count;
+      can_accept_decode_into_pending = (dec_slot_count <= pending_free_slots);
+      decode_backend_ready = (!dec_valid) || can_accept_decode_into_pending;
+      if (dec_valid && can_accept_decode_into_pending) begin
+        pending_tail = pending_base_count;
+        for (int i = 0; i < DISPATCH_WIDTH; i++) begin
+          if (dec_slot_valid[i]) begin
+            rename_pending_valid_d[pending_tail] = 1'b1;
+            rename_pending_uops_d[pending_tail] = dec_uops[i];
+            pending_tail++;
+          end
+        end
+      end
+    end else begin
+      decode_backend_ready = rename_ready && (!dec_valid || (rename_sel_count != 0));
     end
   end
 
@@ -1431,7 +1460,8 @@ module backend #(
   // D-Cache (Load/Store)
   // =========================================================
   dcache #(
-      .Cfg(Cfg)
+      .Cfg(Cfg),
+      .N_MSHR(DCACHE_MSHR_SIZE)
   ) u_dcache (
       .clk_i  (clk_i),
       .rst_ni (rst_ni),

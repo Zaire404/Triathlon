@@ -6,7 +6,8 @@ module dcache_axi_wrapper #(
     parameter config_pkg::cfg_t Cfg = config_pkg::EmptyCfg,
     parameter int unsigned AXI_ID_WIDTH = 4,
     parameter int unsigned AXI_DATA_WIDTH = 64,
-    parameter int unsigned AXI_ADDR_WIDTH = Cfg.PLEN
+    parameter int unsigned AXI_ADDR_WIDTH = Cfg.PLEN,
+    parameter int unsigned N_MSHR = 1
 ) (
     input logic clk_i,
     input logic rst_ni,
@@ -115,7 +116,8 @@ module dcache_axi_wrapper #(
   // Instantiate dcache
   // =============================================================
   dcache #(
-      .Cfg(Cfg)
+      .Cfg(Cfg),
+      .N_MSHR(N_MSHR)
   ) u_dcache (
       .clk_i (clk_i),
       .rst_ni(rst_ni),

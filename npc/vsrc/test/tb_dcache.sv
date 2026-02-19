@@ -2,7 +2,9 @@
 import config_pkg::*;
 import decode_pkg::*;
 
-module tb_dcache (
+module tb_dcache #(
+    parameter int unsigned TB_N_MSHR = 2
+) (
     input logic clk_i,
     input logic rst_ni,
     input logic flush_i,
@@ -45,6 +47,9 @@ module tb_dcache (
     output logic [global_config_pkg::Cfg.DCACHE_LINE_WIDTH-1:0] wb_req_data_o
 );
 
-  dcache #(.Cfg(global_config_pkg::Cfg)) dut (.*);
+  dcache #(
+      .Cfg(global_config_pkg::Cfg),
+      .N_MSHR(TB_N_MSHR)
+  ) dut (.*);
 
 endmodule

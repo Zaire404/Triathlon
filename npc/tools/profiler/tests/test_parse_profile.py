@@ -348,6 +348,27 @@ class ParseProfileTest(unittest.TestCase):
         self.assertEqual(detail["lsug_no_free_lane"], 1)
         self.assertEqual(detail["lsug_wait_dcache_owner"], 1)
 
+    def test_decode_blocked_detail_dcache_store_wait_split(self):
+        mod = load_parser_module()
+        with tempfile.TemporaryDirectory() as td:
+            log = Path(td) / "coremark.log"
+            log.write_text(
+                "\n".join(
+                    [
+                        "[stall ] cycle=10 no_commit=20 dec(v/r)=1/0 rob_ready=1 dc_store_wait(same/full)=1/0",
+                        "[stall ] cycle=20 no_commit=20 dec(v/r)=1/0 rob_ready=1 dc_store_wait(same/full)=0/1",
+                        "IPC=0.500000 CPI=2.000000 cycles=100 commits=50",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            result = mod.parse_single_log(log)
+
+        detail = result["stall_decode_blocked_detail"]
+        self.assertEqual(detail["dc_store_wait_same_line"], 1)
+        self.assertEqual(detail["dc_store_wait_mshr_full"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

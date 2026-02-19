@@ -108,15 +108,27 @@ void handle_memory_interaction(Vtb_dcache *top, VerilatedVcdC *tfp,
 // 发起读请求并校验结果
 void check_load(Vtb_dcache *top, VerilatedVcdC *tfp, uint32_t addr,
                 uint32_t expected_data, int op, const char *msg) {
-  wait_until_ready(top, tfp, false);
-
   top->ld_req_valid_i = 1;
   top->ld_req_addr_i = addr;
   top->ld_req_op_i = op;
 
-  // 必须在这一拍给完激励后 tick，让 Cache 采样
-  tick(top, tfp);
-  top->ld_req_valid_i = 0; // 撤销请求
+  bool req_accepted = false;
+  while (!req_accepted && sim_time < MAX_SIM_TIME) {
+    if (top->ld_req_ready_o) {
+      tick(top, tfp); // handshake
+      req_accepted = true;
+      break;
+    } else if (top->miss_req_valid_o || top->wb_req_valid_o) {
+      handle_memory_interaction(top, tfp, expected_data);
+      continue;
+    }
+    tick(top, tfp);
+  }
+  top->ld_req_valid_i = 0;
+  if (!req_accepted) {
+    std::cout << "[FAIL] " << msg << " load request not accepted." << std::endl;
+    assert(false);
+  }
 
   // 检查是否 Hit 还是 Miss
   // 如果下一拍 miss_req_valid_o 拉高，说明 Miss 了
@@ -148,19 +160,38 @@ void check_load(Vtb_dcache *top, VerilatedVcdC *tfp, uint32_t addr,
       tick(top, tfp);
     }
   }
+  if (!got_resp) {
+    std::cout << "[FAIL] " << msg << " load response timeout." << std::endl;
+    assert(false);
+  }
 }
 
 // 发起写请求
 void send_store(Vtb_dcache *top, VerilatedVcdC *tfp, uint32_t addr,
                 uint32_t data, int op) {
-  wait_until_ready(top, tfp, true);
   top->st_req_valid_i = 1;
   top->st_req_addr_i = addr;
   top->st_req_data_i = data;
   top->st_req_op_i = op;
 
-  tick(top, tfp);
+  bool req_accepted = false;
+  while (!req_accepted && sim_time < MAX_SIM_TIME) {
+    if (top->st_req_ready_o) {
+      tick(top, tfp); // handshake
+      req_accepted = true;
+      break;
+    } else if (top->miss_req_valid_o || top->wb_req_valid_o) {
+      handle_memory_interaction(top, tfp, 0x00000000);
+      continue;
+    }
+    tick(top, tfp);
+  }
   top->st_req_valid_i = 0;
+  if (!req_accepted) {
+    std::cout << "[FAIL] store request not accepted at addr=0x" << std::hex << addr
+              << std::endl;
+    assert(false);
+  }
 
   // 等待 Store 完成 (Store 可能触发 Miss/WB)
   // Store 完成的标志是状态机回到 IDLE。
@@ -177,6 +208,22 @@ void send_store(Vtb_dcache *top, VerilatedVcdC *tfp, uint32_t addr,
     }
     tick(top, tfp);
     timeout++;
+  }
+}
+
+void drain_background_traffic(Vtb_dcache *top, VerilatedVcdC *tfp,
+                              uint32_t refill_data_val, int max_rounds = 8) {
+  for (int r = 0; r < max_rounds; r++) {
+    bool seen = false;
+    for (int i = 0; i < 40; i++) {
+      if (top->miss_req_valid_o || top->wb_req_valid_o) {
+        handle_memory_interaction(top, tfp, refill_data_val);
+        seen = true;
+        break;
+      }
+      tick(top, tfp);
+    }
+    if (!seen) return;
   }
 }
 
@@ -228,6 +275,7 @@ int main(int argc, char **argv) {
   // Idle
   std::cout << "[TEST] Case 4: Store Miss (Write Allocate)" << std::endl;
   send_store(top, tfp, 0x80002000, 0xCAFEBABE, OP_SW);
+  drain_background_traffic(top, tfp, 0x00000000);
 
   // 验证: 读回来应该是 0xCAFEBABE，而不是 Refill 的 0x00000000
   check_load(top, tfp, 0x80002000, 0xCAFEBABE, OP_LW,
@@ -309,6 +357,155 @@ int main(int argc, char **argv) {
     std::cout << "[PASS] Case 7: Misalignment Error Detected." << std::endl;
   else
     std::cout << "[FAIL] Case 7: No Error on Misalignment." << std::endl;
+
+  // ============================================================
+  // Test 8: Non-blocking miss allocation (MSHR behavior)
+  // ============================================================
+  std::cout << "[TEST] Case 8: Non-blocking second miss before first refill"
+            << std::endl;
+
+  reset(top, tfp);
+  top->miss_req_ready_i = 0;
+  top->refill_valid_i = 0;
+  top->wb_req_ready_i = 0;
+  top->ld_rsp_ready_i = 1;
+  top->st_req_valid_i = 0;
+  top->ld_req_valid_i = 0;
+
+  // First load miss request.
+  wait_until_ready(top, tfp, false);
+  top->ld_req_valid_i = 1;
+  top->ld_req_addr_i = 0x80004000;
+  top->ld_req_op_i = OP_LW;
+  tick(top, tfp);
+  top->ld_req_valid_i = 0;
+
+  bool first_miss_seen = false;
+  for (int i = 0; i < 30; i++) {
+    if (top->wb_req_valid_o) {
+      top->wb_req_ready_i = 1;
+      tick(top, tfp);
+      top->wb_req_ready_i = 0;
+      continue;
+    }
+    if (top->miss_req_valid_o) {
+      first_miss_seen = true;
+      top->miss_req_ready_i = 1;
+      tick(top, tfp); // handshake first miss
+      top->miss_req_ready_i = 0;
+      break;
+    }
+    tick(top, tfp);
+  }
+  if (!first_miss_seen) {
+    std::cout << "[FAIL] Case 8: first miss request not observed." << std::endl;
+    assert(false);
+  }
+
+  // Keep first miss outstanding (no refill yet), then issue second load miss.
+  bool second_req_accepted = false;
+  for (int i = 0; i < 30; i++) {
+    if (top->ld_req_ready_o) {
+      second_req_accepted = true;
+      top->ld_req_valid_i = 1;
+      top->ld_req_addr_i = 0x80005000;
+      top->ld_req_op_i = OP_LW;
+      tick(top, tfp); // handshake second request
+      top->ld_req_valid_i = 0;
+      break;
+    }
+    tick(top, tfp);
+  }
+  if (!second_req_accepted) {
+    std::cout << "[FAIL] Case 8: second miss cannot be accepted while first miss "
+                 "is pending."
+              << std::endl;
+    assert(false);
+  }
+
+  bool second_miss_seen = false;
+  for (int i = 0; i < 30; i++) {
+    if (top->wb_req_valid_o) {
+      top->wb_req_ready_i = 1;
+      tick(top, tfp);
+      top->wb_req_ready_i = 0;
+      continue;
+    }
+    if (top->miss_req_valid_o) {
+      second_miss_seen = true;
+      break;
+    }
+    tick(top, tfp);
+  }
+  if (!second_miss_seen) {
+    std::cout << "[FAIL] Case 8: second miss request not issued before first "
+                 "refill."
+              << std::endl;
+    assert(false);
+  }
+  std::cout << "[PASS] Case 8: Non-blocking miss path works." << std::endl;
+
+  // ============================================================
+  // Test 9: Store miss should not be blocked by pending load miss
+  // ============================================================
+  std::cout << "[TEST] Case 9: Store miss with pending load miss" << std::endl;
+
+  reset(top, tfp);
+  top->miss_req_ready_i = 1;
+  top->refill_valid_i = 0;
+  top->wb_req_ready_i = 1;
+  top->ld_rsp_ready_i = 1;
+  top->st_req_valid_i = 0;
+  top->ld_req_valid_i = 0;
+
+  // First load miss request.
+  wait_until_ready(top, tfp, false);
+  top->ld_req_valid_i = 1;
+  top->ld_req_addr_i = 0x80006000;
+  top->ld_req_op_i = OP_LW;
+  tick(top, tfp);
+  top->ld_req_valid_i = 0;
+
+  int miss_fire_count = 0;
+  for (int i = 0; i < 40; i++) {
+    if (top->miss_req_valid_o && top->miss_req_ready_i) {
+      miss_fire_count++;
+      tick(top, tfp);
+      break;
+    }
+    tick(top, tfp);
+  }
+  if (miss_fire_count < 1) {
+    std::cout << "[FAIL] Case 9: first miss request not observed." << std::endl;
+    assert(false);
+  }
+
+  // Keep first miss outstanding (no refill yet), then issue store miss.
+  wait_until_ready(top, tfp, true);
+  top->st_req_valid_i = 1;
+  top->st_req_addr_i = 0x80007000;
+  top->st_req_data_i = 0xA5A5A5A5;
+  top->st_req_op_i = OP_SW;
+  tick(top, tfp);
+  top->st_req_valid_i = 0;
+
+  bool second_store_miss_seen = false;
+  for (int i = 0; i < 60; i++) {
+    if (top->miss_req_valid_o && top->miss_req_ready_i) {
+      miss_fire_count++;
+      second_store_miss_seen = true;
+      tick(top, tfp);
+      break;
+    }
+    tick(top, tfp);
+  }
+  if (!second_store_miss_seen || miss_fire_count < 2) {
+    std::cout << "[FAIL] Case 9: store miss request not issued while first load "
+                 "miss is pending."
+              << std::endl;
+    assert(false);
+  }
+  std::cout << "[PASS] Case 9: Store miss non-blocking path works." << std::endl;
 
   // Cleanup
   for (int i = 0; i < 20; i++)
