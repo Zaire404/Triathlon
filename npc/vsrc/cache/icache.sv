@@ -49,11 +49,12 @@ module icache #(
   // ---------------------------------------------------------------------------
   // State machine
   // ---------------------------------------------------------------------------
-  typedef enum logic [1:0] {
+  typedef enum logic [2:0] {
     IDLE,
     LOOKUP,
     MISS_REQ,
-    MISS_WAIT_REFILL
+    MISS_WAIT_REFILL,
+    REFILL_RECOVER
   } ic_state_e;
   ic_state_e state_q, state_d;
   logic req_killed_q;
@@ -339,13 +340,11 @@ module icache #(
   // Simple response registers
   // ---------------------------------------------------------------------------
   logic                           rsp_valid_q;
-  logic                           rsp_ready_q;
   logic [FETCH_NUM-1:0][ILEN-1:0] rsp_instrs_q;
 
   assign ifu_rsp_instrs_o          = rsp_instrs_q;
   assign ifu_rsp_handshake_o.valid = rsp_valid_q;
-  assign ifu_rsp_handshake_o.ready = rsp_ready_q;
-  // assign ifu_rsp_handshake_o.ready = 1'b1;  // no back-pressure from cache
+  assign ifu_rsp_handshake_o.ready = (state_q == IDLE);
 
   // ---------------------------------------------------------------------------
   // Miss / refill write port & handshake defaults
@@ -414,7 +413,6 @@ module icache #(
       tag_b_expected_q  <= '0;
       rsp_valid_q       <= 1'b0;
       rsp_instrs_q      <= '0;
-      // rsp_ready_q       <= 1'b1;
       miss_paddr_q      <= '0;
       miss_victim_way_q <= '0;
       miss_index_q      <= '0;
@@ -433,7 +431,6 @@ module icache #(
 
       unique case (state_q)
         IDLE: begin
-          rsp_ready_q <= 1'b1;
           if (ifu_req_handshake_i.valid && !ifu_req_flush_i) begin
             // Latch request (Use computed _d signals)
             pc_q             <= ifu_req_pc_i;
@@ -451,7 +448,6 @@ module icache #(
         end
 
         LOOKUP: begin
-          rsp_ready_q <= 1'b0;
           if (!ifu_req_flush_i) begin
             // Use array outputs + stored expected tag to determine hit/miss
             if (hit_all) begin
@@ -486,6 +482,12 @@ module icache #(
           if (refill_valid_i && refill_ready_o) begin
             rsp_valid_q <= 1'b0;
           end
+        end
+
+        REFILL_RECOVER: begin
+          // Keep one quiet cycle after refill write so sync SRAM read path
+          // observes updated line, then retry LOOKUP for the same request.
+          rsp_valid_q <= 1'b0;
         end
 
         default: begin
@@ -532,9 +534,14 @@ module icache #(
 
       MISS_WAIT_REFILL: begin
         if (refill_valid_i && refill_ready_o) begin
-          // After refill, re-do lookup for the same PC
-          state_d = LOOKUP;
+          // After refill write, wait one cycle before re-lookup to avoid
+          // issuing a duplicate miss on stale array read data.
+          state_d = REFILL_RECOVER;
         end
+      end
+
+      REFILL_RECOVER: begin
+        state_d = LOOKUP;
       end
 
       default: state_d = IDLE;

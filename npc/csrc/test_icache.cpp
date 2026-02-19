@@ -41,6 +41,7 @@ private:
   // 暂存当前的 Miss 请求信息
   uint64_t pending_addr;
   uint32_t pending_victim_way;
+  int miss_req_count = 0;
 
 public:
   SimulatedMemory()
@@ -115,6 +116,7 @@ public:
     // 处理新的 Miss 请求
     // 只有当 ICache 发送 Miss 且模拟器处于 IDLE 时处理
     if (top->miss_req_valid_o && top->miss_req_ready_i && state == IDLE) {
+      miss_req_count++;
       pending_addr = top->miss_req_paddr_o;
       pending_victim_way = top->miss_req_victim_way_o;
 
@@ -138,6 +140,9 @@ public:
     uint64_t line_addr = addr & ~((uint64_t)LINE_WIDTH_BYTES - 1);
     memory_data[line_addr] = data;
   }
+
+  void reset_miss_req_count() { miss_req_count = 0; }
+  int get_miss_req_count() const { return miss_req_count; }
 };
 
 /**
@@ -308,10 +313,16 @@ int main(int argc, char **argv) {
   // =================================================================
   //  Test 1: 单行 Miss (Addr 0x80000000)
   // =================================================================
+  memory.reset_miss_req_count();
   bool test1_passed = run_test_case(
       top, &memory, "1: Single Line Miss (0x80000000)", 0x80000000,
       {0x80000000, 0x80000004, 0x80000008, 0x8000000C});
   assert(test1_passed);
+  if (memory.get_miss_req_count() != 1) {
+    std::cout << "    [ERROR] expected single miss request, got "
+              << memory.get_miss_req_count() << std::endl;
+    assert(false);
+  }
   std::cout << "--- Test 1 PASSED ---" << std::endl;
 
   // 清理: 运行一个周期，清除状态
