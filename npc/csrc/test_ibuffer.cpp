@@ -74,6 +74,18 @@ void set_fetch_group(Vtb_ibuffer *top, uint32_t base_pc,
   }
 }
 
+void set_fetch_group_mask(Vtb_ibuffer *top, uint32_t base_pc,
+                          const std::vector<uint32_t> &instrs,
+                          uint8_t slot_valid_mask) {
+  assert(instrs.size() == INSTR_PER_FETCH);
+  top->fe_pc_i = base_pc;
+  top->fe_slot_valid_i = slot_valid_mask;
+  for (int i = 0; i < INSTR_PER_FETCH; ++i) {
+    top->fe_instrs_i[i] = instrs[i];
+    top->fe_pred_npc_i[i] = base_pc + (i + 1) * ILEN_BYTES;
+  }
+}
+
 // 辅助函数：从输出读取 Decode Group
 std::vector<Instruction> get_decode_group(Vtb_ibuffer *top) {
   std::vector<Instruction> group;
@@ -110,6 +122,105 @@ int main(int argc, char **argv) {
 
   std::cout << "--- [START] IBuffer Verification ---" << std::endl;
   reset(top);
+
+  // =========================================================
+  // TDD RED/GREEN: Elastic output behavior checks
+  // =========================================================
+  // Case 1: Empty queue + FE valid + decode ready => same-cycle output (bypass)
+  {
+    const uint32_t base_pc = 0x80001000;
+    const std::vector<uint32_t> instrs = {0x11111111, 0x22222222, 0x33333333,
+                                          0x44444444};
+    top->flush_i = 0;
+    top->fe_valid_i = 1;
+    top->ibuf_ready_i = 1;
+    set_fetch_group_mask(top, base_pc, instrs, 0b0011); // 2 valid lanes
+    top->clk_i = 0;
+    top->eval();
+
+    if (!top->fe_ready_o) {
+      std::cerr << "[fail] expected FE ready for empty bypass case" << std::endl;
+      delete top;
+      return 1;
+    }
+    if (!top->ibuf_valid_o) {
+      std::cerr << "[fail] expected same-cycle ibuf_valid in empty bypass case"
+                << std::endl;
+      delete top;
+      return 1;
+    }
+    if (top->ibuf_instrs_o[0] != instrs[0] || top->ibuf_pcs_o[0] != base_pc ||
+        top->ibuf_slot_valid_o != 0b0011) {
+      std::cerr << "[fail] bypass output mismatch in empty bypass case"
+                << std::endl;
+      delete top;
+      return 1;
+    }
+    top->clk_i = 1;
+    top->eval();
+    main_time++;
+  }
+
+  // Case 2: Queue has 2 entries, FE provides 2 entries => same-cycle merge to 4
+  //   cycle A: enqueue 2 entries while decode not ready.
+  //   cycle B: decode ready + FE provides 2 more entries; expect 4-lane output:
+  //            {old0, old1, new0, new1}
+  {
+    reset(top);
+    const uint32_t old_pc = 0x80002000;
+    const uint32_t new_pc = 0x80003000;
+    const std::vector<uint32_t> old_instrs = {0xaaaa0001, 0xaaaa0002, 0xaaaa0003,
+                                              0xaaaa0004};
+    const std::vector<uint32_t> new_instrs = {0xbbbb0001, 0xbbbb0002, 0xbbbb0003,
+                                              0xbbbb0004};
+
+    top->flush_i = 0;
+    top->fe_valid_i = 1;
+    top->ibuf_ready_i = 0;
+    set_fetch_group_mask(top, old_pc, old_instrs, 0b0011);
+    top->clk_i = 0;
+    top->eval();
+    if (!top->fe_ready_o) {
+      std::cerr << "[fail] expected FE ready when enqueueing partial bundle"
+                << std::endl;
+      delete top;
+      return 1;
+    }
+    top->clk_i = 1;
+    top->eval();
+    main_time++;
+
+    top->flush_i = 0;
+    top->fe_valid_i = 1;
+    top->ibuf_ready_i = 1;
+    set_fetch_group_mask(top, new_pc, new_instrs, 0b0011);
+    top->clk_i = 0;
+    top->eval();
+
+    if (!top->ibuf_valid_o) {
+      std::cerr << "[fail] expected ibuf_valid in elastic-merge case" << std::endl;
+      delete top;
+      return 1;
+    }
+    if (top->ibuf_slot_valid_o != 0b1111) {
+      std::cerr << "[fail] expected full 4-lane slot_valid after merge, got 0x"
+                << std::hex << static_cast<uint32_t>(top->ibuf_slot_valid_o)
+                << std::dec << std::endl;
+      delete top;
+      return 1;
+    }
+    if (top->ibuf_instrs_o[0] != old_instrs[0] ||
+        top->ibuf_instrs_o[1] != old_instrs[1] ||
+        top->ibuf_instrs_o[2] != new_instrs[0] ||
+        top->ibuf_instrs_o[3] != new_instrs[1]) {
+      std::cerr << "[fail] elastic merge lane content mismatch" << std::endl;
+      delete top;
+      return 1;
+    }
+    top->clk_i = 1;
+    top->eval();
+    main_time++;
+  }
 
   uint32_t current_fetch_pc = 0x80000000;
   int cycles = 100000;
@@ -227,7 +338,7 @@ int main(int argc, char **argv) {
     // --- 8. 边界情况检查 ---
     // 满状态检查: 如果队列里的预期指令数 >= IB_DEPTH (或者接近), fe_ready_o
     // 应该拉低 ibuffer.sv 逻辑: free_slots >= FETCH_WIDTH
-    if (!top->flush_i) {
+    if (!top->flush_i && top->fe_valid_i) {
       if (expected_queue.size() > (IB_DEPTH - INSTR_PER_FETCH)) {
         // 空间不足以放一个完整的 Group
         if (top->fe_ready_o == 1) {
@@ -243,7 +354,8 @@ int main(int argc, char **argv) {
 
     // 空状态检查
     if (!top->flush_i) {
-      if (expected_queue.size() < DECODE_WIDTH) {
+      bool has_elastic_input = (top->fe_valid_i && top->fe_ready_o);
+      if (expected_queue.empty() && !has_elastic_input) {
         if (top->ibuf_valid_o == 1) {
           std::cout << "[ERROR] IBuffer Empty Check: Expected Size="
                     << expected_queue.size() << " but ibuf_valid is 1."

@@ -30,6 +30,7 @@ module ibuffer #(
 );
   import global_config_pkg::ibuf_entry_t;
   localparam int unsigned FETCH_WIDTH = Cfg.INSTR_PER_FETCH;
+  localparam int unsigned INSTR_BYTES = Cfg.ILEN / 8;
   localparam int unsigned PTR_W = $clog2(IB_DEPTH);
   localparam int unsigned CNT_W = $clog2(IB_DEPTH + 1);
   initial
@@ -44,28 +45,59 @@ module ibuffer #(
   logic [PTR_W-1:0] rd_ptr_q, rd_ptr_d;
   logic [CNT_W-1:0] count_q, count_d;
 
-  // 计算当前空间、是否可一次性接收完整 fetch group
+  // 计算当前空间、输入有效条目数、可否接收
   logic [CNT_W-1:0] free_slots;
+  logic [CNT_W-1:0] fe_valid_entry_count_w;
   assign free_slots = IB_DEPTH[CNT_W-1:0] - count_q;
   logic can_enq_group;
-  assign can_enq_group = (free_slots >= FETCH_WIDTH[CNT_W-1:0]);
+  assign can_enq_group = (free_slots >= fe_valid_entry_count_w);
 
   // 上游 ready：flush 时不接，空间不足时不接
   assign fe_ready_o = (!flush_i) && can_enq_group;
 
-  // 下游 valid：只有队列里条目数 >= DECODE_WIDTH 才发一个完整 bundle
-  logic can_deq_group;
-  assign can_deq_group = (count_q >= DECODE_WIDTH[CNT_W-1:0]);
+  logic [CNT_W-1:0] avail_count_w;
+  logic [CNT_W-1:0] out_count_w;
+  logic [CNT_W-1:0] pop_total_w;
+  logic [CNT_W-1:0] pop_from_q_w;
+  logic [CNT_W-1:0] consume_from_fe_w;
+  logic [CNT_W-1:0] push_to_q_w;
+  logic [CNT_W-1:0] fe_push_count_w;
+  logic fe_fire_w;
+  ibuf_entry_t [FETCH_WIDTH-1:0] fe_valid_entries_w;
 
-  assign ibuf_valid_o  = (!flush_i) && can_deq_group;
+  assign fe_fire_w = fe_valid_i && fe_ready_o;
+  assign fe_push_count_w = fe_fire_w ? fe_valid_entry_count_w : CNT_W'(0);
+  assign avail_count_w = count_q + fe_push_count_w;
+  assign out_count_w = (avail_count_w >= DECODE_WIDTH[CNT_W-1:0]) ? DECODE_WIDTH[CNT_W-1:0] : avail_count_w;
+  assign ibuf_valid_o = (!flush_i) && (out_count_w != CNT_W'(0));
+  assign pop_total_w = (ibuf_valid_o && ibuf_ready_i) ? out_count_w : CNT_W'(0);
+  assign pop_from_q_w = (pop_total_w >= count_q) ? count_q : pop_total_w;
+  assign consume_from_fe_w = pop_total_w - pop_from_q_w;
+  assign push_to_q_w = fe_push_count_w - consume_from_fe_w;
 
-  // 计算这拍实际 push/pop 数量
-  int unsigned push_n;
-  int unsigned pop_n;
-
+  // 压缩 FE 输入：只保留 slot_valid=1 的 entry
   always_comb begin
-    push_n = (fe_valid_i && fe_ready_o) ? FETCH_WIDTH : 0;
-    pop_n  = (ibuf_valid_o && ibuf_ready_i) ? DECODE_WIDTH : 0;
+    int unsigned wr_idx;
+    wr_idx = 0;
+    fe_valid_entry_count_w = '0;
+    for (int i = 0; i < FETCH_WIDTH; i++) begin
+      fe_valid_entries_w[i].instr = '0;
+      fe_valid_entries_w[i].pc = '0;
+      fe_valid_entries_w[i].slot_valid = 1'b0;
+      fe_valid_entries_w[i].pred_npc = '0;
+    end
+    if (fe_valid_i) begin
+      for (int i = 0; i < FETCH_WIDTH; i++) begin
+        if (fe_slot_valid_i[i]) begin
+          fe_valid_entries_w[wr_idx].instr = fe_instrs_i[i];
+          fe_valid_entries_w[wr_idx].pc = fe_pc_i + Cfg.PLEN'(INSTR_BYTES * i);
+          fe_valid_entries_w[wr_idx].slot_valid = 1'b1;
+          fe_valid_entries_w[wr_idx].pred_npc = fe_pred_npc_i[i];
+          wr_idx++;
+        end
+      end
+    end
+    fe_valid_entry_count_w = CNT_W'(wr_idx);
   end
 
   // FIFO 控制逻辑
@@ -81,39 +113,53 @@ module ibuffer #(
       rd_ptr_d = '0;
       count_d  = '0;
     end else begin
-      // 写入：把 fetch group 拆成若干 entry 写进 FIFO
-      if (push_n != 0) begin : gen_enqueue
+      // 写入：仅写入未被当拍消费的 FE 有效条目
+      if (push_to_q_w != CNT_W'(0)) begin : gen_enqueue
         for (int i = 0; i < FETCH_WIDTH; i++) begin
-          // 写指针位置 = wr_ptr_q + i（环形）
-          fifo_d[PTR_W'(wr_ptr_q + i)].instr = fe_instrs_i[i];
-          // 这里假设固定 4 字节指令：pc = base_pc + 4*i
-          fifo_d[PTR_W'(wr_ptr_q + i)].pc    = fe_pc_i + (Cfg.ILEN / 8 * i);
-          fifo_d[PTR_W'(wr_ptr_q + i)].slot_valid = fe_slot_valid_i[i];
-          fifo_d[PTR_W'(wr_ptr_q + i)].pred_npc = fe_pred_npc_i[i];
+          if (CNT_W'(i) < push_to_q_w) begin
+            fifo_d[PTR_W'(wr_ptr_q + PTR_W'(i))] =
+                fe_valid_entries_w[consume_from_fe_w + CNT_W'(i)];
+          end
         end
 
-        wr_ptr_d = wr_ptr_q + FETCH_WIDTH[PTR_W-1:0];
-        count_d  = count_q + FETCH_WIDTH[CNT_W-1:0];
+        wr_ptr_d = wr_ptr_q + PTR_W'(push_to_q_w);
       end : gen_enqueue
 
-      // 读出：只在成功发出一个完整 decode bundle 时移动 rd_ptr/count
-      if (pop_n != 0) begin
-        rd_ptr_d = rd_ptr_q + DECODE_WIDTH[PTR_W-1:0];
-        count_d  = count_d - DECODE_WIDTH[CNT_W-1:0];
+      if (pop_from_q_w != CNT_W'(0)) begin
+        rd_ptr_d = rd_ptr_q + PTR_W'(pop_from_q_w);
       end
+
+      count_d = count_q + push_to_q_w - pop_from_q_w;
     end
   end
 
-  // 读出到下游（组合读，靠 valid 控制）
+  // 读出到下游（支持 partial bundle / elastic merge）
   always_comb begin
     for (int j = 0; j < DECODE_WIDTH; j++) begin
-      logic [  PTR_W:0] idx = rd_ptr_q + j[PTR_W-1:0];
-      logic [PTR_W-1:0] ridx = idx[PTR_W-1:0];
+      logic [PTR_W-1:0] ridx;
+      logic [CNT_W-1:0] fe_idx;
+      ridx = '0;
+      fe_idx = '0;
+      ibuf_instrs_o[j] = '0;
+      ibuf_pcs_o[j] = '0;
+      ibuf_slot_valid_o[j] = 1'b0;
+      ibuf_pred_npc_o[j] = '0;
 
-      ibuf_instrs_o[j] = fifo_q[ridx].instr;
-      ibuf_pcs_o[j]    = fifo_q[ridx].pc;
-      ibuf_slot_valid_o[j] = fifo_q[ridx].slot_valid;
-      ibuf_pred_npc_o[j] = fifo_q[ridx].pred_npc;
+      if (!flush_i && (CNT_W'(j) < out_count_w)) begin
+        if (CNT_W'(j) < count_q) begin
+          ridx = PTR_W'(rd_ptr_q + PTR_W'(j));
+          ibuf_instrs_o[j] = fifo_q[ridx].instr;
+          ibuf_pcs_o[j] = fifo_q[ridx].pc;
+          ibuf_slot_valid_o[j] = fifo_q[ridx].slot_valid;
+          ibuf_pred_npc_o[j] = fifo_q[ridx].pred_npc;
+        end else begin
+          fe_idx = CNT_W'(j) - count_q;
+          ibuf_instrs_o[j] = fe_valid_entries_w[fe_idx].instr;
+          ibuf_pcs_o[j] = fe_valid_entries_w[fe_idx].pc;
+          ibuf_slot_valid_o[j] = fe_valid_entries_w[fe_idx].slot_valid;
+          ibuf_pred_npc_o[j] = fe_valid_entries_w[fe_idx].pred_npc;
+        end
+      end
     end
   end
 

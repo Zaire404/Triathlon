@@ -643,9 +643,17 @@ static void test_flush_stress_no_wrong_path_commit(Vtb_backend *top, MemModel &m
 
   bool flush_seen = false;
   bool wrong_path_commit = false;
+  bool sent_g1_before_flush = false;
+  bool sent_g2_before_flush = false;
   send_group_with_pred(top, mem, rf, commits, base0, g0, p0, &flush_seen);
-  send_group_with_pred(top, mem, rf, commits, base1, g1, p1, &flush_seen);
-  send_group_with_pred(top, mem, rf, commits, base2, g2, p2, &flush_seen);
+  if (!flush_seen) {
+    send_group_with_pred(top, mem, rf, commits, base1, g1, p1, &flush_seen);
+    sent_g1_before_flush = true;
+  }
+  if (!flush_seen) {
+    send_group_with_pred(top, mem, rf, commits, base2, g2, p2, &flush_seen);
+    sent_g2_before_flush = true;
+  }
 
   for (int cyc = 0; cyc < 500; cyc++) {
     tick(top, mem);
@@ -653,9 +661,18 @@ static void test_flush_stress_no_wrong_path_commit(Vtb_backend *top, MemModel &m
     if (top->rob_flush_o) {
       flush_seen = true;
     }
-    for (uint32_t rd : commits) {
-      if (rd == 2 || rd == 3 || rd == 4 || rd == 5 || rd == 6 || rd == 7 || rd == 8 || rd == 9 || rd == 11 ||
-          rd == 12) {
+    for (int slot = 0; slot < NRET; slot++) {
+      bool v = (top->commit_valid_o >> slot) & 0x1;
+      bool we = (top->commit_we_o >> slot) & 0x1;
+      uint32_t rd = (top->commit_areg_o >> (slot * 5)) & 0x1F;
+      bool is_wrong = (rd == 2 || rd == 3);
+      if (sent_g1_before_flush) {
+        is_wrong = is_wrong || (rd == 4 || rd == 5 || rd == 6 || rd == 7);
+      }
+      if (sent_g2_before_flush) {
+        is_wrong = is_wrong || (rd == 8 || rd == 9 || rd == 11 || rd == 12);
+      }
+      if (v && we && is_wrong) {
         wrong_path_commit = true;
       }
     }
@@ -666,9 +683,14 @@ static void test_flush_stress_no_wrong_path_commit(Vtb_backend *top, MemModel &m
   expect(!wrong_path_commit, "Flush stress: wrong-path registers never committed");
   expect(rf[10] == 1, "Flush stress: older-than-branch instruction commits exactly once");
   expect(rf[2] == 0 && rf[3] == 0, "Flush stress: same-group younger writes are squashed");
-  expect(rf[4] == 0 && rf[5] == 0 && rf[6] == 0 && rf[7] == 0, "Flush stress: next-group wrong-path writes are squashed");
-  expect(rf[8] == 0 && rf[9] == 0 && rf[11] == 0 && rf[12] == 0,
-         "Flush stress: additional wrong-path writes are squashed");
+  if (sent_g1_before_flush) {
+    expect(rf[4] == 0 && rf[5] == 0 && rf[6] == 0 && rf[7] == 0,
+           "Flush stress: next-group wrong-path writes are squashed");
+  }
+  if (sent_g2_before_flush) {
+    expect(rf[8] == 0 && rf[9] == 0 && rf[11] == 0 && rf[12] == 0,
+           "Flush stress: additional wrong-path writes are squashed");
+  }
 }
 
 static void test_partial_dispatch_accepts_non_lsu_prefix_when_lsu_blocked(Vtb_backend *top, MemModel &mem) {
