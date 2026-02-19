@@ -313,8 +313,10 @@ class ParseProfileTest(unittest.TestCase):
             log.write_text(
                 "\n".join(
                     [
-                        "[stall ] cycle=10 no_commit=20 dec(v/r)=1/0 rob_ready=1 ren(pend/src/sel/fire/rdy)=1/2/1/1/1",
-                        "[stall ] cycle=20 no_commit=20 dec(v/r)=1/0 rob_ready=1 ren(pend/src/sel/fire/rdy)=1/1/0/0/0",
+                        "[stall ] cycle=10 no_commit=20 dec(v/r)=1/0 rob_ready=1 ren(pend/src/sel/fire/rdy)=1/4/1/1/1",
+                        "[stall ] cycle=20 no_commit=20 dec(v/r)=1/0 rob_ready=1 ren(pend/src/sel/fire/rdy)=1/2/1/1/1",
+                        "[stall ] cycle=30 no_commit=20 dec(v/r)=1/0 rob_ready=1 ren(pend/src/sel/fire/rdy)=1/4/0/0/0",
+                        "[stall ] cycle=40 no_commit=20 dec(v/r)=1/0 rob_ready=1 ren(pend/src/sel/fire/rdy)=1/1/0/0/0",
                         "IPC=0.500000 CPI=2.000000 cycles=100 commits=50",
                     ]
                 ),
@@ -324,8 +326,10 @@ class ParseProfileTest(unittest.TestCase):
             result = mod.parse_single_log(log)
 
         detail = result["stall_decode_blocked_detail"]
-        self.assertEqual(detail["pending_replay_progress"], 1)
-        self.assertEqual(detail["pending_replay_wait"], 1)
+        self.assertEqual(detail["pending_replay_progress_full"], 1)
+        self.assertEqual(detail["pending_replay_progress_has_room"], 1)
+        self.assertEqual(detail["pending_replay_wait_full"], 1)
+        self.assertEqual(detail["pending_replay_wait_has_room"], 1)
 
     def test_decode_blocked_detail_lsu_group_wait_split(self):
         mod = load_parser_module()
@@ -368,6 +372,228 @@ class ParseProfileTest(unittest.TestCase):
         detail = result["stall_decode_blocked_detail"]
         self.assertEqual(detail["dc_store_wait_same_line"], 1)
         self.assertEqual(detail["dc_store_wait_mshr_full"], 1)
+
+    def test_rob_backpressure_detail_breakdown(self):
+        mod = load_parser_module()
+        with tempfile.TemporaryDirectory() as td:
+            log = Path(td) / "coremark.log"
+            log.write_text(
+                "\n".join(
+                    [
+                        "[stall ] cycle=10 no_commit=20 dec(v/r)=1/1 rob_ready=0 rob_head(fu/comp/is_store/pc)=0x3/0/0/0x80000010",
+                        "[stall ] cycle=20 no_commit=20 dec(v/r)=1/1 rob_ready=0 rob_head(fu/comp/is_store/pc)=0x1/0/0/0x80000014",
+                        "[stall ] cycle=30 no_commit=20 dec(v/r)=1/1 rob_ready=0 rob_head(fu/comp/is_store/pc)=0x2/0/0/0x80000018",
+                        "[stall ] cycle=40 no_commit=20 dec(v/r)=1/1 rob_ready=0 rob_head(fu/comp/is_store/pc)=0x6/0/0/0x8000001c",
+                        "[stall ] cycle=50 no_commit=20 dec(v/r)=1/1 rob_ready=0 rob_head(fu/comp/is_store/pc)=0x4/0/0/0x80000020",
+                        "[stall ] cycle=60 no_commit=20 dec(v/r)=1/1 rob_ready=0 rob_head(fu/comp/is_store/pc)=0x5/0/0/0x80000024",
+                        "[stall ] cycle=70 no_commit=20 dec(v/r)=1/1 rob_ready=0 rob_head(fu/comp/is_store/pc)=0x3/0/1/0x80000028 sb_head(v/c/a/d/addr)=1/0/1/1/0x00000100",
+                        "[stall ] cycle=80 no_commit=20 dec(v/r)=1/1 rob_ready=0 rob_head(fu/comp/is_store/pc)=0x3/0/1/0x8000002c sb_head(v/c/a/d/addr)=1/1/0/1/0x00000100",
+                        "[stall ] cycle=90 no_commit=20 dec(v/r)=1/1 rob_ready=0 rob_head(fu/comp/is_store/pc)=0x3/0/1/0x80000030 sb_head(v/c/a/d/addr)=1/1/1/0/0x00000100",
+                        "[stall ] cycle=100 no_commit=20 dec(v/r)=1/1 rob_ready=0 rob_head(fu/comp/is_store/pc)=0x3/0/1/0x80000034 sb_head(v/c/a/d/addr)=1/1/1/1/0x00000100 sb_dcache(v/r/addr)=1/0/0x00000100",
+                        "[stall ] cycle=110 no_commit=20 dec(v/r)=1/1 rob_ready=0 rob_head(fu/comp/is_store/pc)=0x3/1/0/0x80000038",
+                        "IPC=0.500000 CPI=2.000000 cycles=100 commits=50",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            result = mod.parse_single_log(log)
+
+        self.assertEqual(result["stall_category"]["rob_backpressure"], 11)
+        self.assertEqual(result["stall_rob_backpressure_total"], 11)
+        detail = result["stall_rob_backpressure_detail"]
+        self.assertEqual(detail["rob_lsu_incomplete_no_sm"], 1)
+        self.assertEqual(detail["rob_head_fu_alu_incomplete"], 1)
+        self.assertEqual(detail["rob_head_fu_branch_incomplete"], 1)
+        self.assertEqual(detail["rob_head_fu_csr_incomplete"], 1)
+        self.assertEqual(detail["rob_head_fu_mdu_incomplete"], 2)
+        self.assertEqual(detail["rob_store_wait_commit"], 1)
+        self.assertEqual(detail["rob_store_wait_addr"], 1)
+        self.assertEqual(detail["rob_store_wait_data"], 1)
+        self.assertEqual(detail["rob_store_wait_dcache"], 1)
+        self.assertEqual(detail["rob_head_complete_but_not_ready"], 1)
+
+    def test_rob_backpressure_lsu_incomplete_secondary_split(self):
+        mod = load_parser_module()
+        with tempfile.TemporaryDirectory() as td:
+            log = Path(td) / "coremark.log"
+            log.write_text(
+                "\n".join(
+                    [
+                        "[stall ] cycle=10 no_commit=20 dec(v/r)=1/1 rob_ready=0 lsu_sm=1 lsu_ld(v/r/addr)=1/0/0x80001000 lsu_ld_fire=0 lsu_rsp(v/r)=0/0 lsu_rsp_fire=0 rob_head(fu/comp/is_store/pc)=0x3/0/0/0x80000010",
+                        "[stall ] cycle=20 no_commit=20 dec(v/r)=1/1 rob_ready=0 lsu_sm=2 lsu_ld(v/r/addr)=0/0/0x0 lsu_ld_fire=0 lsu_rsp(v/r)=0/1 lsu_rsp_fire=0 rob_head(fu/comp/is_store/pc)=0x3/0/0/0x80000014",
+                        "[stall ] cycle=30 no_commit=20 dec(v/r)=1/1 rob_ready=0 lsu_sm=2 lsu_ld(v/r/addr)=0/0/0x0 lsu_ld_fire=0 lsu_rsp(v/r)=1/1 lsu_rsp_fire=0 rob_head(fu/comp/is_store/pc)=0x3/0/0/0x80000018",
+                        "[stall ] cycle=40 no_commit=20 dec(v/r)=1/1 rob_ready=0 lsu_sm=3 lsu_ld(v/r/addr)=0/0/0x0 lsu_ld_fire=0 lsu_rsp(v/r)=1/1 lsu_rsp_fire=1 rob_head(fu/comp/is_store/pc)=0x3/0/0/0x8000001c",
+                        "IPC=0.500000 CPI=2.000000 cycles=100 commits=50",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            result = mod.parse_single_log(log)
+
+        self.assertEqual(result["stall_rob_backpressure_total"], 4)
+        detail = result["stall_rob_backpressure_detail"]
+        self.assertEqual(detail["rob_lsu_wait_ld_req_ready"], 1)
+        self.assertEqual(detail["rob_lsu_wait_ld_rsp_valid"], 1)
+        self.assertEqual(detail["rob_lsu_wait_ld_rsp_fire"], 1)
+        self.assertEqual(detail["rob_lsu_wait_wb"], 1)
+
+    def test_rob_backpressure_lsu_req_fire_detail_split(self):
+        mod = load_parser_module()
+        with tempfile.TemporaryDirectory() as td:
+            log = Path(td) / "coremark.log"
+            log.write_text(
+                "\n".join(
+                    [
+                        "[stall ] cycle=10 no_commit=20 dec(v/r)=1/1 rob_ready=0 lsu_sm=1 lsu_ld(v/r/addr)=0/0/0x0 lsu_ld_fire=0 lsu_rsp(v/r)=1/1 lsu_rsp_fire=1 lsug(busy/alloc_fire/alloc_lane/ld_owner)=0x3/0/0x0/0x2 rob_head(fu/comp/is_store/pc)=0x3/0/0/0x80000010",
+                        "[stall ] cycle=20 no_commit=20 dec(v/r)=1/1 rob_ready=0 lsu_sm=1 lsu_ld(v/r/addr)=0/0/0x0 lsu_ld_fire=0 lsu_rsp(v/r)=0/1 lsu_rsp_fire=0 lsug(busy/alloc_fire/alloc_lane/ld_owner)=0x1/0/0x0/0x1 rob_head(fu/comp/is_store/pc)=0x3/0/0/0x80000014",
+                        "[stall ] cycle=30 no_commit=20 dec(v/r)=1/1 rob_ready=0 lsu_sm=1 lsu_ld(v/r/addr)=0/0/0x0 lsu_ld_fire=0 lsu_rsp(v/r)=1/0 lsu_rsp_fire=0 lsug(busy/alloc_fire/alloc_lane/ld_owner)=0x1/0/0x0/0x1 rob_head(fu/comp/is_store/pc)=0x3/0/0/0x80000018",
+                        "[stall ] cycle=40 no_commit=20 dec(v/r)=1/1 rob_ready=0 lsu_sm=1 lsu_ld(v/r/addr)=0/0/0x0 lsu_ld_fire=0 lsu_rsp(v/r)=0/0 lsu_rsp_fire=0 lsug(busy/alloc_fire/alloc_lane/ld_owner)=0x1/0/0x0/0x0 rob_head(fu/comp/is_store/pc)=0x3/0/0/0x8000001c",
+                        "IPC=0.500000 CPI=2.000000 cycles=100 commits=50",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            result = mod.parse_single_log(log)
+
+        detail = result["stall_rob_backpressure_detail"]
+        self.assertEqual(detail["rob_lsu_wait_ld_owner_rsp_fire"], 1)
+        self.assertEqual(detail["rob_lsu_wait_ld_owner_rsp_valid"], 1)
+        self.assertEqual(detail["rob_lsu_wait_ld_owner_rsp_ready"], 1)
+        self.assertEqual(detail["rob_lsu_wait_ld_arb_no_grant"], 1)
+
+    def test_rob_backpressure_lsu_req_ready_detail_split(self):
+        mod = load_parser_module()
+        with tempfile.TemporaryDirectory() as td:
+            log = Path(td) / "coremark.log"
+            log.write_text(
+                "\n".join(
+                    [
+                        "[stall ] cycle=10 no_commit=20 dec(v/r)=1/1 rob_ready=0 lsu_sm=1 lsu_ld(v/r/addr)=1/0/0x80001000 lsu_ld_fire=0 lsu_rsp(v/r)=1/1 lsu_rsp_fire=1 lsug(busy/alloc_fire/alloc_lane/ld_owner)=0x3/0/0x0/0x2 dc_mshr(cnt/full/empty)=0/0/1 dc_mshr(alloc_rdy/line_hit)=1/0 sb_dcache(v/r/addr)=0/0/0x0 dc_miss(v/r)=0/1 rob_head(fu/comp/is_store/pc)=0x3/0/0/0x80000010",
+                        "[stall ] cycle=20 no_commit=20 dec(v/r)=1/1 rob_ready=0 lsu_sm=1 lsu_ld(v/r/addr)=1/0/0x80001004 lsu_ld_fire=0 lsu_rsp(v/r)=0/1 lsu_rsp_fire=0 lsug(busy/alloc_fire/alloc_lane/ld_owner)=0x1/0/0x0/0x1 dc_mshr(cnt/full/empty)=0/0/1 dc_mshr(alloc_rdy/line_hit)=1/0 sb_dcache(v/r/addr)=0/0/0x0 dc_miss(v/r)=0/1 rob_head(fu/comp/is_store/pc)=0x3/0/0/0x80000014",
+                        "[stall ] cycle=30 no_commit=20 dec(v/r)=1/1 rob_ready=0 lsu_sm=1 lsu_ld(v/r/addr)=1/0/0x80001008 lsu_ld_fire=0 lsu_rsp(v/r)=1/0 lsu_rsp_fire=0 lsug(busy/alloc_fire/alloc_lane/ld_owner)=0x1/0/0x0/0x1 dc_mshr(cnt/full/empty)=0/0/1 dc_mshr(alloc_rdy/line_hit)=1/0 sb_dcache(v/r/addr)=0/0/0x0 dc_miss(v/r)=0/1 rob_head(fu/comp/is_store/pc)=0x3/0/0/0x80000018",
+                        "[stall ] cycle=40 no_commit=20 dec(v/r)=1/1 rob_ready=0 lsu_sm=1 lsu_ld(v/r/addr)=1/0/0x8000100c lsu_ld_fire=0 lsu_rsp(v/r)=0/0 lsu_rsp_fire=0 lsug(busy/alloc_fire/alloc_lane/ld_owner)=0x0/0/0x0/0x0 dc_mshr(cnt/full/empty)=0/1/0 dc_mshr(alloc_rdy/line_hit)=0/0 sb_dcache(v/r/addr)=0/0/0x0 dc_miss(v/r)=0/1 rob_head(fu/comp/is_store/pc)=0x3/0/0/0x8000001c",
+                        "[stall ] cycle=50 no_commit=20 dec(v/r)=1/1 rob_ready=0 lsu_sm=1 lsu_ld(v/r/addr)=1/0/0x80001010 lsu_ld_fire=0 lsu_rsp(v/r)=0/0 lsu_rsp_fire=0 lsug(busy/alloc_fire/alloc_lane/ld_owner)=0x0/0/0x0/0x0 dc_mshr(cnt/full/empty)=0/0/1 dc_mshr(alloc_rdy/line_hit)=1/0 sb_dcache(v/r/addr)=1/0/0x80003e9c dc_miss(v/r)=0/1 rob_head(fu/comp/is_store/pc)=0x3/0/0/0x80000020",
+                        "IPC=0.500000 CPI=2.000000 cycles=100 commits=50",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            result = mod.parse_single_log(log)
+
+        detail = result["stall_rob_backpressure_detail"]
+        self.assertEqual(detail["rob_lsu_wait_ld_req_ready_owner_rsp_fire"], 1)
+        self.assertEqual(detail["rob_lsu_wait_ld_req_ready_owner_rsp_valid"], 1)
+        self.assertEqual(detail["rob_lsu_wait_ld_req_ready_owner_rsp_ready"], 1)
+        self.assertEqual(detail["rob_lsu_wait_ld_req_ready_mshr_blocked"], 1)
+        self.assertEqual(detail["rob_lsu_wait_ld_req_ready_sb_conflict"], 1)
+
+    def test_rob_backpressure_lsu_incomplete_fallback_split(self):
+        mod = load_parser_module()
+        with tempfile.TemporaryDirectory() as td:
+            log = Path(td) / "coremark.log"
+            log.write_text(
+                "\n".join(
+                    [
+                        "[stall ] cycle=10 no_commit=20 dec(v/r)=1/1 rob_ready=0 rob_head(fu/comp/is_store/pc)=0x3/0/0/0x80000010",
+                        "[stall ] cycle=20 no_commit=20 dec(v/r)=1/1 rob_ready=0 lsu_sm=0 rob_head(fu/comp/is_store/pc)=0x3/0/0/0x80000014",
+                        "[stall ] cycle=30 no_commit=20 dec(v/r)=1/1 rob_ready=0 lsu_sm=1 lsu_rsp(v/r)=0/0 rob_head(fu/comp/is_store/pc)=0x3/0/0/0x80000018",
+                        "[stall ] cycle=40 no_commit=20 dec(v/r)=1/1 rob_ready=0 lsu_sm=2 lsu_ld(v/r/addr)=0/0/0x0 rob_head(fu/comp/is_store/pc)=0x3/0/0/0x8000001c",
+                        "[stall ] cycle=50 no_commit=20 dec(v/r)=1/1 rob_ready=0 lsu_sm=9 rob_head(fu/comp/is_store/pc)=0x3/0/0/0x80000020",
+                        "IPC=0.500000 CPI=2.000000 cycles=100 commits=50",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            result = mod.parse_single_log(log)
+
+        detail = result["stall_rob_backpressure_detail"]
+        self.assertEqual(detail["rob_lsu_incomplete_no_sm"], 1)
+        self.assertEqual(detail["rob_lsu_incomplete_sm_idle"], 1)
+        self.assertEqual(detail["rob_lsu_incomplete_sm_req_unknown"], 1)
+        self.assertEqual(detail["rob_lsu_incomplete_sm_rsp_unknown"], 1)
+        self.assertEqual(detail["rob_lsu_incomplete_sm_illegal"], 1)
+
+    def test_cycle_stall_summary_takes_priority(self):
+        mod = load_parser_module()
+        with tempfile.TemporaryDirectory() as td:
+            log = Path(td) / "coremark.log"
+            log.write_text(
+                "\n".join(
+                    [
+                        "[stall ] cycle=40 no_commit=20 dec(v/r)=1/0 rob_ready=1 flush=0",
+                        "[stallm] mode=cycle stall_total_cycles=60 flush_recovery=5 icache_miss_wait=7 dcache_miss_wait=3 rob_backpressure=20 frontend_empty=11 decode_blocked=9 lsu_req_blocked=1 other=4",
+                        "IPC=0.500000 CPI=2.000000 cycles=100 commits=50",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            result = mod.parse_single_log(log)
+
+        self.assertEqual(result["stall_mode"], "cycle")
+        self.assertEqual(result["stall_total"], 60)
+        self.assertEqual(result["stall_category"]["rob_backpressure"], 20)
+        self.assertEqual(result["stall_category"]["decode_blocked"], 9)
+        self.assertEqual(result["stall_category"]["frontend_empty"], 11)
+
+    def test_commit_summary_without_commit_detail(self):
+        mod = load_parser_module()
+        with tempfile.TemporaryDirectory() as td:
+            log = Path(td) / "coremark.log"
+            log.write_text(
+                "\n".join(
+                    [
+                        "[commitm] cycles=100 commits=50 width0=60 width1=20 width2=10 width3=5 width4=5",
+                        "[controlm] branch_count=30 jal_count=10 jalr_count=5 branch_taken_count=18 call_count=7 ret_count=6",
+                        "[hotpcm] rank0_pc=0x80000010 rank0_count=123 rank1_pc=0x80000020 rank1_count=77",
+                        "[hotinstm] rank0_inst=0x00100073 rank0_count=40 rank1_inst=0x00000013 rank1_count=30",
+                        "IPC=0.500000 CPI=2.000000 cycles=100 commits=50",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            result = mod.parse_single_log(log)
+
+        self.assertFalse(result["has_commit_detail"])
+        self.assertTrue(result["has_commit_summary"])
+        self.assertEqual(result["commit_width_hist"][0], 60)
+        self.assertEqual(result["commit_width_hist"][4], 5)
+        self.assertEqual(result["control"]["branch_count"], 30)
+        self.assertEqual(result["control"]["jal_count"], 10)
+        self.assertEqual(result["control"]["jalr_count"], 5)
+        self.assertEqual(result["top_pc"][0]["pc"], "0x80000010")
+        self.assertEqual(result["top_pc"][0]["count"], 123)
+        self.assertEqual(result["top_inst"][0]["inst"], "0x00100073")
+        self.assertEqual(result["top_inst"][0]["count"], 40)
+
+    def test_quality_warning_for_sampled_stall_and_missing_commit(self):
+        mod = load_parser_module()
+        with tempfile.TemporaryDirectory() as td:
+            log = Path(td) / "coremark.log"
+            log.write_text(
+                "\n".join(
+                    [
+                        "[stall ] cycle=25 no_commit=20 dec(v/r)=1/0 rob_ready=1 flush=0",
+                        "IPC=0.500000 CPI=2.000000 cycles=100 commits=50",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            result = mod.parse_single_log(log)
+
+        self.assertFalse(result["has_commit_detail"])
+        self.assertFalse(result["has_commit_summary"])
+        self.assertEqual(result["stall_mode"], "sampled")
+        warnings = result["quality_warnings"]
+        self.assertTrue(any("commit" in msg for msg in warnings))
+        self.assertTrue(any("sampled" in msg for msg in warnings))
 
 
 if __name__ == "__main__":

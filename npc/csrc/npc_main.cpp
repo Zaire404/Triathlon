@@ -700,10 +700,23 @@ int main(int argc, char **argv) {
   uint64_t pred_ret_total = 0;
   uint64_t pred_ret_miss = 0;
   uint64_t pred_call_total = 0;
+  uint64_t control_branch_count = 0;
+  uint64_t control_jal_count = 0;
+  uint64_t control_jalr_count = 0;
+  uint64_t control_branch_taken_count = 0;
+  uint64_t control_call_count = 0;
+  uint64_t control_ret_count = 0;
   uint64_t redirect_distance_sum = 0;
   uint64_t redirect_distance_samples = 0;
   uint64_t redirect_distance_max = 0;
   uint64_t wrong_path_killed_uops = 0;
+  std::unordered_map<uint32_t, uint64_t> commit_pc_hist;
+  std::unordered_map<uint32_t, uint64_t> commit_inst_hist;
+  std::array<uint64_t, 5> commit_width_hist = {};
+  std::array<uint64_t, 8> stall_cycle_hist = {};
+  bool has_prev_commit = false;
+  uint32_t prev_commit_pc = 0;
+  uint32_t prev_commit_inst = 0;
 
   auto popcount4 = [](uint32_t v) -> uint32_t {
     v &= 0xFu;
@@ -748,6 +761,100 @@ int main(int argc, char **argv) {
               << " redirect_distance_max=" << redirect_distance_max
               << "\n";
     std::cout.flags(f);
+  };
+
+  enum StallKindIdx : int {
+    kStallFlushRecovery = 0,
+    kStallICacheMissWait = 1,
+    kStallDCacheMissWait = 2,
+    kStallROBBackpressure = 3,
+    kStallFrontendEmpty = 4,
+    kStallDecodeBlocked = 5,
+    kStallLSUReqBlocked = 6,
+    kStallOther = 7,
+  };
+
+  auto classify_stall_cycle = [&]() -> int {
+    if (top->backend_flush_o) return kStallFlushRecovery;
+    if (top->icache_miss_req_valid_o) return kStallICacheMissWait;
+    if (top->dcache_miss_req_valid_o) return kStallDCacheMissWait;
+    if (!top->dbg_rob_ready_o) return kStallROBBackpressure;
+    if (!top->dbg_dec_valid_o) return kStallFrontendEmpty;
+    if (top->dbg_dec_valid_o && !top->dbg_dec_ready_o) return kStallDecodeBlocked;
+    if (top->dbg_lsu_issue_valid_o && !top->dbg_lsu_req_ready_o) return kStallLSUReqBlocked;
+    return kStallOther;
+  };
+
+  auto emit_ranked_summary = [&](const char *tag,
+                                 const char *value_key,
+                                 const std::unordered_map<uint32_t, uint64_t> &hist) {
+    std::vector<std::pair<uint32_t, uint64_t>> items(hist.begin(), hist.end());
+    std::sort(items.begin(), items.end(), [](const auto &a, const auto &b) {
+      if (a.second != b.second) return a.second > b.second;
+      return a.first < b.first;
+    });
+
+    std::ios::fmtflags f(std::cout.flags());
+    std::cout << "[" << tag << "]";
+    const size_t limit = std::min<size_t>(5, items.size());
+    for (size_t i = 0; i < limit; i++) {
+      std::cout << " rank" << i << "_" << value_key << "=0x" << std::hex << items[i].first
+                << std::dec << " rank" << i << "_count=" << items[i].second;
+    }
+    std::cout << "\n";
+    std::cout.flags(f);
+  };
+
+  auto emit_profile_summary = [&](uint64_t final_cycles) {
+    if (!(args.commit_trace || args.bru_trace)) return;
+    emit_pred_summary();
+
+    if (has_prev_commit) {
+      uint32_t opcode = prev_commit_inst & 0x7Fu;
+      if (opcode == 0x63u) {
+        control_branch_count++;
+      } else if (opcode == 0x6Fu) {
+        control_jal_count++;
+      } else if (opcode == 0x67u) {
+        control_jalr_count++;
+      }
+      if (is_call_inst(prev_commit_inst)) control_call_count++;
+      if (is_ret_inst(prev_commit_inst)) control_ret_count++;
+      has_prev_commit = false;
+    }
+
+    uint64_t stall_total_cycles = 0;
+    for (uint64_t v : stall_cycle_hist) stall_total_cycles += v;
+
+    std::cout << "[commitm] cycles=" << final_cycles
+              << " commits=" << total_commits
+              << " width0=" << commit_width_hist[0]
+              << " width1=" << commit_width_hist[1]
+              << " width2=" << commit_width_hist[2]
+              << " width3=" << commit_width_hist[3]
+              << " width4=" << commit_width_hist[4]
+              << "\n";
+    std::cout << "[controlm] branch_count=" << control_branch_count
+              << " jal_count=" << control_jal_count
+              << " jalr_count=" << control_jalr_count
+              << " branch_taken_count=" << control_branch_taken_count
+              << " call_count=" << control_call_count
+              << " ret_count=" << control_ret_count
+              << " control_count=" << (control_branch_count + control_jal_count + control_jalr_count)
+              << "\n";
+    std::cout << "[stallm] mode=cycle"
+              << " stall_total_cycles=" << stall_total_cycles
+              << " flush_recovery=" << stall_cycle_hist[kStallFlushRecovery]
+              << " icache_miss_wait=" << stall_cycle_hist[kStallICacheMissWait]
+              << " dcache_miss_wait=" << stall_cycle_hist[kStallDCacheMissWait]
+              << " rob_backpressure=" << stall_cycle_hist[kStallROBBackpressure]
+              << " frontend_empty=" << stall_cycle_hist[kStallFrontendEmpty]
+              << " decode_blocked=" << stall_cycle_hist[kStallDecodeBlocked]
+              << " lsu_req_blocked=" << stall_cycle_hist[kStallLSUReqBlocked]
+              << " other=" << stall_cycle_hist[kStallOther]
+              << "\n";
+    emit_ranked_summary("hotpcm", "pc", commit_pc_hist);
+    emit_ranked_summary("hotinstm", "inst", commit_inst_hist);
   };
   for (uint64_t cycles = 0; cycles < args.max_cycles; cycles++) {
     tick(top, mem, tfp, sim_time);
@@ -907,11 +1014,11 @@ int main(int argc, char **argv) {
       std::cout.flags(f);
     }
 
-    bool any_commit = false;
+    uint32_t commit_this_cycle = 0;
     for (int i = 0; i < 4; i++) {
       bool valid = (top->commit_valid_o >> i) & 0x1;
       if (!valid) continue;
-      any_commit = true;
+      commit_this_cycle++;
       total_commits++;
 
       std::array<uint32_t, 32> rf_before = rf;
@@ -925,6 +1032,27 @@ int main(int argc, char **argv) {
 
       uint32_t pc = top->commit_pc_o[i];
       uint32_t inst = mem.mem.read_word(pc);
+      commit_pc_hist[pc]++;
+      commit_inst_hist[inst]++;
+
+      if (has_prev_commit) {
+        uint32_t prev_opcode = prev_commit_inst & 0x7Fu;
+        if (prev_opcode == 0x63u) {
+          control_branch_count++;
+          uint32_t expected_next = prev_commit_pc + 4u;
+          if (pc != expected_next) control_branch_taken_count++;
+        } else if (prev_opcode == 0x6Fu) {
+          control_jal_count++;
+        } else if (prev_opcode == 0x67u) {
+          control_jalr_count++;
+        }
+        if (is_call_inst(prev_commit_inst)) control_call_count++;
+        if (is_ret_inst(prev_commit_inst)) control_ret_count++;
+      }
+      has_prev_commit = true;
+      prev_commit_pc = pc;
+      prev_commit_inst = inst;
+
       uint32_t opcode = inst & 0x7Fu;
       if (opcode == 0x63u) {
         pred_cond_total++;
@@ -955,7 +1083,7 @@ int main(int argc, char **argv) {
       }
       if (!difftest.step_and_check(cycles, pc, inst, rf_before, rf)) {
         std::cerr << "[difftest] stop on first mismatch\n";
-        emit_pred_summary();
+        emit_profile_summary(cycles);
         if (tfp) tfp->close();
         delete top;
         return 1;
@@ -969,20 +1097,22 @@ int main(int argc, char **argv) {
           std::cout << "IPC=" << ipc << " CPI=" << cpi
                     << " cycles=" << cycles
                     << " commits=" << total_commits << "\n";
-          emit_pred_summary();
+          emit_profile_summary(cycles);
           if (tfp) tfp->close();
           delete top;
           return 0;
         }
         std::cout << "HIT BAD TRAP (code=" << code << ")\n";
-        emit_pred_summary();
+        emit_profile_summary(cycles);
         if (tfp) tfp->close();
         delete top;
         return 1;
       }
     }
 
-    if (any_commit) {
+    commit_width_hist[std::min<uint32_t>(commit_this_cycle, 4u)]++;
+
+    if (commit_this_cycle != 0) {
       if ((args.commit_trace || args.bru_trace) && pending_flush_penalty) {
         std::ios::fmtflags f(std::cout.flags());
         std::cout << "[flushp] cycle=" << cycles
@@ -1000,7 +1130,7 @@ int main(int argc, char **argv) {
         dut_csr.mcause = top->dbg_csr_mcause_o;
         if (!difftest.check_arch_state(cycles, rf, dut_csr)) {
           std::cerr << "[difftest] stop on arch-state mismatch\n";
-          emit_pred_summary();
+          emit_profile_summary(cycles);
           if (tfp) tfp->close();
           delete top;
           return 1;
@@ -1009,6 +1139,7 @@ int main(int argc, char **argv) {
       no_commit_cycles = 0;
     } else {
       no_commit_cycles++;
+      stall_cycle_hist[classify_stall_cycle()]++;
       if (args.stall_trace && args.stall_threshold > 0 &&
           (no_commit_cycles == args.stall_threshold ||
            (no_commit_cycles > args.stall_threshold &&
@@ -1268,7 +1399,7 @@ int main(int argc, char **argv) {
   }
 
   std::cerr << "TIMEOUT after " << args.max_cycles << " cycles\n";
-  emit_pred_summary();
+  emit_profile_summary(args.max_cycles);
   if (tfp) tfp->close();
   delete top;
   return 1;

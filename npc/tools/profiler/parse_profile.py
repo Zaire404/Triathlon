@@ -24,6 +24,16 @@ FLUSH_REASON_ALLOWLIST = {"branch_mispredict", "exception", "rob_other", "extern
 FLUSH_SOURCE_ALLOWLIST = {"rob", "external", "unknown"}
 MISS_TYPE_ALLOWLIST = {"cond_branch", "jump", "return", "control_unknown", "none"}
 STALL_POST_FLUSH_WINDOW_CYCLES = 16
+STALL_CATEGORY_KEYS = (
+    "flush_recovery",
+    "icache_miss_wait",
+    "dcache_miss_wait",
+    "rob_backpressure",
+    "frontend_empty",
+    "decode_blocked",
+    "lsu_req_blocked",
+    "other",
+)
 
 
 def _safe_div(numer: float, denom: float) -> float:
@@ -139,6 +149,24 @@ def _classify_stall(line: str) -> str:
     return "other"
 
 
+def _parse_ranked_summary(
+    kv: dict[str, str], value_key_suffix: str, max_items: int = 10
+) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for i in range(max_items):
+        value_key = f"rank{i}_{value_key_suffix}"
+        count_key = f"rank{i}_count"
+        if value_key not in kv or count_key not in kv:
+            continue
+        value = _parse_int(kv.get(value_key), 0)
+        count = _parse_int(kv.get(count_key), 0)
+        if value_key_suffix == "pc":
+            items.append({"pc": f"0x{value:08x}", "count": count})
+        else:
+            items.append({"inst": f"0x{value:08x}", "count": count})
+    return items
+
+
 def _extract_cycle(line: str) -> int | None:
     m = re.search(r"\bcycle=(\d+)", line)
     if not m:
@@ -147,18 +175,23 @@ def _extract_cycle(line: str) -> int | None:
 
 
 def _classify_decode_blocked_detail(line: str) -> str:
+    # Current npc dispatch width is 4; use src-count as a proxy to split
+    # pending replay into "full" vs "has room" for next-step bottleneck analysis.
+    pending_replay_full_src = 4
     rs2_ready: int | None = None
     has_rs2: int | None = None
 
     m = re.search(r"ren\(pend/src/sel/fire/rdy\)=(\d)/(\d+)/(\d+)/(\d)/(\d)", line)
     if m:
         pend = int(m.group(1))
+        src = int(m.group(2))
         sel = int(m.group(3))
         fire = int(m.group(4))
         if pend == 1:
+            full_suffix = "full" if src >= pending_replay_full_src else "has_room"
             if fire == 1 and sel > 0:
-                return "pending_replay_progress"
-            return "pending_replay_wait"
+                return f"pending_replay_progress_{full_suffix}"
+            return f"pending_replay_wait_{full_suffix}"
 
     m = re.search(r"lsug\(busy/alloc_fire/alloc_lane/ld_owner\)=0x([0-9a-fA-F]+)/(\d)/0x([0-9a-fA-F]+)/0x([0-9a-fA-F]+)", line)
     if m:
@@ -240,6 +273,151 @@ def _classify_decode_blocked_detail(line: str) -> str:
             return "lsu_wait_ld_rsp"
 
     return "other"
+
+
+def _classify_rob_backpressure_detail(line: str) -> str:
+    m_head = re.search(r"rob_head\(fu/comp/is_store/pc\)=0x([0-9a-fA-F]+)/(\d)/(\d)/0x[0-9a-fA-F]+", line)
+    if not m_head:
+        return "other"
+
+    fu = int(m_head.group(1), 16)
+    complete = int(m_head.group(2))
+    is_store = int(m_head.group(3))
+
+    if is_store == 1:
+        m_sb_head = re.search(r"sb_head\(v/c/a/d/addr\)=(\d)/(\d)/(\d)/(\d)/0x[0-9a-fA-F]+", line)
+        if m_sb_head:
+            sb_head_valid = int(m_sb_head.group(1))
+            sb_head_committed = int(m_sb_head.group(2))
+            sb_head_addr_valid = int(m_sb_head.group(3))
+            sb_head_data_valid = int(m_sb_head.group(4))
+            if sb_head_valid == 0:
+                return "rob_store_wait_sb_head"
+            if sb_head_committed == 0:
+                return "rob_store_wait_commit"
+            if sb_head_addr_valid == 0:
+                return "rob_store_wait_addr"
+            if sb_head_data_valid == 0:
+                return "rob_store_wait_data"
+
+        m_sb_dcache = re.search(r"sb_dcache\(v/r/addr\)=\s*(\d)/(\d)/0x[0-9a-fA-F]+", line)
+        if m_sb_dcache:
+            sb_req_valid = int(m_sb_dcache.group(1))
+            sb_req_ready = int(m_sb_dcache.group(2))
+            if sb_req_valid == 1 and sb_req_ready == 0:
+                return "rob_store_wait_dcache"
+            if sb_req_valid == 0:
+                return "rob_store_wait_issue"
+
+        return "rob_store_wait_other"
+
+    if complete == 0:
+        if fu == 1:
+            return "rob_head_fu_alu_incomplete"
+        if fu == 2:
+            return "rob_head_fu_branch_incomplete"
+        if fu == 3:
+            m_sm = re.search(r"\slsu_sm=(\d+)", line)
+            m_ld = re.search(r"lsu_ld\(v/r/addr\)=(\d)/(\d)/0x[0-9a-fA-F]+", line)
+            m_rsp = re.search(r"lsu_rsp\(v/r\)=(\d)/(\d)", line)
+            m_ld_fire = re.search(r"\slsu_ld_fire=(\d)", line)
+            m_rsp_fire = re.search(r"\slsu_rsp_fire=(\d)", line)
+            m_sb_dcache = re.search(r"sb_dcache\(v/r/addr\)=\s*(\d)/(\d)/0x[0-9a-fA-F]+", line)
+            m_mshr_cnt = re.search(r"dc_mshr\(cnt/full/empty\)=(\d+)/(\d)/(\d)", line)
+            m_mshr_alloc = re.search(r"dc_mshr\(alloc_rdy/line_hit\)=(\d)/(\d)", line)
+            m_dc_miss = re.search(r"dc_miss\(v/r\)=(\d)/(\d)", line)
+            m_lsug = re.search(
+                r"lsug\(busy/alloc_fire/alloc_lane/ld_owner\)=0x([0-9a-fA-F]+)/(\d)/0x([0-9a-fA-F]+)/0x([0-9a-fA-F]+)",
+                line,
+            )
+            if not m_sm:
+                return "rob_lsu_incomplete_no_sm"
+
+            sm = int(m_sm.group(1))
+            if sm == 0:
+                return "rob_lsu_incomplete_sm_idle"
+            if sm == 1:
+                if m_ld:
+                    ld_valid = int(m_ld.group(1))
+                    ld_ready = int(m_ld.group(2))
+                    if ld_valid == 1 and ld_ready == 0:
+                        owner = 0
+                        if m_lsug:
+                            owner = int(m_lsug.group(4), 16)
+                        if owner != 0 and m_rsp:
+                            rsp_valid = int(m_rsp.group(1))
+                            rsp_ready = int(m_rsp.group(2))
+                            if rsp_valid == 1 and rsp_ready == 1:
+                                return "rob_lsu_wait_ld_req_ready_owner_rsp_fire"
+                            if rsp_valid == 0 and rsp_ready == 1:
+                                return "rob_lsu_wait_ld_req_ready_owner_rsp_valid"
+                            if rsp_valid == 1 and rsp_ready == 0:
+                                return "rob_lsu_wait_ld_req_ready_owner_rsp_ready"
+
+                        if m_sb_dcache:
+                            sb_valid = int(m_sb_dcache.group(1))
+                            sb_ready = int(m_sb_dcache.group(2))
+                            if sb_valid == 1 and sb_ready == 0:
+                                return "rob_lsu_wait_ld_req_ready_sb_conflict"
+
+                        mshr_blocked = False
+                        if m_mshr_cnt and int(m_mshr_cnt.group(2)) == 1:
+                            mshr_blocked = True
+                        if m_mshr_alloc and int(m_mshr_alloc.group(1)) == 0:
+                            mshr_blocked = True
+                        if mshr_blocked:
+                            return "rob_lsu_wait_ld_req_ready_mshr_blocked"
+
+                        if m_dc_miss:
+                            dc_miss_valid = int(m_dc_miss.group(1))
+                            dc_miss_ready = int(m_dc_miss.group(2))
+                            if dc_miss_valid == 1 and dc_miss_ready == 0:
+                                return "rob_lsu_wait_ld_req_ready_miss_port_busy"
+
+                        return "rob_lsu_wait_ld_req_ready"
+                    if ld_valid == 0 and ld_ready == 0:
+                        owner = 0
+                        alloc_fire = 0
+                        if m_lsug:
+                            owner = int(m_lsug.group(4), 16)
+                            alloc_fire = int(m_lsug.group(2))
+                        if owner != 0:
+                            if m_rsp:
+                                rsp_valid = int(m_rsp.group(1))
+                                rsp_ready = int(m_rsp.group(2))
+                                if rsp_valid == 1 and rsp_ready == 1:
+                                    return "rob_lsu_wait_ld_owner_rsp_fire"
+                                if rsp_valid == 0 and rsp_ready == 1:
+                                    return "rob_lsu_wait_ld_owner_rsp_valid"
+                                if rsp_valid == 1 and rsp_ready == 0:
+                                    return "rob_lsu_wait_ld_owner_rsp_ready"
+                            return "rob_lsu_wait_ld_owner_hold"
+                        if alloc_fire == 0:
+                            return "rob_lsu_wait_ld_arb_no_grant"
+                if m_ld_fire and int(m_ld_fire.group(1)) == 0:
+                    return "rob_lsu_wait_ld_req_fire"
+                return "rob_lsu_incomplete_sm_req_unknown"
+            if sm == 2:
+                if m_rsp:
+                    rsp_valid = int(m_rsp.group(1))
+                    rsp_ready = int(m_rsp.group(2))
+                    if rsp_valid == 0:
+                        return "rob_lsu_wait_ld_rsp_valid"
+                    if rsp_valid == 1 and rsp_ready == 0:
+                        return "rob_lsu_wait_ld_rsp_ready"
+                if m_rsp_fire and int(m_rsp_fire.group(1)) == 0:
+                    return "rob_lsu_wait_ld_rsp_fire"
+                return "rob_lsu_incomplete_sm_rsp_unknown"
+            if sm == 3:
+                return "rob_lsu_wait_wb"
+            return "rob_lsu_incomplete_sm_illegal"
+        if fu == 4 or fu == 5:
+            return "rob_head_fu_mdu_incomplete"
+        if fu == 6:
+            return "rob_head_fu_csr_incomplete"
+        return "rob_head_fu_unknown_incomplete"
+
+    return "rob_head_complete_but_not_ready"
 
 
 def _commit_histogram(cycles: int, commit_by_cycle: dict[int, int]) -> dict[int, int]:
@@ -354,10 +532,20 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
     stall_decode_blocked_post_flush = 0
     stall_decode_blocked_post_branch_flush = 0
     stall_decode_blocked_detail: Counter[str] = Counter()
+    stall_rob_backpressure_total = 0
+    stall_rob_backpressure_detail: Counter[str] = Counter()
     last_flush_cycle: int | None = None
     last_branch_flush_cycle: int | None = None
     hotspot_pc: Counter[int] = Counter()
     hotspot_inst: Counter[int] = Counter()
+    has_commit_summary = False
+    commit_summary_hist: dict[int, int] = {}
+    control_summary: dict[str, int] = {}
+    top_pc_summary: list[dict[str, Any]] = []
+    top_inst_summary: list[dict[str, Any]] = []
+    stall_cycle_summary: Counter[str] = Counter()
+    stall_cycle_total = 0
+    has_stall_cycle_summary = False
 
     for raw in p.read_text(encoding="utf-8", errors="ignore").splitlines():
         m = IPC_RE.search(raw)
@@ -450,6 +638,61 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
                 pred_call_total_line = _parse_int(pred_kv.get("call_total"), 0)
             continue
 
+        commitm_pos = raw.find("[commitm]")
+        if commitm_pos >= 0:
+            kv = _parse_kv_pairs(raw[commitm_pos:])
+            has_commit_summary = True
+            for i in range(5):
+                commit_summary_hist[i] = _parse_int(kv.get(f"width{i}"), commit_summary_hist.get(i, 0))
+            continue
+
+        controlm_pos = raw.find("[controlm]")
+        if controlm_pos >= 0:
+            kv = _parse_kv_pairs(raw[controlm_pos:])
+            has_commit_summary = True
+            for key in (
+                "branch_count",
+                "jal_count",
+                "jalr_count",
+                "branch_taken_count",
+                "call_count",
+                "ret_count",
+                "control_count",
+            ):
+                if key in kv:
+                    control_summary[key] = _parse_int(kv.get(key), 0)
+            continue
+
+        hotpcm_pos = raw.find("[hotpcm]")
+        if hotpcm_pos >= 0:
+            kv = _parse_kv_pairs(raw[hotpcm_pos:])
+            parsed = _parse_ranked_summary(kv, "pc")
+            if parsed:
+                has_commit_summary = True
+                top_pc_summary = parsed
+            continue
+
+        hotinstm_pos = raw.find("[hotinstm]")
+        if hotinstm_pos >= 0:
+            kv = _parse_kv_pairs(raw[hotinstm_pos:])
+            parsed = _parse_ranked_summary(kv, "inst")
+            if parsed:
+                has_commit_summary = True
+                top_inst_summary = parsed
+            continue
+
+        stallm_pos = raw.find("[stallm]")
+        if stallm_pos >= 0:
+            kv = _parse_kv_pairs(raw[stallm_pos:])
+            has_stall_cycle_summary = True
+            stall_cycle_total = _parse_int(kv.get("stall_total_cycles"), 0)
+            for key in STALL_CATEGORY_KEYS:
+                if key in kv:
+                    stall_cycle_summary[key] = _parse_int(kv.get(key), 0)
+            if stall_cycle_total == 0:
+                stall_cycle_total = sum(stall_cycle_summary.values())
+            continue
+
         m = COMMIT_RE.match(raw)
         if m:
             cycle = int(m.group(1))
@@ -483,6 +726,9 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
                     and (stall_cycle - last_branch_flush_cycle) <= STALL_POST_FLUSH_WINDOW_CYCLES
                 ):
                     stall_decode_blocked_post_branch_flush += 1
+            elif stall_kind == "rob_backpressure":
+                stall_rob_backpressure_total += 1
+                stall_rob_backpressure_detail[_classify_rob_backpressure_detail(raw)] += 1
 
     commit_width_hist = _commit_histogram(cycles, commit_by_cycle)
     control = _control_flow_metrics(commit_seq)
@@ -539,6 +785,58 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
 
     # Recompute width histogram when cycles were recovered from timeout line.
     commit_width_hist = _commit_histogram(cycles, commit_by_cycle)
+    has_commit_detail = len(commit_seq) > 0
+
+    if has_commit_summary:
+        commit_width_hist = {k: commit_summary_hist.get(k, 0) for k in range(5)}
+
+    if control_summary:
+        control["branch_count"] = int(control_summary.get("branch_count", control.get("branch_count", 0)))
+        control["jal_count"] = int(control_summary.get("jal_count", control.get("jal_count", 0)))
+        control["jalr_count"] = int(control_summary.get("jalr_count", control.get("jalr_count", 0)))
+        control["branch_taken_count"] = int(
+            control_summary.get("branch_taken_count", control.get("branch_taken_count", 0))
+        )
+        control["call_count"] = int(control_summary.get("call_count", control.get("call_count", 0)))
+        control["ret_count"] = int(control_summary.get("ret_count", control.get("ret_count", 0)))
+        control_count = int(
+            control_summary.get(
+                "control_count",
+                control["branch_count"] + control["jal_count"] + control["jalr_count"],
+            )
+        )
+        control["control_count"] = control_count
+        est_misp_count = int(control["branch_taken_count"]) + int(control["jal_count"]) + int(control["jalr_count"])
+        control["est_misp_count"] = est_misp_count
+        control["control_ratio"] = _safe_div(control_count, commits)
+        control["est_misp_per_kinst"] = 1000.0 * _safe_div(est_misp_count, commits)
+
+    top_pc = top_pc_summary if top_pc_summary else [{"pc": f"0x{pc:08x}", "count": cnt} for pc, cnt in hotspot_pc.most_common(10)]
+    top_inst = (
+        top_inst_summary
+        if top_inst_summary
+        else [{"inst": f"0x{inst:08x}", "count": cnt} for inst, cnt in hotspot_inst.most_common(10)]
+    )
+
+    stall_mode = "none"
+    stall_category: dict[str, int] = dict(stall_counter)
+    stall_total = sum(stall_counter.values())
+    if has_stall_cycle_summary:
+        stall_mode = "cycle"
+        stall_category = dict(stall_cycle_summary)
+        stall_total = stall_cycle_total
+    elif stall_total > 0:
+        stall_mode = "sampled"
+
+    quality_warnings: list[str] = []
+    if not has_commit_detail and not has_commit_summary:
+        quality_warnings.append("commit metrics low confidence: missing both [commit] detail and [commitm] summary")
+    elif has_commit_summary and not has_commit_detail:
+        quality_warnings.append("commit metrics sourced from [commitm]/[controlm] summary without [commit] detail")
+    if stall_mode == "sampled":
+        quality_warnings.append("stall metrics are sampled events (no_commit threshold), not cycle-accurate cycles")
+    elif stall_mode == "none":
+        quality_warnings.append("stall metrics unavailable: missing both [stallm] and sampled [stall] events")
 
     return {
         "log_path": str(p),
@@ -568,8 +866,8 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
         "flush_per_kinst": 1000.0 * _safe_div(flush_count, commits),
         "bru_per_kinst": 1000.0 * _safe_div(bru_count, commits),
         "commit_width_hist": commit_width_hist,
-        "stall_category": dict(stall_counter),
-        "stall_total": sum(stall_counter.values()),
+        "stall_category": stall_category,
+        "stall_total": stall_total,
         "stall_post_flush_window_cycles": STALL_POST_FLUSH_WINDOW_CYCLES,
         "stall_decode_blocked_total": stall_decode_blocked_total,
         "stall_decode_blocked_post_flush": stall_decode_blocked_post_flush,
@@ -579,10 +877,18 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
             stall_decode_blocked_post_branch_flush, stall_decode_blocked_total
         ),
         "stall_decode_blocked_detail": dict(stall_decode_blocked_detail),
-        "top_pc": [{"pc": f"0x{pc:08x}", "count": cnt} for pc, cnt in hotspot_pc.most_common(10)],
-        "top_inst": [{"inst": f"0x{inst:08x}", "count": cnt} for inst, cnt in hotspot_inst.most_common(10)],
+        "stall_rob_backpressure_total": stall_rob_backpressure_total,
+        "stall_rob_backpressure_detail": dict(stall_rob_backpressure_detail),
+        "top_pc": top_pc,
+        "top_inst": top_inst,
         "control": control,
         "predict": predict,
+        "has_commit_detail": has_commit_detail,
+        "has_commit_summary": has_commit_summary,
+        "stall_mode": stall_mode,
+        "quality_warnings": quality_warnings,
+        "commit_metrics_source": "detail" if has_commit_detail else ("summary" if has_commit_summary else "none"),
+        "stall_metrics_source": stall_mode,
     }
 
 
@@ -625,10 +931,18 @@ def _bench_markdown(name: str, data: dict[str, Any]) -> str:
     decode_blocked_post_branch_flush = data.get("stall_decode_blocked_post_branch_flush", 0)
     decode_blocked_post_branch_flush_ratio = data.get("stall_decode_blocked_post_branch_flush_ratio", 0.0)
     decode_blocked_detail = data.get("stall_decode_blocked_detail", {})
+    rob_backpressure_total = data.get("stall_rob_backpressure_total", 0)
+    rob_backpressure_detail = data.get("stall_rob_backpressure_detail", {})
     control = data.get("control", {})
     flush_hist = data.get("flush_reason_histogram", {})
     flush_src_hist = data.get("flush_source_histogram", {})
     predict = data.get("predict", {})
+    has_commit_detail = data.get("has_commit_detail", False)
+    has_commit_summary = data.get("has_commit_summary", False)
+    stall_mode = data.get("stall_mode", "none")
+    quality_warnings = data.get("quality_warnings", [])
+    commit_metrics_source = data.get("commit_metrics_source", "none")
+    stall_metrics_source = data.get("stall_metrics_source", stall_mode)
 
     lines = [
         f"### {name}",
@@ -648,6 +962,10 @@ def _bench_markdown(name: str, data: dict[str, Any]) -> str:
         f"- predict(ret hit/miss): `{predict.get('ret_hit', 0)}` / `{predict.get('ret_miss', 0)}` (miss_rate `{predict.get('ret_miss_rate', 0) * 100.0:.2f}%`)",
         f"- predict(call total): `{predict.get('call_total', 0)}`",
         "",
+        "Data Quality:",
+        f"- commit_source: `{commit_metrics_source}` (detail={has_commit_detail}, summary={has_commit_summary})",
+        f"- stall_source: `{stall_metrics_source}`",
+        "",
         "Commit Width Histogram:",
         f"- width0: `{hist.get(0, 0)}`",
         f"- width1: `{hist.get(1, 0)}`",
@@ -664,6 +982,12 @@ def _bench_markdown(name: str, data: dict[str, Any]) -> str:
         for key, val in sorted(stall.items(), key=lambda x: x[1], reverse=True):
             lines.append(f"- {key}: `{val}` ({_fmt_pct(val, stall_total)})")
 
+    if quality_warnings:
+        lines.append("")
+        lines.append("Quality Warnings:")
+        for msg in quality_warnings:
+            lines.append(f"- {msg}")
+
     lines.append("")
     lines.append("Decode-Blocked Correlation:")
     if decode_blocked_total == 0:
@@ -679,6 +1003,16 @@ def _bench_markdown(name: str, data: dict[str, Any]) -> str:
             lines.append("- detail_breakdown:")
             for key, val in sorted(decode_blocked_detail.items(), key=lambda x: x[1], reverse=True):
                 lines.append(f"  - {key}: `{val}` ({_fmt_pct(val, decode_blocked_total)})")
+
+    lines.append("")
+    lines.append("ROB-Backpressure Correlation:")
+    if rob_backpressure_total == 0:
+        lines.append("- (no rob_backpressure stall samples)")
+    else:
+        if rob_backpressure_detail:
+            lines.append("- detail_breakdown:")
+            for key, val in sorted(rob_backpressure_detail.items(), key=lambda x: x[1], reverse=True):
+                lines.append(f"  - {key}: `{val}` ({_fmt_pct(val, rob_backpressure_total)})")
 
     lines.append("")
     lines.append("Flush Reasons:")
