@@ -153,10 +153,14 @@ int main(int argc, char **argv) {
   // ibuffer in the same cycle (bypass), instead of adding a 1-cycle bubble.
   top->ibuffer_ready_i = 1;
   bool saw_rsp = false;
+  int overlap_rsp_capture_and_req_fire = 0;
   for (int i = 0; i < 80; ++i) {
     tick(top, mem);
     if (top->dbg_ifu_rsp_capture_o) {
       saw_rsp = true;
+      if (top->dbg_ifu_req_fire_o) {
+        overlap_rsp_capture_and_req_fire++;
+      }
       if (!top->dbg_ifu_ibuf_valid_o) {
         std::cerr << "[fail] rsp-to-ibuffer bubble detected at cycle "
                   << main_time << std::endl;
@@ -167,6 +171,13 @@ int main(int argc, char **argv) {
   }
   if (!saw_rsp) {
     std::cerr << "[fail] no icache response observed in phase-0" << std::endl;
+    delete top;
+    return 1;
+  }
+  if (overlap_rsp_capture_and_req_fire == 0) {
+    std::cerr << "[fail] no rsp-capture/req-fire overlap, fetch pipe still has"
+                 " a bubble"
+              << std::endl;
     delete top;
     return 1;
   }

@@ -69,6 +69,7 @@ module ifu #(
   logic fq_empty_w;
   logic fq_full_w;
   logic can_issue_req_w;
+  logic can_issue_on_capture_w;
   logic req_issue_valid_w;
   logic req_issue_fire_w;
   logic rsp_capture_w;
@@ -88,7 +89,14 @@ module ifu #(
   assign fq_empty_w = (fq_count_q == FQ_CNT_W'(0));
   assign fq_full_w = (fq_count_q == FQ_CNT_W'(FQ_DEPTH));
 
-  assign can_issue_req_w = !flush_i && !req_inflight_q && !fq_full_w;
+  // Back-to-back issue is only safe when this cycle leaves at least one free
+  // FQ slot for the next response; otherwise we can create full+inflight and
+  // overflow on the following capture.
+  assign can_issue_on_capture_w =
+      rsp_capture_w &&
+      (ibuf_pop_w || (fq_count_q <= FQ_CNT_W'(FQ_DEPTH - 2)));
+  assign can_issue_req_w = !flush_i && !fq_full_w &&
+                           (!req_inflight_q || can_issue_on_capture_w);
   assign req_issue_valid_w = can_issue_req_w && bpu2ifu_handshake_i.valid;
   assign req_issue_fire_w = req_issue_valid_w && icache2ifu_rsp_handshake_i.ready;
 
@@ -171,15 +179,6 @@ module ifu #(
         fq_tail_q <= '0;
         fq_count_q <= '0;
       end else begin
-        if (req_issue_fire_w) begin
-          req_inflight_q <= 1'b1;
-          req_pc_q <= pc_reg;
-          req_pred_slot_valid_q <= bpu2ifu_pred_slot_valid_i;
-          req_pred_slot_idx_q <= bpu2ifu_pred_slot_idx_i;
-          req_pred_target_q <= bpu2ifu_pred_target_i;
-          pc_reg <= bpu2ifu_predicted_pc_i;
-        end
-
         if (rsp_push_fq_w) begin
           fq_pc_q[fq_tail_q] <= req_pc_q;
           fq_data_q[fq_tail_q] <= icache2ifu_rsp_data_i;
@@ -190,6 +189,15 @@ module ifu #(
 
         if (rsp_capture_w) begin
           req_inflight_q <= 1'b0;
+        end
+
+        if (req_issue_fire_w) begin
+          req_inflight_q <= 1'b1;
+          req_pc_q <= pc_reg;
+          req_pred_slot_valid_q <= bpu2ifu_pred_slot_valid_i;
+          req_pred_slot_idx_q <= bpu2ifu_pred_slot_idx_i;
+          req_pred_target_q <= bpu2ifu_pred_target_i;
+          pc_reg <= bpu2ifu_predicted_pc_i;
         end
 
         if (ibuf_pop_w) begin
