@@ -7,7 +7,8 @@ module tb_lsu #(
     parameter int unsigned TB_ROB_IDX_WIDTH = 6,
     parameter int unsigned TB_SB_DEPTH = 16,
     parameter int unsigned TB_SB_IDX_WIDTH = $clog2(TB_SB_DEPTH),
-    parameter int unsigned TB_LSU_GROUP_SIZE = 2
+    parameter int unsigned TB_LSU_GROUP_SIZE = 2,
+    parameter int unsigned TB_LD_ID_WIDTH = (TB_LSU_GROUP_SIZE <= 1) ? 1 : $clog2(TB_LSU_GROUP_SIZE)
 ) (
     input logic clk_i,
     input logic rst_ni,
@@ -42,8 +43,10 @@ module tb_lsu #(
     input  logic                       ld_req_ready_i,
     output logic [global_config_pkg::Cfg.PLEN-1:0] ld_req_addr_o,
     output decode_pkg::lsu_op_e        ld_req_op_o,
+    output logic [TB_LD_ID_WIDTH-1:0]  ld_req_id_o,
 
     input  logic                       ld_rsp_valid_i,
+    input  logic [TB_LD_ID_WIDTH-1:0]  ld_rsp_id_i,
     output logic                       ld_rsp_ready_o,
     input  logic [global_config_pkg::Cfg.XLEN-1:0] ld_rsp_data_i,
     input  logic                       ld_rsp_err_i,
@@ -103,8 +106,10 @@ module tb_lsu #(
       .ld_req_ready_i,
       .ld_req_addr_o,
       .ld_req_op_o,
+      .ld_req_id_o,
 
       .ld_rsp_valid_i,
+      .ld_rsp_id_i,
       .ld_rsp_ready_o,
       .ld_rsp_data_i,
       .ld_rsp_err_i,

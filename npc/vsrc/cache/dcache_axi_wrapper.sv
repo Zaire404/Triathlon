@@ -7,7 +7,8 @@ module dcache_axi_wrapper #(
     parameter int unsigned AXI_ID_WIDTH = 4,
     parameter int unsigned AXI_DATA_WIDTH = 64,
     parameter int unsigned AXI_ADDR_WIDTH = Cfg.PLEN,
-    parameter int unsigned N_MSHR = 1
+    parameter int unsigned N_MSHR = 1,
+    parameter int unsigned LD_PORT_ID_WIDTH = 1
 ) (
     input logic clk_i,
     input logic rst_ni,
@@ -18,11 +19,13 @@ module dcache_axi_wrapper #(
     output logic                               ld_req_ready_o,
     input  logic                [Cfg.PLEN-1:0] ld_req_addr_i,
     input  decode_pkg::lsu_op_e                ld_req_op_i,
+    input  logic [LD_PORT_ID_WIDTH-1:0]        ld_req_id_i,
 
     output logic                ld_rsp_valid_o,
     input  logic                ld_rsp_ready_i,
     output logic [Cfg.XLEN-1:0] ld_rsp_data_o,
     output logic                ld_rsp_err_o,
+    output logic [LD_PORT_ID_WIDTH-1:0] ld_rsp_id_o,
 
     // ================= Store buffer interface ==============
     input  logic                               st_req_valid_i,
@@ -117,7 +120,8 @@ module dcache_axi_wrapper #(
   // =============================================================
   dcache #(
       .Cfg(Cfg),
-      .N_MSHR(N_MSHR)
+      .N_MSHR(N_MSHR),
+      .LD_PORT_ID_WIDTH(LD_PORT_ID_WIDTH)
   ) u_dcache (
       .clk_i (clk_i),
       .rst_ni(rst_ni),
@@ -127,11 +131,13 @@ module dcache_axi_wrapper #(
       .ld_req_ready_o(ld_req_ready_o),
       .ld_req_addr_i (ld_req_addr_i),
       .ld_req_op_i   (ld_req_op_i),
+      .ld_req_id_i   (ld_req_id_i),
 
       .ld_rsp_valid_o(ld_rsp_valid_o),
       .ld_rsp_ready_i(ld_rsp_ready_i),
       .ld_rsp_data_o (ld_rsp_data_o),
       .ld_rsp_err_o  (ld_rsp_err_o),
+      .ld_rsp_id_o   (ld_rsp_id_o),
 
       .st_req_valid_i(st_req_valid_i),
       .st_req_ready_o(st_req_ready_o),

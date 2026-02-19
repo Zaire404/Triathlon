@@ -48,8 +48,10 @@ module lsu_group #(
     input  logic                               ld_req_ready_i,
     output logic                [Cfg.PLEN-1:0] ld_req_addr_o,
     output decode_pkg::lsu_op_e                ld_req_op_o,
+    output logic [((N_LSU <= 1) ? 1 : $clog2(N_LSU))-1:0] ld_req_id_o,
 
     input  logic                ld_rsp_valid_i,
+    input  logic [((N_LSU <= 1) ? 1 : $clog2(N_LSU))-1:0] ld_rsp_id_i,
     output logic                ld_rsp_ready_o,
     input  logic [Cfg.XLEN-1:0] ld_rsp_data_i,
     input  logic                ld_rsp_err_i,
@@ -68,6 +70,7 @@ module lsu_group #(
 );
 
   localparam int unsigned LANE_SEL_WIDTH = (N_LSU <= 1) ? 1 : $clog2(N_LSU);
+  localparam int unsigned LD_ID_WIDTH = (N_LSU <= 1) ? 1 : $clog2(N_LSU);
   localparam int unsigned DBG_SEL_WIDTH = (N_LSU <= 1) ? 1 : $clog2(N_LSU + 1);
 
   // Keep these debug names for existing testbench hierarchical probes.
@@ -111,7 +114,6 @@ module lsu_group #(
 
   logic                [         N_LSU-1:0]                    alloc_grant;
   logic                [LANE_SEL_WIDTH-1:0]                    alloc_lane_idx;
-  logic                                                        alloc_block_new_req;
   logic                                                        alloc_fire;
 
   logic                [         N_LSU-1:0]                    ld_req_grant;
@@ -122,8 +124,8 @@ module lsu_group #(
   logic                [LANE_SEL_WIDTH-1:0]                    wb_lane_idx;
   logic                                                        wb_grant_valid;
 
-  logic ld_owner_valid_q, ld_owner_valid_d;
-  logic [LANE_SEL_WIDTH-1:0] ld_owner_q, ld_owner_d;
+  logic rsp_id_in_range;
+  logic [LANE_SEL_WIDTH-1:0] rsp_lane_idx;
 
   generate
     for (genvar gi = 0; gi < N_LSU; gi++) begin : g_lanes
@@ -190,32 +192,11 @@ module lsu_group #(
     req_ready_o = 1'b0;
     alloc_grant = '0;
     alloc_lane_idx = '0;
-    alloc_block_new_req = 1'b0;
     for (int i = 0; i < N_LSU; i++) begin
       if (!req_ready_o && lane_req_ready[i]) begin
         req_ready_o = 1'b1;
         alloc_grant[i] = 1'b1;
         alloc_lane_idx = LANE_SEL_WIDTH'(i);
-      end
-    end
-
-    // Keep per-lane request order monotonic:
-    // if an older request is already waiting in a higher-index lane,
-    // do not place a newer request into a lower-index free lane.
-    if (req_ready_o) begin
-      for (int older = 0; older < N_LSU; older++) begin
-        if (lane_ld_req_valid[older]) begin
-          for (int younger = 0; younger < older; younger++) begin
-            if (alloc_grant[younger]) begin
-              alloc_block_new_req = 1'b1;
-            end
-          end
-        end
-      end
-      if (alloc_block_new_req) begin
-        req_ready_o = 1'b0;
-        alloc_grant = '0;
-        alloc_lane_idx = '0;
       end
     end
   end
@@ -268,14 +249,17 @@ module lsu_group #(
     end
   end
 
-  assign ld_req_valid_o = (!ld_owner_valid_q) && ld_req_grant_valid;
+  assign ld_req_valid_o = ld_req_grant_valid;
+  assign ld_req_id_o = LD_ID_WIDTH'(ld_req_lane_idx);
+  assign rsp_lane_idx = LANE_SEL_WIDTH'(ld_rsp_id_i);
+  assign rsp_id_in_range = ($unsigned(ld_rsp_id_i) < N_LSU);
 
   always_comb begin
     ld_req_addr_o = '0;
     ld_req_op_o = decode_pkg::LSU_LW;
     lane_ld_req_ready = '0;
 
-    if (!ld_owner_valid_q && ld_req_grant_valid) begin
+    if (ld_req_grant_valid) begin
       ld_req_addr_o = lane_ld_req_addr[ld_req_lane_idx];
       ld_req_op_o = lane_ld_req_op[ld_req_lane_idx];
       lane_ld_req_ready[ld_req_lane_idx] = ld_req_ready_i;
@@ -284,37 +268,10 @@ module lsu_group #(
 
   always_comb begin
     lane_ld_rsp_valid = '0;
-    if (ld_owner_valid_q && ld_rsp_valid_i) begin
-      lane_ld_rsp_valid[ld_owner_q] = 1'b1;
-    end
-  end
-
-  assign ld_rsp_ready_o = ld_owner_valid_q ? lane_ld_rsp_ready[ld_owner_q] : 1'b0;
-
-  always_comb begin
-    ld_owner_valid_d = ld_owner_valid_q;
-    ld_owner_d = ld_owner_q;
-
-    if (flush_i) begin
-      ld_owner_valid_d = 1'b0;
-      ld_owner_d = '0;
-    end else begin
-      if (!ld_owner_valid_q && ld_req_grant_valid && ld_req_ready_i) begin
-        ld_owner_valid_d = 1'b1;
-        ld_owner_d = ld_req_lane_idx;
-      end else if (ld_owner_valid_q && ld_rsp_valid_i && ld_rsp_ready_o) begin
-        ld_owner_valid_d = 1'b0;
-      end
-    end
-  end
-
-  always_ff @(posedge clk_i or negedge rst_ni) begin
-    if (!rst_ni) begin
-      ld_owner_valid_q <= 1'b0;
-      ld_owner_q <= '0;
-    end else begin
-      ld_owner_valid_q <= ld_owner_valid_d;
-      ld_owner_q <= ld_owner_d;
+    ld_rsp_ready_o = 1'b0;
+    if (ld_rsp_valid_i && rsp_id_in_range) begin
+      lane_ld_rsp_valid[rsp_lane_idx] = 1'b1;
+      ld_rsp_ready_o = lane_ld_rsp_ready[rsp_lane_idx];
     end
   end
 
@@ -352,15 +309,21 @@ module lsu_group #(
     end
   end
 
-  generate
-    if (N_LSU == 1) begin : g_dbg_single
-      assign dbg_alloc_lane = '0;
-      assign dbg_ld_owner = (lane_ld_req_valid[0] || lane_ld_rsp_ready[0]) ? '0 : '1;
-    end else begin : g_dbg_multi
-      assign dbg_alloc_lane = alloc_fire ? DBG_SEL_WIDTH'(alloc_lane_idx + 1'b1) : '0;
-      assign dbg_ld_owner   = ld_owner_valid_q ? DBG_SEL_WIDTH'(ld_owner_q + 1'b1) : '0;
+  always_comb begin
+    dbg_alloc_lane = alloc_fire ? DBG_SEL_WIDTH'(alloc_lane_idx + 1'b1) : '0;
+    dbg_ld_owner = '0;
+
+    // Prefer the response lane in current cycle; fallback to first lane waiting response.
+    if (ld_rsp_valid_i && rsp_id_in_range) begin
+      dbg_ld_owner = DBG_SEL_WIDTH'(ld_rsp_id_i + 1'b1);
+    end else begin
+      for (int i = 0; i < N_LSU; i++) begin
+        if (dbg_ld_owner == '0 && lane_ld_rsp_ready[i]) begin
+          dbg_ld_owner = DBG_SEL_WIDTH'(i + 1);
+        end
+      end
     end
-  endgenerate
+  end
 
   initial begin
     if (N_LSU < 1) begin

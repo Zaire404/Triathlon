@@ -46,6 +46,7 @@ static void set_defaults(Vtb_lsu *top) {
 
   top->ld_req_ready_i = 0;
   top->ld_rsp_valid_i = 0;
+  top->ld_rsp_id_i = 0;
   top->ld_rsp_data_i = 0;
   top->ld_rsp_err_i = 0;
 
@@ -308,6 +309,7 @@ static void test_group_accepts_second_req_when_first_waits_dcache(Vtb_lsu *top) 
   top->ld_req_ready_i = 0;
 
   top->ld_rsp_valid_i = 1;
+  top->ld_rsp_id_i = 0;
   top->ld_rsp_data_i = 0xCAFEBABE;
   top->ld_rsp_err_i = 0;
   tick(top); // lane0 -> S_RESP
@@ -322,6 +324,7 @@ static void test_group_accepts_second_req_when_first_waits_dcache(Vtb_lsu *top) 
   tick(top); // lane1 -> S_LD_RSP
   top->ld_req_ready_i = 0;
   top->ld_rsp_valid_i = 1;
+  top->ld_rsp_id_i = 1;
   top->ld_rsp_data_i = 0x1234ABCD;
   top->ld_rsp_err_i = 0;
   tick(top); // lane1 -> S_RESP
@@ -359,7 +362,7 @@ static void test_store_can_complete_without_dcache_roundtrip(Vtb_lsu *top) {
   tick(top);
 }
 
-static void test_group_blocks_new_req_when_older_lane_waits(Vtb_lsu *top) {
+static void test_group_allows_new_req_when_older_lane_waits(Vtb_lsu *top) {
   set_defaults(top);
 
   // 1) First load -> lane0 (hold D$ req not ready)
@@ -392,6 +395,7 @@ static void test_group_blocks_new_req_when_older_lane_waits(Vtb_lsu *top) {
   top->ld_req_ready_i = 0;
 
   top->ld_rsp_valid_i = 1;
+  top->ld_rsp_id_i = 0;
   top->ld_rsp_data_i = 0x11112222;
   top->ld_rsp_err_i = 0;
   tick(top);  // lane0 -> S_RESP
@@ -401,7 +405,7 @@ static void test_group_blocks_new_req_when_older_lane_waits(Vtb_lsu *top) {
   expect(top->wb_rob_idx_o == 0x10, "LSU group order: first wb tag");
   tick(top);  // lane0 -> S_IDLE, lane1 still waiting
 
-  // 4) While lane1 (older) waits for D$, lane0 must NOT accept newer request.
+  // 4) While lane1 (older) waits for D$, lane0 can still accept newer request.
   top->ld_req_ready_i = 0; // keep D$ unavailable so lane1 remains pending
   top->req_valid_i = 1;
   top->is_load_i = 1;
@@ -410,21 +414,185 @@ static void test_group_blocks_new_req_when_older_lane_waits(Vtb_lsu *top) {
   top->imm_i = 0;
   top->rob_tag_i = 0x12;
   eval_comb(top);
-  expect(top->req_ready_o == 0, "LSU group order: block newer req while older lane waits");
-
-  // 5) Drain lane1 to exit test cleanly.
+  expect(top->req_ready_o == 1, "LSU group order: allow newer req when another lane waits");
+  tick(top);  // lane0 accepts newer request
   top->req_valid_i = 0;
+
+  // 5) Drain lane0/lane1 requests to reach response state.
   top->ld_req_ready_i = 1;
+  tick(top);  // lane0 -> S_LD_RSP
   tick(top);  // lane1 -> S_LD_RSP
   top->ld_req_ready_i = 0;
+
+  // 6) Return lane1 first.
   top->ld_rsp_valid_i = 1;
+  top->ld_rsp_id_i = 1;
   top->ld_rsp_data_i = 0x33334444;
   top->ld_rsp_err_i = 0;
   tick(top);  // lane1 -> S_RESP
   top->ld_rsp_valid_i = 0;
   eval_comb(top);
-  expect(top->wb_valid_o == 1, "LSU group order: second load writeback");
-  expect(top->wb_rob_idx_o == 0x11, "LSU group order: second wb tag");
+  expect(top->wb_valid_o == 1, "LSU group order: older pending load writeback");
+  expect(top->wb_rob_idx_o == 0x11, "LSU group order: older pending load wb tag");
+  tick(top);
+
+  // 7) Return newer lane0 load.
+  top->ld_rsp_valid_i = 1;
+  top->ld_rsp_id_i = 0;
+  top->ld_rsp_data_i = 0x55556666;
+  top->ld_rsp_err_i = 0;
+  tick(top);  // lane0 -> S_RESP
+  top->ld_rsp_valid_i = 0;
+  eval_comb(top);
+  expect(top->wb_valid_o == 1, "LSU group order: newer load writeback");
+  expect(top->wb_rob_idx_o == 0x12, "LSU group order: newer load wb tag");
+  tick(top);
+}
+
+static void test_group_allows_req_on_rsp_handoff_cycle(Vtb_lsu *top) {
+  set_defaults(top);
+
+  // 1) First load -> lane0
+  top->is_load_i = 1;
+  top->lsu_op_i = LSU_LW;
+  top->rs1_data_i = 0x9000;
+  top->imm_i = 0;
+  top->rob_tag_i = 0x13;
+  top->req_valid_i = 1;
+  eval_comb(top);
+  expect(top->req_ready_o == 1, "LSU handoff: first load accepted");
+  tick(top); // lane0 -> S_LD_REQ
+
+  // 2) Second load -> lane1 while lane0 waits for D$ req
+  top->ld_req_ready_i = 0;
+  top->is_load_i = 1;
+  top->lsu_op_i = LSU_LW;
+  top->rs1_data_i = 0x9100;
+  top->imm_i = 4;
+  top->rob_tag_i = 0x14;
+  top->req_valid_i = 1;
+  eval_comb(top);
+  expect(top->req_ready_o == 1, "LSU handoff: second load accepted");
+  tick(top); // lane1 -> S_LD_REQ
+
+  // 3) Grant D$ request for lane0 so owner is established.
+  top->req_valid_i = 0;
+  top->ld_req_ready_i = 1;
+  eval_comb(top);
+  expect(top->ld_req_valid_o == 1, "LSU handoff: lane0 request issues");
+  expect(top->ld_req_addr_o == 0x9000, "LSU handoff: lane0 request addr");
+  tick(top); // lane0 -> S_LD_RSP, owner=lane0
+
+  // 4) In rsp-fire cycle, lane1 is still waiting req.
+  // Expected: lane1 request can be issued without one-cycle bubble.
+  top->ld_rsp_valid_i = 1;
+  top->ld_rsp_id_i = 0;
+  top->ld_rsp_data_i = 0xAAAA5555;
+  top->ld_rsp_err_i = 0;
+  top->ld_req_ready_i = 1;
+  eval_comb(top);
+  expect(top->ld_rsp_ready_o == 1, "LSU handoff: lane0 response ready");
+  expect(top->ld_req_valid_o == 1, "LSU handoff: lane1 request should issue on rsp-fire cycle");
+  expect(top->ld_req_addr_o == 0x9104, "LSU handoff: lane1 request addr on rsp-fire cycle");
+  expect(top->ld_req_id_o == 1, "LSU handoff: lane1 request id on rsp-fire cycle");
+  tick(top); // lane0 rsp consumed, lane1 request should handshake
+
+  // 5) Drain lane0 writeback.
+  top->ld_rsp_valid_i = 0;
+  eval_comb(top);
+  expect(top->wb_valid_o == 1, "LSU handoff: lane0 writeback after rsp");
+  expect(top->wb_rob_idx_o == 0x13, "LSU handoff: lane0 wb tag");
+  tick(top);
+
+  // 6) Complete lane1 response/writeback to exit cleanly.
+  top->ld_rsp_valid_i = 1;
+  top->ld_rsp_id_i = 1;
+  top->ld_rsp_data_i = 0x12345678;
+  top->ld_rsp_err_i = 0;
+  eval_comb(top);
+  expect(top->ld_rsp_ready_o == 1, "LSU handoff: lane1 response ready");
+  tick(top);
+  top->ld_rsp_valid_i = 0;
+
+  eval_comb(top);
+  expect(top->wb_valid_o == 1, "LSU handoff: lane1 writeback");
+  expect(top->wb_rob_idx_o == 0x14, "LSU handoff: lane1 wb tag");
+  tick(top);
+}
+
+static void test_group_supports_two_outstanding_with_rsp_id(Vtb_lsu *top) {
+  set_defaults(top);
+
+  // 1) First load -> lane0
+  top->is_load_i = 1;
+  top->lsu_op_i = LSU_LW;
+  top->rs1_data_i = 0xA000;
+  top->imm_i = 0;
+  top->rob_tag_i = 0x20;
+  top->req_valid_i = 1;
+  eval_comb(top);
+  expect(top->req_ready_o == 1, "LSU ooorsp: first load accepted");
+  tick(top); // lane0 -> S_LD_REQ
+
+  // 2) Second load -> lane1 while lane0 waits D$ req grant.
+  top->ld_req_ready_i = 0;
+  top->is_load_i = 1;
+  top->lsu_op_i = LSU_LW;
+  top->rs1_data_i = 0xA100;
+  top->imm_i = 4;
+  top->rob_tag_i = 0x21;
+  top->req_valid_i = 1;
+  eval_comb(top);
+  expect(top->req_ready_o == 1, "LSU ooorsp: second load accepted");
+  tick(top); // lane1 -> S_LD_REQ
+
+  // 3) Fire lane0 load request first.
+  top->req_valid_i = 0;
+  top->ld_req_ready_i = 1;
+  eval_comb(top);
+  expect(top->ld_req_valid_o == 1, "LSU ooorsp: lane0 request valid");
+  expect(top->ld_req_addr_o == 0xA000, "LSU ooorsp: lane0 request addr");
+  expect(top->ld_req_id_o == 0, "LSU ooorsp: lane0 request id");
+  tick(top); // lane0 -> S_LD_RSP
+
+  // 4) Without waiting for lane0 response, lane1 request should also fire.
+  eval_comb(top);
+  expect(top->ld_req_valid_o == 1, "LSU ooorsp: lane1 request valid before lane0 response");
+  expect(top->ld_req_addr_o == 0xA104, "LSU ooorsp: lane1 request addr");
+  expect(top->ld_req_id_o == 1, "LSU ooorsp: lane1 request id");
+  tick(top); // lane1 -> S_LD_RSP
+  top->ld_req_ready_i = 0;
+
+  // 5) Return lane1 response first (out-of-order by request issue order).
+  top->ld_rsp_valid_i = 1;
+  top->ld_rsp_id_i = 1;
+  top->ld_rsp_data_i = 0x56781234;
+  top->ld_rsp_err_i = 0;
+  eval_comb(top);
+  expect(top->ld_rsp_ready_o == 1, "LSU ooorsp: lane1 response ready");
+  tick(top); // lane1 -> S_RESP
+  top->ld_rsp_valid_i = 0;
+
+  eval_comb(top);
+  expect(top->wb_valid_o == 1, "LSU ooorsp: lane1 writeback first");
+  expect(top->wb_rob_idx_o == 0x21, "LSU ooorsp: lane1 wb tag");
+  expect(top->wb_data_o == 0x56781234, "LSU ooorsp: lane1 wb data");
+  tick(top);
+
+  // 6) Return lane0 response later.
+  top->ld_rsp_valid_i = 1;
+  top->ld_rsp_id_i = 0;
+  top->ld_rsp_data_i = 0x89ABCDEF;
+  top->ld_rsp_err_i = 0;
+  eval_comb(top);
+  expect(top->ld_rsp_ready_o == 1, "LSU ooorsp: lane0 response ready");
+  tick(top); // lane0 -> S_RESP
+  top->ld_rsp_valid_i = 0;
+
+  eval_comb(top);
+  expect(top->wb_valid_o == 1, "LSU ooorsp: lane0 writeback second");
+  expect(top->wb_rob_idx_o == 0x20, "LSU ooorsp: lane0 wb tag");
+  expect(top->wb_data_o == 0x89ABCDEF, "LSU ooorsp: lane0 wb data");
   tick(top);
 }
 
@@ -444,7 +612,9 @@ int main(int argc, char **argv) {
   test_load_access_fault(top);
   test_group_accepts_second_req_when_first_waits_dcache(top);
   test_store_can_complete_without_dcache_roundtrip(top);
-  test_group_blocks_new_req_when_older_lane_waits(top);
+  test_group_allows_new_req_when_older_lane_waits(top);
+  test_group_allows_req_on_rsp_handoff_cycle(top);
+  test_group_supports_two_outstanding_with_rsp_id(top);
 
   std::cout << ANSI_RES_GRN << "--- [ALL LSU TESTS PASSED] ---" << ANSI_RES_RST << std::endl;
 

@@ -57,6 +57,7 @@ module backend #(
   localparam int unsigned WB_WIDTH = 7;
   localparam int unsigned NUM_FUS = 7;  // ALU0, ALU1, BRU, LSU, ALU2, ALU3, CSR
   localparam int unsigned LSU_GROUP_SIZE = 2;
+  localparam int unsigned LSU_LD_ID_WIDTH = (LSU_GROUP_SIZE <= 1) ? 1 : $clog2(LSU_GROUP_SIZE);
   localparam int unsigned DCACHE_MSHR_SIZE = 2;
   // A2.2: 开启 commit-time call/ret 更新，配合 BPU speculative RAS 降低 return miss。
   localparam bit ENABLE_COMMIT_RAS_UPDATE = 1'b1;
@@ -1262,11 +1263,13 @@ module backend #(
   logic lsu_ld_req_ready;
   logic [Cfg.PLEN-1:0] lsu_ld_req_addr;
   decode_pkg::lsu_op_e lsu_ld_req_op;
+  logic [LSU_LD_ID_WIDTH-1:0] lsu_ld_req_id;
 
   logic lsu_ld_rsp_valid;
   logic lsu_ld_rsp_ready;
   logic [Cfg.XLEN-1:0] lsu_ld_rsp_data;
   logic lsu_ld_rsp_err;
+  logic [LSU_LD_ID_WIDTH-1:0] lsu_ld_rsp_id;
 
   lsu_group #(
       .Cfg(Cfg),
@@ -1302,8 +1305,10 @@ module backend #(
       .ld_req_ready_i(lsu_ld_req_ready),
       .ld_req_addr_o (lsu_ld_req_addr),
       .ld_req_op_o   (lsu_ld_req_op),
+      .ld_req_id_o   (lsu_ld_req_id),
 
       .ld_rsp_valid_i(lsu_ld_rsp_valid),
+      .ld_rsp_id_i   (lsu_ld_rsp_id),
       .ld_rsp_ready_o(lsu_ld_rsp_ready),
       .ld_rsp_data_i (lsu_ld_rsp_data),
       .ld_rsp_err_i  (lsu_ld_rsp_err),
@@ -1461,7 +1466,8 @@ module backend #(
   // =========================================================
   dcache #(
       .Cfg(Cfg),
-      .N_MSHR(DCACHE_MSHR_SIZE)
+      .N_MSHR(DCACHE_MSHR_SIZE),
+      .LD_PORT_ID_WIDTH(LSU_LD_ID_WIDTH)
   ) u_dcache (
       .clk_i  (clk_i),
       .rst_ni (rst_ni),
@@ -1472,11 +1478,13 @@ module backend #(
       .ld_req_ready_o(lsu_ld_req_ready),
       .ld_req_addr_i (lsu_ld_req_addr),
       .ld_req_op_i   (lsu_ld_req_op),
+      .ld_req_id_i   (lsu_ld_req_id),
 
       .ld_rsp_valid_o(lsu_ld_rsp_valid),
       .ld_rsp_ready_i(lsu_ld_rsp_ready),
       .ld_rsp_data_o (lsu_ld_rsp_data),
       .ld_rsp_err_o  (lsu_ld_rsp_err),
+      .ld_rsp_id_o   (lsu_ld_rsp_id),
 
       // Store port (from Store Buffer)
       .st_req_valid_i(sb_dcache_req_valid),

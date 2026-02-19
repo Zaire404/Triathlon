@@ -3,7 +3,8 @@ import config_pkg::*;
 import decode_pkg::*;
 
 module tb_dcache #(
-    parameter int unsigned TB_N_MSHR = 2
+    parameter int unsigned TB_N_MSHR = 2,
+    parameter int unsigned TB_LD_ID_WIDTH = 1
 ) (
     input logic clk_i,
     input logic rst_ni,
@@ -14,11 +15,13 @@ module tb_dcache #(
     output logic                                                  ld_req_ready_o,
     input  logic                [global_config_pkg::Cfg.PLEN-1:0] ld_req_addr_i,
     input  decode_pkg::lsu_op_e                                   ld_req_op_i,
+    input  logic                             [TB_LD_ID_WIDTH-1:0] ld_req_id_i,
 
     output logic                                   ld_rsp_valid_o,
     input  logic                                   ld_rsp_ready_i,
     output logic [global_config_pkg::Cfg.XLEN-1:0] ld_rsp_data_o,
     output logic                                   ld_rsp_err_o,
+    output logic                            [TB_LD_ID_WIDTH-1:0] ld_rsp_id_o,
 
     // Store Port
     input  logic                                                  st_req_valid_i,
@@ -49,7 +52,8 @@ module tb_dcache #(
 
   dcache #(
       .Cfg(global_config_pkg::Cfg),
-      .N_MSHR(TB_N_MSHR)
+      .N_MSHR(TB_N_MSHR),
+      .LD_PORT_ID_WIDTH(TB_LD_ID_WIDTH)
   ) dut (.*);
 
 endmodule

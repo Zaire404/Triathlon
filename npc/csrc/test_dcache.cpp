@@ -26,6 +26,8 @@ void tick(Vtb_dcache *top, VerilatedVcdC *tfp) {
 }
 
 void reset(Vtb_dcache *top, VerilatedVcdC *tfp) {
+  top->ld_req_id_i = 0;
+  top->ld_rsp_ready_i = 0;
   top->rst_ni = 0;
   tick(top, tfp);
   tick(top, tfp);
@@ -111,6 +113,7 @@ void check_load(Vtb_dcache *top, VerilatedVcdC *tfp, uint32_t addr,
   top->ld_req_valid_i = 1;
   top->ld_req_addr_i = addr;
   top->ld_req_op_i = op;
+  top->ld_req_id_i = 0;
 
   bool req_accepted = false;
   while (!req_accepted && sim_time < MAX_SIM_TIME) {
@@ -138,6 +141,10 @@ void check_load(Vtb_dcache *top, VerilatedVcdC *tfp, uint32_t addr,
   bool got_resp = false;
   while (!got_resp && sim_time < MAX_SIM_TIME) {
     if (top->ld_rsp_valid_o) {
+      if (top->ld_rsp_id_o != 0) {
+        std::cout << "[FAIL] " << msg << " unexpected ld_rsp_id=" << top->ld_rsp_id_o << std::endl;
+        assert(false);
+      }
       if (top->ld_rsp_data_o != expected_data) {
         std::cout << "[FAIL] " << msg << " Addr=" << std::hex << addr
                   << " Exp=" << expected_data << " Got=" << top->ld_rsp_data_o
@@ -506,6 +513,140 @@ int main(int argc, char **argv) {
     assert(false);
   }
   std::cout << "[PASS] Case 9: Store miss non-blocking path works." << std::endl;
+
+  // ============================================================
+  // Test 10: Accept next load while previous load response is stalled
+  // ============================================================
+  std::cout << "[TEST] Case 10: Queue load req during response stall" << std::endl;
+
+  reset(top, tfp);
+  top->miss_req_ready_i = 1;
+  top->refill_valid_i = 0;
+  top->wb_req_ready_i = 1;
+  top->ld_rsp_ready_i = 1;
+  top->st_req_valid_i = 0;
+  top->ld_req_valid_i = 0;
+
+  const uint32_t case10_a = 0x80008000;
+  const uint32_t case10_a_data = 0x11112222;
+
+  // Warm up one line into cache (both requests hit the same line afterwards).
+  check_load(top, tfp, case10_a, case10_a_data, OP_LW, "Case 10: Warmup A");
+
+  // First load (A) -> let response become valid, but do not consume it yet.
+  wait_until_ready(top, tfp, false);
+  top->ld_req_valid_i = 1;
+  top->ld_req_addr_i = case10_a;
+  top->ld_req_op_i = OP_LW;
+  top->ld_req_id_i = 1;
+  tick(top, tfp);
+  top->ld_req_valid_i = 0;
+  top->ld_rsp_ready_i = 0;
+
+  bool first_rsp_seen = false;
+  for (int i = 0; i < 20; i++) {
+    if (top->ld_rsp_valid_o) {
+      first_rsp_seen = true;
+      break;
+    }
+    tick(top, tfp);
+  }
+  if (!first_rsp_seen) {
+    std::cout << "[FAIL] Case 10: first load response not observed." << std::endl;
+    assert(false);
+  }
+  if (top->ld_rsp_data_o != case10_a_data || top->ld_rsp_id_o != 1) {
+    std::cout << "[FAIL] Case 10: first response payload mismatch." << std::endl;
+    assert(false);
+  }
+
+  // Response channel is stalled now.
+  top->eval();
+
+  // Second load (B) should still be accepted while first response is stalled.
+  top->ld_req_valid_i = 1;
+  top->ld_req_addr_i = case10_a;
+  top->ld_req_op_i = OP_LW;
+  top->ld_req_id_i = 0;
+  top->eval();
+  if (!top->ld_req_ready_o) {
+    std::cout << "[FAIL] Case 10: second load not accepted during response stall."
+              << std::endl;
+    assert(false);
+  }
+  tick(top, tfp); // handshake second request
+  top->ld_req_valid_i = 0;
+
+  // Release first response.
+  top->ld_rsp_ready_i = 1;
+  tick(top, tfp);
+
+  // Then second response should eventually arrive with id=0/data=A.
+  bool second_rsp_seen = false;
+  for (int i = 0; i < 30; i++) {
+    if (top->ld_rsp_valid_o) {
+      if (top->ld_rsp_id_o == 0) {
+        if (top->ld_rsp_data_o != case10_a_data) {
+          std::cout << "[FAIL] Case 10: second response payload mismatch."
+                    << std::endl;
+          assert(false);
+        }
+        tick(top, tfp); // consume second response
+        second_rsp_seen = true;
+        break;
+      }
+    }
+    if (top->miss_req_valid_o || top->wb_req_valid_o) {
+      handle_memory_interaction(top, tfp, case10_a_data);
+      continue;
+    }
+    tick(top, tfp);
+  }
+  if (!second_rsp_seen) {
+    std::cout << "[FAIL] Case 10: second response not observed." << std::endl;
+    assert(false);
+  }
+  std::cout << "[PASS] Case 10: Load queueing during response stall works."
+            << std::endl;
+
+  // ============================================================
+  // Test 11: Do not accept same-line load during miss LOOKUP cycle
+  // ============================================================
+  std::cout << "[TEST] Case 11: Block same-line load in miss LOOKUP" << std::endl;
+
+  reset(top, tfp);
+  top->miss_req_ready_i = 1;
+  top->refill_valid_i = 0;
+  top->wb_req_ready_i = 1;
+  top->ld_rsp_ready_i = 1;
+  top->st_req_valid_i = 0;
+  top->ld_req_valid_i = 0;
+
+  const uint32_t case11_addr = 0x80009000;
+
+  // First load: make it miss.
+  wait_until_ready(top, tfp, false);
+  top->ld_req_valid_i = 1;
+  top->ld_req_addr_i = case11_addr;
+  top->ld_req_op_i = OP_LW;
+  top->ld_req_id_i = 0;
+  tick(top, tfp); // handshake first request; next cycle enters LOOKUP.
+  top->ld_req_valid_i = 0;
+
+  // In LOOKUP cycle, second same-line load must not be accepted.
+  top->ld_req_valid_i = 1;
+  top->ld_req_addr_i = case11_addr;
+  top->ld_req_op_i = OP_LW;
+  top->ld_req_id_i = 1;
+  top->eval();
+  if (top->ld_req_ready_o) {
+    std::cout << "[FAIL] Case 11: second same-line load accepted in miss LOOKUP."
+              << std::endl;
+    assert(false);
+  }
+  top->ld_req_valid_i = 0;
+  std::cout << "[PASS] Case 11: same-line load blocked in miss LOOKUP."
+            << std::endl;
 
   // Cleanup
   for (int i = 0; i < 20; i++)
