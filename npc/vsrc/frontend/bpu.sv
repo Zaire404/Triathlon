@@ -7,6 +7,7 @@ module bpu #(
     parameter bit BTB_HASH_ENABLE = 1'b1,
     parameter bit BHT_HASH_ENABLE = 1'b1,
     parameter bit USE_GSHARE = 1'b0,
+    parameter bit USE_TOURNAMENT = 1'b1,
     parameter int unsigned GHR_BITS = 8
 ) (
     input logic clk_i,
@@ -50,7 +51,9 @@ module bpu #(
   logic [BTB_ENTRIES-1:0] btb_use_ras_q;
   logic [BTB_ENTRIES-1:0][BTB_TAG_W-1:0] btb_tag_q;
   logic [BTB_ENTRIES-1:0][Cfg.PLEN-1:0] btb_target_q;
-  logic [BHT_ENTRIES-1:0][1:0] bht_q;
+  logic [BHT_ENTRIES-1:0][1:0] local_bht_q;
+  logic [BHT_ENTRIES-1:0][1:0] global_bht_q;
+  logic [BHT_ENTRIES-1:0][1:0] chooser_q;
   logic [RAS_DEPTH-1:0][Cfg.PLEN-1:0] arch_ras_stack_q;
   logic [RAS_DEPTH-1:0][Cfg.PLEN-1:0] spec_ras_stack_q;
   logic [RAS_CNT_W-1:0] arch_ras_count_q;
@@ -60,6 +63,12 @@ module bpu #(
   logic pred_event_is_ret_q;
   logic [Cfg.PLEN-1:0] pred_event_pc_q;
   logic [GHR_W-1:0] ghr_q;
+  logic [63:0] dbg_cond_update_total_q;
+  logic [63:0] dbg_cond_local_correct_q;
+  logic [63:0] dbg_cond_global_correct_q;
+  logic [63:0] dbg_cond_selected_correct_q;
+  logic [63:0] dbg_cond_choose_local_q;
+  logic [63:0] dbg_cond_choose_global_q;
 
   function automatic logic [BTB_IDX_W-1:0] btb_index(input logic [Cfg.PLEN-1:0] pc);
     logic [BTB_IDX_W-1:0] pc_idx;
@@ -78,12 +87,10 @@ module bpu #(
     btb_tag = pc[Cfg.PLEN-1:INSTR_ADDR_LSB+BTB_IDX_W];
   endfunction
 
-  function automatic logic [BHT_IDX_W-1:0] bht_index(input logic [Cfg.PLEN-1:0] pc,
-                                                      input logic [GHR_W-1:0] ghr);
+  function automatic logic [BHT_IDX_W-1:0] bht_pc_index(input logic [Cfg.PLEN-1:0] pc);
     logic [BHT_IDX_W-1:0] pc_idx;
     logic [BHT_IDX_W-1:0] fold_idx;
     logic [BHT_IDX_W-1:0] mixed_pc_idx;
-    logic [BHT_IDX_W-1:0] ghr_idx;
     begin
       pc_idx = pc[INSTR_ADDR_LSB+:BHT_IDX_W];
       fold_idx = '0;
@@ -91,11 +98,19 @@ module bpu #(
         fold_idx[(i - (INSTR_ADDR_LSB + BHT_IDX_W)) % BHT_IDX_W] ^= pc[i];
       end
       mixed_pc_idx = BHT_HASH_ENABLE ? (pc_idx ^ fold_idx) : pc_idx;
+      bht_pc_index = mixed_pc_idx;
+    end
+  endfunction
+
+  function automatic logic [BHT_IDX_W-1:0] bht_global_index(input logic [Cfg.PLEN-1:0] pc,
+                                                             input logic [GHR_W-1:0] ghr);
+    logic [BHT_IDX_W-1:0] ghr_idx;
+    begin
       ghr_idx = '0;
       for (int i = 0; i < BHT_IDX_W; i++) begin
         ghr_idx[i] = ghr[i%GHR_W];
       end
-      bht_index = USE_GSHARE ? (mixed_pc_idx ^ ghr_idx) : mixed_pc_idx;
+      bht_global_index = bht_pc_index(pc) ^ ghr_idx;
     end
   endfunction
 
@@ -146,17 +161,30 @@ module bpu #(
   always_comb begin
     for (int i = 0; i < Cfg.INSTR_PER_FETCH; i++) begin
       logic [BTB_IDX_W-1:0] idx;
-      logic [BHT_IDX_W-1:0] bht_idx;
+      logic [BHT_IDX_W-1:0] local_idx;
+      logic [BHT_IDX_W-1:0] global_idx;
+      logic [BHT_IDX_W-1:0] chooser_idx;
       logic [Cfg.PLEN-1:0] slot_pc;
+      logic local_taken_pred;
+      logic global_taken_pred;
+      logic use_global_pred;
       slot_pc = ifu_to_bpu_i.pc + Cfg.PLEN'(INSTR_BYTES * i);
       idx = btb_index(slot_pc);
-      bht_idx = bht_index(slot_pc, ghr_q);
+      local_idx = bht_pc_index(slot_pc);
+      global_idx = bht_global_index(slot_pc, ghr_q);
+      chooser_idx = local_idx;
 
       predict_pc[i] = slot_pc;
       predict_target[i] = btb_target_q[idx];
       predict_hit[i] = btb_valid_q[idx] && (btb_tag_q[idx] == btb_tag(slot_pc));
       predict_is_call[i] = predict_hit[i] && btb_is_call_q[idx];
       predict_is_ret[i] = predict_hit[i] && btb_is_ret_q[idx];
+
+      local_taken_pred = local_bht_q[local_idx][1] ||
+                         ((local_bht_q[local_idx] == 2'b01) && btb_is_backward_q[idx]);
+      global_taken_pred = global_bht_q[global_idx][1] ||
+                          ((global_bht_q[global_idx] == 2'b01) && btb_is_backward_q[idx]);
+      use_global_pred = USE_GSHARE && (!USE_TOURNAMENT || chooser_q[chooser_idx][1]);
 
       predict_taken[i] = 1'b0;
       if (predict_hit[i]) begin
@@ -168,8 +196,11 @@ module bpu #(
         end else if (!btb_is_cond_q[idx]) begin
           predict_taken[i] = 1'b1;
         end else begin
-          predict_taken[i] = bht_q[bht_idx][1] ||
-                             ((bht_q[bht_idx] == 2'b01) && btb_is_backward_q[idx]);
+          if (use_global_pred) begin
+            predict_taken[i] = global_taken_pred;
+          end else begin
+            predict_taken[i] = local_taken_pred;
+          end
         end
       end
     end
@@ -222,8 +253,16 @@ module bpu #(
       pred_event_is_ret_q <= 1'b0;
       pred_event_pc_q <= '0;
       ghr_q <= '0;
+      dbg_cond_update_total_q <= '0;
+      dbg_cond_local_correct_q <= '0;
+      dbg_cond_global_correct_q <= '0;
+      dbg_cond_selected_correct_q <= '0;
+      dbg_cond_choose_local_q <= '0;
+      dbg_cond_choose_global_q <= '0;
       for (int i = 0; i < BHT_ENTRIES; i++) begin
-        bht_q[i] <= 2'b01;
+        local_bht_q[i] <= 2'b01;
+        global_bht_q[i] <= 2'b01;
+        chooser_q[i] <= 2'b01;
       end
     end else begin
       logic [RAS_DEPTH-1:0][Cfg.PLEN-1:0] arch_stack_n;
@@ -231,9 +270,18 @@ module bpu #(
       logic [RAS_CNT_W-1:0] arch_count_n;
       logic [RAS_CNT_W-1:0] spec_count_n;
       logic [BTB_IDX_W-1:0] up_btb_idx;
-      logic [BHT_IDX_W-1:0] up_bht_idx;
+      logic [BHT_IDX_W-1:0] up_local_idx;
+      logic [BHT_IDX_W-1:0] up_global_idx;
+      logic [BHT_IDX_W-1:0] up_chooser_idx;
       logic do_btb_write;
       logic pred_fire_w;
+      logic local_pred_before;
+      logic global_pred_before;
+      logic selected_pred_before;
+      logic choose_global_before;
+      logic local_correct;
+      logic global_correct;
+      logic selected_correct;
 
       arch_stack_n = arch_ras_stack_q;
       spec_stack_n = spec_ras_stack_q;
@@ -242,7 +290,9 @@ module bpu #(
 
       if (update_valid_i) begin
         up_btb_idx = btb_index(update_pc_i);
-        up_bht_idx = bht_index(update_pc_i, ghr_q);
+        up_local_idx = bht_pc_index(update_pc_i);
+        up_global_idx = bht_global_index(update_pc_i, ghr_q);
+        up_chooser_idx = up_local_idx;
         do_btb_write = (!update_is_cond_i) || update_taken_i;
 
         if (do_btb_write) begin
@@ -261,18 +311,51 @@ module bpu #(
         end
 
         if (update_is_cond_i) begin
+          local_pred_before = local_bht_q[up_local_idx][1] ||
+                              ((local_bht_q[up_local_idx] == 2'b01) &&
+                               btb_is_backward_q[up_btb_idx]);
+          global_pred_before = global_bht_q[up_global_idx][1] ||
+                               ((global_bht_q[up_global_idx] == 2'b01) &&
+                                btb_is_backward_q[up_btb_idx]);
+          choose_global_before = USE_GSHARE && (!USE_TOURNAMENT || chooser_q[up_chooser_idx][1]);
+          selected_pred_before = choose_global_before ? global_pred_before : local_pred_before;
+          local_correct = (local_pred_before == update_taken_i);
+          global_correct = (global_pred_before == update_taken_i);
+          selected_correct = (selected_pred_before == update_taken_i);
+
+          dbg_cond_update_total_q <= dbg_cond_update_total_q + 64'd1;
+          if (local_correct) begin
+            dbg_cond_local_correct_q <= dbg_cond_local_correct_q + 64'd1;
+          end
+          if (global_correct) begin
+            dbg_cond_global_correct_q <= dbg_cond_global_correct_q + 64'd1;
+          end
+          if (selected_correct) begin
+            dbg_cond_selected_correct_q <= dbg_cond_selected_correct_q + 64'd1;
+          end
+          if (choose_global_before) begin
+            dbg_cond_choose_global_q <= dbg_cond_choose_global_q + 64'd1;
+          end else begin
+            dbg_cond_choose_local_q <= dbg_cond_choose_local_q + 64'd1;
+          end
+
           if (update_taken_i) begin
-            bht_q[up_bht_idx] <= sat_inc(bht_q[up_bht_idx]);
+            local_bht_q[up_local_idx] <= sat_inc(local_bht_q[up_local_idx]);
+            global_bht_q[up_global_idx] <= sat_inc(global_bht_q[up_global_idx]);
           end else begin
-            bht_q[up_bht_idx] <= sat_dec(bht_q[up_bht_idx]);
+            local_bht_q[up_local_idx] <= sat_dec(local_bht_q[up_local_idx]);
+            global_bht_q[up_global_idx] <= sat_dec(global_bht_q[up_global_idx]);
           end
-          if (GHR_W == 1) begin
-            ghr_q <= update_taken_i;
-          end else begin
-            ghr_q <= {ghr_q[GHR_W-2:0], update_taken_i};
+
+          if (USE_GSHARE && USE_TOURNAMENT && (local_correct != global_correct)) begin
+            if (global_correct) begin
+              chooser_q[up_chooser_idx] <= sat_inc(chooser_q[up_chooser_idx]);
+            end else begin
+              chooser_q[up_chooser_idx] <= sat_dec(chooser_q[up_chooser_idx]);
+            end
           end
-        end else begin
-          bht_q[up_bht_idx] <= 2'b11;
+
+          ghr_q <= {ghr_q, update_taken_i};
         end
       end
 

@@ -13,6 +13,8 @@ from typing import Any
 
 IPC_RE = re.compile(r"IPC=([0-9]+(?:\.[0-9]+)?)\s+CPI=([0-9]+(?:\.[0-9]+)?)\s+cycles=(\d+)\s+commits=(\d+)")
 TIMEOUT_RE = re.compile(r"TIMEOUT after (\d+) cycles")
+HOST_TIME_RE = re.compile(r"host time spent = (\d+)\s+us")
+BENCH_TIME_MS_RE = re.compile(r"(?:Finished in|Finised in|Total time \(ms\)\s*:)\s*([0-9]+(?:\.[0-9]+)?)")
 FLUSH_RE = re.compile(r"^\[flush \]\s+cycle=(\d+)(?:\s+reason=([a-zA-Z0-9_]+))?")
 FLUSHP_RE = re.compile(r"^\[flushp\]\s+cycle=(\d+)\s+reason=([a-zA-Z0-9_]+)\s+penalty=(\d+)")
 BRU_RE = re.compile(r"^\[bru\s+\]\s+cycle=(\d+)")
@@ -33,6 +35,16 @@ STALL_CATEGORY_KEYS = (
     "decode_blocked",
     "lsu_req_blocked",
     "other",
+)
+STALL_FRONTEND_EMPTY_DETAIL_KEYS = (
+    "fe_no_req",
+    "fe_wait_icache_rsp",
+    "fe_rsp_blocked_by_fq_full",
+    "fe_wait_ibuffer_consume",
+    "fe_redirect_recovery",
+    "fe_rsp_capture_bubble",
+    "fe_has_data_decode_gap",
+    "fe_other",
 )
 
 
@@ -501,6 +513,8 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
     cycles = 0
     commits = 0
     timeout_cycles = 0
+    host_time_us = 0
+    bench_reported_time_ms: float | None = None
 
     flush_count = 0
     bru_count = 0
@@ -523,6 +537,12 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
     pred_ret_total_line: int | None = None
     pred_ret_miss_line: int | None = None
     pred_call_total_line: int | None = None
+    pred_cond_update_total_line: int | None = None
+    pred_cond_local_correct_line: int | None = None
+    pred_cond_global_correct_line: int | None = None
+    pred_cond_selected_correct_line: int | None = None
+    pred_cond_choose_local_line: int | None = None
+    pred_cond_choose_global_line: int | None = None
 
     commit_by_cycle: dict[int, int] = defaultdict(int)
     commit_seq: list[tuple[int, int, int, int]] = []
@@ -546,6 +566,14 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
     stall_cycle_summary: Counter[str] = Counter()
     stall_cycle_total = 0
     has_stall_cycle_summary = False
+    stall_frontend_empty_detail_summary: Counter[str] = Counter()
+    stall_frontend_empty_total = 0
+    has_stall_decode_blocked_summary = False
+    stall_decode_blocked_total_summary = 0
+    stall_decode_blocked_detail_summary: Counter[str] = Counter()
+    has_stall_rob_backpressure_summary = False
+    stall_rob_backpressure_total_summary = 0
+    stall_rob_backpressure_detail_summary: Counter[str] = Counter()
 
     for raw in p.read_text(encoding="utf-8", errors="ignore").splitlines():
         m = IPC_RE.search(raw)
@@ -559,6 +587,16 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
         m = TIMEOUT_RE.search(raw)
         if m:
             timeout_cycles = int(m.group(1))
+            continue
+
+        m = HOST_TIME_RE.search(raw)
+        if m:
+            host_time_us = int(m.group(1))
+            continue
+
+        m = BENCH_TIME_MS_RE.search(raw)
+        if m:
+            bench_reported_time_ms = float(m.group(1))
             continue
 
         flush_pos = raw.find("[flush ]")
@@ -636,6 +674,18 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
                 pred_ret_miss_line = _parse_int(pred_kv.get("ret_miss"), 0)
             if "call_total" in pred_kv:
                 pred_call_total_line = _parse_int(pred_kv.get("call_total"), 0)
+            if "cond_update_total" in pred_kv:
+                pred_cond_update_total_line = _parse_int(pred_kv.get("cond_update_total"), 0)
+            if "cond_local_correct" in pred_kv:
+                pred_cond_local_correct_line = _parse_int(pred_kv.get("cond_local_correct"), 0)
+            if "cond_global_correct" in pred_kv:
+                pred_cond_global_correct_line = _parse_int(pred_kv.get("cond_global_correct"), 0)
+            if "cond_selected_correct" in pred_kv:
+                pred_cond_selected_correct_line = _parse_int(pred_kv.get("cond_selected_correct"), 0)
+            if "cond_choose_local" in pred_kv:
+                pred_cond_choose_local_line = _parse_int(pred_kv.get("cond_choose_local"), 0)
+            if "cond_choose_global" in pred_kv:
+                pred_cond_choose_global_line = _parse_int(pred_kv.get("cond_choose_global"), 0)
             continue
 
         commitm_pos = raw.find("[commitm]")
@@ -691,6 +741,43 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
                     stall_cycle_summary[key] = _parse_int(kv.get(key), 0)
             if stall_cycle_total == 0:
                 stall_cycle_total = sum(stall_cycle_summary.values())
+            continue
+
+        stallm2_pos = raw.find("[stallm2]")
+        if stallm2_pos >= 0:
+            kv = _parse_kv_pairs(raw[stallm2_pos:])
+            stall_frontend_empty_total = _parse_int(kv.get("frontend_empty_total"), 0)
+            for key in STALL_FRONTEND_EMPTY_DETAIL_KEYS:
+                if key in kv:
+                    stall_frontend_empty_detail_summary[key] = _parse_int(kv.get(key), 0)
+            if stall_frontend_empty_total == 0:
+                stall_frontend_empty_total = sum(stall_frontend_empty_detail_summary.values())
+            continue
+
+        stallm3_pos = raw.find("[stallm3]")
+        if stallm3_pos >= 0:
+            kv = _parse_kv_pairs(raw[stallm3_pos:])
+            has_stall_decode_blocked_summary = True
+            stall_decode_blocked_total_summary = _parse_int(kv.get("decode_blocked_total"), 0)
+            for key, val in kv.items():
+                if key in ("mode", "decode_blocked_total"):
+                    continue
+                stall_decode_blocked_detail_summary[key] = _parse_int(val, 0)
+            if stall_decode_blocked_total_summary == 0:
+                stall_decode_blocked_total_summary = sum(stall_decode_blocked_detail_summary.values())
+            continue
+
+        stallm4_pos = raw.find("[stallm4]")
+        if stallm4_pos >= 0:
+            kv = _parse_kv_pairs(raw[stallm4_pos:])
+            has_stall_rob_backpressure_summary = True
+            stall_rob_backpressure_total_summary = _parse_int(kv.get("rob_backpressure_total"), 0)
+            for key, val in kv.items():
+                if key in ("mode", "rob_backpressure_total"):
+                    continue
+                stall_rob_backpressure_detail_summary[key] = _parse_int(val, 0)
+            if stall_rob_backpressure_total_summary == 0:
+                stall_rob_backpressure_total_summary = sum(stall_rob_backpressure_detail_summary.values())
             continue
 
         m = COMMIT_RE.match(raw)
@@ -754,6 +841,25 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
         ret_miss = pred_ret_miss_line
     if pred_call_total_line is not None:
         call_total = pred_call_total_line
+    cond_update_total = cond_total
+    cond_local_correct = 0
+    cond_global_correct = 0
+    cond_selected_correct = 0
+    cond_choose_local = 0
+    cond_choose_global = 0
+    if pred_cond_update_total_line is not None:
+        cond_update_total = pred_cond_update_total_line
+    if pred_cond_local_correct_line is not None:
+        cond_local_correct = pred_cond_local_correct_line
+    if pred_cond_global_correct_line is not None:
+        cond_global_correct = pred_cond_global_correct_line
+    if pred_cond_selected_correct_line is not None:
+        cond_selected_correct = pred_cond_selected_correct_line
+    if pred_cond_choose_local_line is not None:
+        cond_choose_local = pred_cond_choose_local_line
+    if pred_cond_choose_global_line is not None:
+        cond_choose_global = pred_cond_choose_global_line
+    chooser_total = cond_choose_local + cond_choose_global
     cond_hit = max(0, cond_total - cond_miss)
     jump_hit = max(0, jump_total - jump_miss)
     ret_hit = max(0, ret_total - ret_miss)
@@ -771,6 +877,16 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
         "ret_hit": ret_hit,
         "ret_miss_rate": _safe_div(ret_miss, ret_total),
         "call_total": call_total,
+        "cond_update_total": cond_update_total,
+        "cond_local_correct": cond_local_correct,
+        "cond_global_correct": cond_global_correct,
+        "cond_selected_correct": cond_selected_correct,
+        "cond_choose_local": cond_choose_local,
+        "cond_choose_global": cond_choose_global,
+        "cond_local_accuracy": _safe_div(cond_local_correct, cond_update_total),
+        "cond_global_accuracy": _safe_div(cond_global_correct, cond_update_total),
+        "cond_selected_accuracy": _safe_div(cond_selected_correct, cond_update_total),
+        "cond_choose_global_ratio": _safe_div(cond_choose_global, chooser_total),
     }
 
     # Fallback path for timeout/sample logs without final IPC line.
@@ -828,6 +944,22 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
     elif stall_total > 0:
         stall_mode = "sampled"
 
+    if stall_mode == "cycle":
+        cycle_decode_blocked_total = int(stall_category.get("decode_blocked", 0))
+        cycle_rob_backpressure_total = int(stall_category.get("rob_backpressure", 0))
+
+        if has_stall_decode_blocked_summary:
+            stall_decode_blocked_total = stall_decode_blocked_total_summary
+            stall_decode_blocked_detail = Counter(stall_decode_blocked_detail_summary)
+        elif cycle_decode_blocked_total > 0:
+            stall_decode_blocked_total = cycle_decode_blocked_total
+
+        if has_stall_rob_backpressure_summary:
+            stall_rob_backpressure_total = stall_rob_backpressure_total_summary
+            stall_rob_backpressure_detail = Counter(stall_rob_backpressure_detail_summary)
+        elif cycle_rob_backpressure_total > 0:
+            stall_rob_backpressure_total = cycle_rob_backpressure_total
+
     quality_warnings: list[str] = []
     if not has_commit_detail and not has_commit_summary:
         quality_warnings.append("commit metrics low confidence: missing both [commit] detail and [commitm] summary")
@@ -837,6 +969,26 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
         quality_warnings.append("stall metrics are sampled events (no_commit threshold), not cycle-accurate cycles")
     elif stall_mode == "none":
         quality_warnings.append("stall metrics unavailable: missing both [stallm] and sampled [stall] events")
+    elif stall_mode == "cycle":
+        if int(stall_category.get("decode_blocked", 0)) > 0 and not has_stall_decode_blocked_summary:
+            quality_warnings.append("decode_blocked secondary split from sampled [stall] only (missing [stallm3])")
+        if int(stall_category.get("rob_backpressure", 0)) > 0 and not has_stall_rob_backpressure_summary:
+            quality_warnings.append("rob_backpressure secondary split from sampled [stall] only (missing [stallm4])")
+
+    host_time_ms = host_time_us / 1000.0
+    benchmark_time_source = "unknown"
+    effective_benchmark_time_ms = 0.0
+    if bench_reported_time_ms is not None and bench_reported_time_ms > 0.0:
+        benchmark_time_source = "self_reported"
+        effective_benchmark_time_ms = bench_reported_time_ms
+    elif host_time_us > 0:
+        benchmark_time_source = "host_fallback"
+        effective_benchmark_time_ms = host_time_ms
+        if bench_reported_time_ms is not None and bench_reported_time_ms <= 0.0:
+            quality_warnings.append("benchmark self-reported time is 0ms; timing context uses host fallback")
+    elif bench_reported_time_ms is not None:
+        benchmark_time_source = "self_reported"
+        effective_benchmark_time_ms = bench_reported_time_ms
 
     return {
         "log_path": str(p),
@@ -879,6 +1031,8 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
         "stall_decode_blocked_detail": dict(stall_decode_blocked_detail),
         "stall_rob_backpressure_total": stall_rob_backpressure_total,
         "stall_rob_backpressure_detail": dict(stall_rob_backpressure_detail),
+        "stall_frontend_empty_total": stall_frontend_empty_total,
+        "stall_frontend_empty_detail": dict(stall_frontend_empty_detail_summary),
         "top_pc": top_pc,
         "top_inst": top_inst,
         "control": control,
@@ -889,6 +1043,11 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
         "quality_warnings": quality_warnings,
         "commit_metrics_source": "detail" if has_commit_detail else ("summary" if has_commit_summary else "none"),
         "stall_metrics_source": stall_mode,
+        "host_time_us": host_time_us,
+        "host_time_ms": host_time_ms,
+        "bench_reported_time_ms": bench_reported_time_ms,
+        "effective_benchmark_time_ms": effective_benchmark_time_ms,
+        "benchmark_time_source": benchmark_time_source,
     }
 
 
@@ -933,6 +1092,8 @@ def _bench_markdown(name: str, data: dict[str, Any]) -> str:
     decode_blocked_detail = data.get("stall_decode_blocked_detail", {})
     rob_backpressure_total = data.get("stall_rob_backpressure_total", 0)
     rob_backpressure_detail = data.get("stall_rob_backpressure_detail", {})
+    frontend_empty_total = data.get("stall_frontend_empty_total", 0)
+    frontend_empty_detail = data.get("stall_frontend_empty_detail", {})
     control = data.get("control", {})
     flush_hist = data.get("flush_reason_histogram", {})
     flush_src_hist = data.get("flush_source_histogram", {})
@@ -949,6 +1110,7 @@ def _bench_markdown(name: str, data: dict[str, Any]) -> str:
         "",
         f"- IPC/CPI: `{data.get('ipc', 0):.6f}` / `{data.get('cpi', 0):.6f}`",
         f"- cycles/commits: `{data.get('cycles', 0)}` / `{data.get('commits', 0)}`",
+        f"- benchmark_time_ms(self/host/effective): `{(data.get('bench_reported_time_ms', 0) if data.get('bench_reported_time_ms', None) is not None else 0):.3f}` / `{data.get('host_time_ms', 0):.3f}` / `{data.get('effective_benchmark_time_ms', 0):.3f}` (source `{data.get('benchmark_time_source', 'unknown')}`)",
         f"- flush_per_kinst: `{data.get('flush_per_kinst', 0):.3f}`",
         f"- bru_per_kinst: `{data.get('bru_per_kinst', 0):.3f}`",
         f"- mispredict_flush_count: `{data.get('mispredict_flush_count', 0)}`",
@@ -961,6 +1123,8 @@ def _bench_markdown(name: str, data: dict[str, Any]) -> str:
         f"- predict(jump hit/miss): `{predict.get('jump_hit', 0)}` / `{predict.get('jump_miss', 0)}` (miss_rate `{predict.get('jump_miss_rate', 0) * 100.0:.2f}%`)",
         f"- predict(ret hit/miss): `{predict.get('ret_hit', 0)}` / `{predict.get('ret_miss', 0)}` (miss_rate `{predict.get('ret_miss_rate', 0) * 100.0:.2f}%`)",
         f"- predict(call total): `{predict.get('call_total', 0)}`",
+        f"- predict(cond local/global/selected acc): `{predict.get('cond_local_accuracy', 0) * 100.0:.2f}%` / `{predict.get('cond_global_accuracy', 0) * 100.0:.2f}%` / `{predict.get('cond_selected_accuracy', 0) * 100.0:.2f}%`",
+        f"- predict(cond chooser local/global): `{predict.get('cond_choose_local', 0)}` / `{predict.get('cond_choose_global', 0)}` (global_ratio `{predict.get('cond_choose_global_ratio', 0) * 100.0:.2f}%`)",
         "",
         "Data Quality:",
         f"- commit_source: `{commit_metrics_source}` (detail={has_commit_detail}, summary={has_commit_summary})",
@@ -1003,6 +1167,14 @@ def _bench_markdown(name: str, data: dict[str, Any]) -> str:
             lines.append("- detail_breakdown:")
             for key, val in sorted(decode_blocked_detail.items(), key=lambda x: x[1], reverse=True):
                 lines.append(f"  - {key}: `{val}` ({_fmt_pct(val, decode_blocked_total)})")
+
+    lines.append("")
+    lines.append("Frontend Empty Breakdown:")
+    if frontend_empty_total == 0:
+        lines.append("- (no frontend_empty breakdown)")
+    else:
+        for key, val in sorted(frontend_empty_detail.items(), key=lambda x: x[1], reverse=True):
+            lines.append(f"- {key}: `{val}` ({_fmt_pct(val, frontend_empty_total)})")
 
     lines.append("")
     lines.append("ROB-Backpressure Correlation:")

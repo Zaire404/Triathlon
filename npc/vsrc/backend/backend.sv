@@ -59,6 +59,8 @@ module backend #(
   localparam int unsigned LSU_GROUP_SIZE = 2;
   localparam int unsigned LSU_LD_ID_WIDTH = (LSU_GROUP_SIZE <= 1) ? 1 : $clog2(LSU_GROUP_SIZE);
   localparam int unsigned DCACHE_MSHR_SIZE = 2;
+  localparam int unsigned RENAME_PENDING_DEPTH = DISPATCH_WIDTH * 2;
+  localparam int unsigned RENAME_PENDING_CNT_W = $clog2(RENAME_PENDING_DEPTH + 1);
   // A2.2: 开启 commit-time call/ret 更新，配合 BPU speculative RAS 降低 return miss。
   localparam bit ENABLE_COMMIT_RAS_UPDATE = 1'b1;
 
@@ -390,10 +392,12 @@ module backend #(
   decode_pkg::uop_t [DISPATCH_WIDTH-1:0]                   rename_sel_uops;
   logic            [DISPATCH_WIDTH-1:0]                    rename_left_valid;
   decode_pkg::uop_t [DISPATCH_WIDTH-1:0]                   rename_left_uops;
-  logic            [DISPATCH_WIDTH-1:0]                    rename_pending_valid_q;
-  logic            [DISPATCH_WIDTH-1:0]                    rename_pending_valid_d;
-  decode_pkg::uop_t [DISPATCH_WIDTH-1:0]                   rename_pending_uops_q;
-  decode_pkg::uop_t [DISPATCH_WIDTH-1:0]                   rename_pending_uops_d;
+  logic            [RENAME_PENDING_DEPTH-1:0]              rename_pending_valid_q;
+  logic            [RENAME_PENDING_DEPTH-1:0]              rename_pending_valid_d;
+  decode_pkg::uop_t [RENAME_PENDING_DEPTH-1:0]             rename_pending_uops_q;
+  decode_pkg::uop_t [RENAME_PENDING_DEPTH-1:0]             rename_pending_uops_d;
+  logic            [RENAME_PENDING_CNT_W-1:0]              rename_pending_count_q;
+  logic            [RENAME_PENDING_CNT_W-1:0]              rename_pending_count_d;
   logic                                                     rename_src_from_pending;
   logic [$clog2(DISPATCH_WIDTH+1)-1:0]                     rename_sel_count;
   logic                                                     rename_fire;
@@ -424,7 +428,7 @@ module backend #(
     logic stop_accept;
     logic can_take;
 
-    rename_src_from_pending = (|rename_pending_valid_q);
+    rename_src_from_pending = (rename_pending_count_q != '0);
     rename_sel_count = '0;
 
     for (int i = 0; i < DISPATCH_WIDTH; i++) begin
@@ -502,35 +506,46 @@ module backend #(
 
   always_comb begin
     int pending_tail;
-    logic [$clog2(DISPATCH_WIDTH+1)-1:0] pending_base_count;
+    int pending_consume;
     logic [$clog2(DISPATCH_WIDTH+1)-1:0] dec_slot_count;
-    logic [$clog2(DISPATCH_WIDTH+1)-1:0] pending_free_slots;
+    logic [RENAME_PENDING_CNT_W-1:0] pending_free_slots;
     logic can_accept_decode_into_pending;
 
     rename_fire = rename_ready && (rename_sel_count != 0);
-    pending_base_count = '0;
+    pending_consume = 0;
     dec_slot_count = '0;
     pending_free_slots = '0;
     can_accept_decode_into_pending = 1'b0;
     pending_tail = 0;
 
+    for (int i = 0; i < RENAME_PENDING_DEPTH; i++) begin
+      rename_pending_valid_d[i] = 1'b0;
+      rename_pending_uops_d[i] = '0;
+    end
+    rename_pending_count_d = '0;
+
     for (int i = 0; i < DISPATCH_WIDTH; i++) begin
-      rename_pending_valid_d[i] = rename_fire ? rename_left_valid[i] : rename_pending_valid_q[i];
-      rename_pending_uops_d[i]  = rename_fire ? rename_left_uops[i]  : rename_pending_uops_q[i];
-      if (rename_pending_valid_d[i]) begin
-        pending_base_count++;
-      end
       if (dec_slot_valid[i]) begin
         dec_slot_count++;
       end
     end
 
     if (rename_src_from_pending) begin
-      pending_free_slots = $clog2(DISPATCH_WIDTH+1)'(DISPATCH_WIDTH) - pending_base_count;
+      pending_consume = rename_fire ? int'(rename_sel_count) : 0;
+      pending_tail = 0;
+      for (int i = 0; i < RENAME_PENDING_DEPTH; i++) begin
+        if ((i >= pending_consume) && rename_pending_valid_q[i]) begin
+          rename_pending_valid_d[pending_tail] = 1'b1;
+          rename_pending_uops_d[pending_tail] = rename_pending_uops_q[i];
+          pending_tail++;
+        end
+      end
+      rename_pending_count_d = RENAME_PENDING_CNT_W'(pending_tail);
+
+      pending_free_slots = RENAME_PENDING_CNT_W'(RENAME_PENDING_DEPTH) - rename_pending_count_d;
       can_accept_decode_into_pending = (dec_slot_count <= pending_free_slots);
       decode_backend_ready = (!dec_valid) || can_accept_decode_into_pending;
       if (dec_valid && can_accept_decode_into_pending) begin
-        pending_tail = pending_base_count;
         for (int i = 0; i < DISPATCH_WIDTH; i++) begin
           if (dec_slot_valid[i]) begin
             rename_pending_valid_d[pending_tail] = 1'b1;
@@ -538,26 +553,41 @@ module backend #(
             pending_tail++;
           end
         end
+        rename_pending_count_d = RENAME_PENDING_CNT_W'(pending_tail);
       end
     end else begin
       decode_backend_ready = rename_ready && (!dec_valid || (rename_sel_count != 0));
+      if (rename_fire) begin
+        pending_tail = 0;
+        for (int i = 0; i < DISPATCH_WIDTH; i++) begin
+          if (rename_left_valid[i]) begin
+            rename_pending_valid_d[pending_tail] = 1'b1;
+            rename_pending_uops_d[pending_tail] = rename_left_uops[i];
+            pending_tail++;
+          end
+        end
+        rename_pending_count_d = RENAME_PENDING_CNT_W'(pending_tail);
+      end
     end
   end
 
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (!rst_ni) begin
       rename_pending_valid_q <= '0;
-      for (int i = 0; i < DISPATCH_WIDTH; i++) begin
+      rename_pending_count_q <= '0;
+      for (int i = 0; i < RENAME_PENDING_DEPTH; i++) begin
         rename_pending_uops_q[i] <= '0;
       end
     end else if (backend_flush) begin
       rename_pending_valid_q <= '0;
-      for (int i = 0; i < DISPATCH_WIDTH; i++) begin
+      rename_pending_count_q <= '0;
+      for (int i = 0; i < RENAME_PENDING_DEPTH; i++) begin
         rename_pending_uops_q[i] <= '0;
       end
     end else begin
       rename_pending_valid_q <= rename_pending_valid_d;
-      for (int i = 0; i < DISPATCH_WIDTH; i++) begin
+      rename_pending_count_q <= rename_pending_count_d;
+      for (int i = 0; i < RENAME_PENDING_DEPTH; i++) begin
         rename_pending_uops_q[i] <= rename_pending_uops_d[i];
       end
     end

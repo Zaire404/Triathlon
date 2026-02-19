@@ -300,6 +300,35 @@ static bool try_send_group_limited(Vtb_backend *top, MemModel &mem,
   return false;
 }
 
+static bool try_send_group_masked_limited(Vtb_backend *top, MemModel &mem,
+                                          std::array<uint32_t, 32> &rf,
+                                          std::vector<uint32_t> &commit_log,
+                                          uint32_t base_pc,
+                                          const std::array<uint32_t, 4> &instrs,
+                                          uint32_t slot_valid_mask,
+                                          int max_cycles) {
+  for (int cyc = 0; cyc < max_cycles; cyc++) {
+    top->frontend_ibuf_valid = 1;
+    top->frontend_ibuf_pc = base_pc;
+    top->frontend_ibuf_slot_valid = 0;
+    for (int i = 0; i < INSTR_PER_FETCH; i++) {
+      top->frontend_ibuf_instrs[i] = instrs[i];
+      if ((slot_valid_mask >> i) & 0x1u) {
+        top->frontend_ibuf_slot_valid |= (1u << i);
+      }
+      top->frontend_ibuf_pred_npc[i] = base_pc + static_cast<uint32_t>((i + 1) * 4);
+    }
+    bool ready = tick_sample_frontend_ready(top, mem);
+    update_commits(top, rf, commit_log);
+    if (ready) {
+      top->frontend_ibuf_valid = 0;
+      return true;
+    }
+  }
+  top->frontend_ibuf_valid = 0;
+  return false;
+}
+
 static void send_group_with_pred(Vtb_backend *top, MemModel &mem,
                                  std::array<uint32_t, 32> &rf,
                                  std::vector<uint32_t> &commit_log,
@@ -779,6 +808,50 @@ static void test_pending_replay_allows_decoder_progress(Vtb_backend *top, MemMod
          "Replay path: decoder can make progress while pending replay has free slots");
 }
 
+static void test_pending_replay_buffer_can_absorb_multiple_single_slot_groups(Vtb_backend *top, MemModel &mem) {
+  std::array<uint32_t, 32> rf{};
+  std::vector<uint32_t> commits;
+
+  reset(top, mem);
+
+  const std::array<uint32_t, 4> replay_seed = {
+      insn_addi(10, 0, 1),
+      insn_nop(),
+      insn_mul(11, 0, 0),
+      insn_mul(12, 0, 0)};
+
+  send_group_masked(top, mem, rf, commits, 0x12000, replay_seed, 0xDu);
+
+  bool replay_seen = run_until(top, mem, rf, commits, [&]() {
+    return top->dbg_ren_src_from_pending_o != 0;
+  }, 200);
+  expect(replay_seen, "Replay depth: pending-replay becomes active");
+
+  int accepted_single_slot_groups = 0;
+  const std::array<uint32_t, 4> one_slot_group = {
+      insn_addi(20, 0, 20),
+      insn_nop(),
+      insn_nop(),
+      insn_nop()};
+
+  for (int g = 0; g < 6; g++) {
+    uint32_t pc = 0x12010 + static_cast<uint32_t>(g * 16);
+    bool accepted = try_send_group_masked_limited(
+        top, mem, rf, commits, pc, one_slot_group, 0x1u, 40);
+    if (!accepted) break;
+    accepted_single_slot_groups++;
+  }
+
+  if (accepted_single_slot_groups < 4) {
+    std::cout << "    [DEBUG] accepted_single_slot_groups=" << accepted_single_slot_groups
+              << " pending=" << static_cast<int>(top->dbg_ren_src_from_pending_o)
+              << " src_count=" << static_cast<uint32_t>(top->dbg_ren_src_count_o)
+              << std::endl;
+  }
+  expect(accepted_single_slot_groups >= 4,
+         "Replay depth: pending buffer absorbs >=4 single-slot groups while replay active");
+}
+
 int main(int argc, char **argv) {
   Verilated::commandArgs(argc, argv);
   Vtb_backend *top = new Vtb_backend;
@@ -795,6 +868,7 @@ int main(int argc, char **argv) {
   test_partial_dispatch_accepts_non_lsu_prefix_when_lsu_blocked(top, mem);
   test_dual_lane_can_hold_two_blocked_loads(top, mem);
   test_pending_replay_allows_decoder_progress(top, mem);
+  test_pending_replay_buffer_can_absorb_multiple_single_slot_groups(top, mem);
 
   std::cout << ANSI_RES_GRN << "--- [ALL BACKEND TESTS PASSED] ---" << ANSI_RES_RST << std::endl;
   delete top;

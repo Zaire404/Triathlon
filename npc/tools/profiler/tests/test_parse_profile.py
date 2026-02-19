@@ -60,6 +60,30 @@ class ParseProfileTest(unittest.TestCase):
         self.assertEqual(result["predict"]["jump_total"], 2)
         self.assertEqual(result["predict"]["jump_miss"], 0)
 
+    def test_benchmark_time_falls_back_to_host_time_when_self_reported_zero(self):
+        mod = load_parser_module()
+        with tempfile.TemporaryDirectory() as td:
+            log = Path(td) / "coremark.log"
+            log.write_text(
+                "\n".join(
+                    [
+                        "Total time (ms)  : 0",
+                        "[src/cpu/cpu-exec.c:104 statistic] host time spent = 263093 us",
+                        "IPC=0.500000 CPI=2.000000 cycles=200 commits=100",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            result = mod.parse_single_log(log)
+
+        self.assertEqual(result["bench_reported_time_ms"], 0.0)
+        self.assertEqual(result["host_time_us"], 263093)
+        self.assertAlmostEqual(result["host_time_ms"], 263.093)
+        self.assertAlmostEqual(result["effective_benchmark_time_ms"], 263.093)
+        self.assertEqual(result["benchmark_time_source"], "host_fallback")
+        self.assertTrue(any("self-reported time is 0ms" in msg for msg in result["quality_warnings"]))
+
     def test_parse_log_directory_summary(self):
         mod = load_parser_module()
         with tempfile.TemporaryDirectory() as td:
@@ -183,6 +207,34 @@ class ParseProfileTest(unittest.TestCase):
         self.assertEqual(result["predict"]["ret_hit"], 1)
         self.assertAlmostEqual(result["predict"]["ret_miss_rate"], 2 / 3)
         self.assertEqual(result["predict"]["call_total"], 5)
+
+    def test_parse_predict_tournament_breakdown(self):
+        mod = load_parser_module()
+        with tempfile.TemporaryDirectory() as td:
+            log = Path(td) / "coremark.log"
+            log.write_text(
+                "\n".join(
+                    [
+                        "[pred  ] cond_total=100 cond_miss=20 cond_hit=80 jump_total=6 jump_miss=1 jump_hit=5 ret_total=3 ret_miss=1 ret_hit=2 call_total=9 cond_update_total=100 cond_local_correct=78 cond_global_correct=70 cond_selected_correct=82 cond_choose_local=60 cond_choose_global=40",
+                        "IPC=0.500000 CPI=2.000000 cycles=100 commits=50",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            result = mod.parse_single_log(log)
+
+        pred = result["predict"]
+        self.assertEqual(pred["cond_update_total"], 100)
+        self.assertEqual(pred["cond_local_correct"], 78)
+        self.assertEqual(pred["cond_global_correct"], 70)
+        self.assertEqual(pred["cond_selected_correct"], 82)
+        self.assertEqual(pred["cond_choose_local"], 60)
+        self.assertEqual(pred["cond_choose_global"], 40)
+        self.assertAlmostEqual(pred["cond_local_accuracy"], 0.78)
+        self.assertAlmostEqual(pred["cond_global_accuracy"], 0.70)
+        self.assertAlmostEqual(pred["cond_selected_accuracy"], 0.82)
+        self.assertAlmostEqual(pred["cond_choose_global_ratio"], 0.40)
 
     def test_parse_flush_subtype_return_count(self):
         mod = load_parser_module()
@@ -540,6 +592,191 @@ class ParseProfileTest(unittest.TestCase):
         self.assertEqual(result["stall_category"]["rob_backpressure"], 20)
         self.assertEqual(result["stall_category"]["decode_blocked"], 9)
         self.assertEqual(result["stall_category"]["frontend_empty"], 11)
+
+    def test_cycle_stallm2_frontend_empty_breakdown(self):
+        mod = load_parser_module()
+        with tempfile.TemporaryDirectory() as td:
+            log = Path(td) / "coremark.log"
+            log.write_text(
+                "\n".join(
+                    [
+                        "[stallm] mode=cycle stall_total_cycles=60 flush_recovery=5 icache_miss_wait=7 dcache_miss_wait=3 rob_backpressure=20 frontend_empty=11 decode_blocked=9 lsu_req_blocked=1 other=4",
+                        "[stallm2] mode=cycle frontend_empty_total=13 fe_no_req=2 fe_wait_icache_rsp=3 fe_rsp_blocked_by_fq_full=1 fe_wait_ibuffer_consume=4 fe_redirect_recovery=0 fe_rsp_capture_bubble=2 fe_has_data_decode_gap=0 fe_other=1",
+                        "IPC=0.500000 CPI=2.000000 cycles=100 commits=50",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            result = mod.parse_single_log(log)
+
+        self.assertEqual(result["stall_frontend_empty_total"], 13)
+        detail = result["stall_frontend_empty_detail"]
+        self.assertEqual(detail["fe_no_req"], 2)
+        self.assertEqual(detail["fe_wait_icache_rsp"], 3)
+        self.assertEqual(detail["fe_rsp_blocked_by_fq_full"], 1)
+        self.assertEqual(detail["fe_wait_ibuffer_consume"], 4)
+        self.assertEqual(detail["fe_redirect_recovery"], 0)
+        self.assertEqual(detail["fe_rsp_capture_bubble"], 2)
+        self.assertEqual(detail["fe_has_data_decode_gap"], 0)
+        self.assertEqual(detail["fe_other"], 1)
+
+    def test_cycle_stallm34_secondary_breakdown_takes_priority(self):
+        mod = load_parser_module()
+        with tempfile.TemporaryDirectory() as td:
+            log = Path(td) / "coremark.log"
+            log.write_text(
+                "\n".join(
+                    [
+                        "[stall ] cycle=40 no_commit=20 dec(v/r)=1/0 rob_ready=1 flush=0",
+                        "[stall ] cycle=41 no_commit=20 dec(v/r)=1/1 rob_ready=0 rob_head(fu/comp/is_store/pc)=0x3/0/0/0x80000010",
+                        "[stallm] mode=cycle stall_total_cycles=60 flush_recovery=5 icache_miss_wait=7 dcache_miss_wait=3 rob_backpressure=20 frontend_empty=11 decode_blocked=9 lsu_req_blocked=1 other=4",
+                        "[stallm3] mode=cycle decode_blocked_total=9 pending_replay_wait_full=4 lsu_wait_ld_rsp=5",
+                        "[stallm4] mode=cycle rob_backpressure_total=20 rob_lsu_wait_ld_rsp_valid=12 rob_store_wait_dcache=8",
+                        "IPC=0.500000 CPI=2.000000 cycles=100 commits=50",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            result = mod.parse_single_log(log)
+
+        self.assertEqual(result["stall_mode"], "cycle")
+        self.assertEqual(result["stall_decode_blocked_total"], 9)
+        self.assertEqual(result["stall_decode_blocked_detail"]["pending_replay_wait_full"], 4)
+        self.assertEqual(result["stall_decode_blocked_detail"]["lsu_wait_ld_rsp"], 5)
+        self.assertEqual(result["stall_rob_backpressure_total"], 20)
+        self.assertEqual(result["stall_rob_backpressure_detail"]["rob_lsu_wait_ld_rsp_valid"], 12)
+        self.assertEqual(result["stall_rob_backpressure_detail"]["rob_store_wait_dcache"], 8)
+
+    def test_report_includes_frontend_empty_breakdown(self):
+        mod = load_parser_module()
+        with tempfile.TemporaryDirectory() as td:
+            tdir = Path(td)
+            template = Path(__file__).resolve().parents[1] / "report_template.md"
+            summary = {
+                "coremark": {
+                    "log_path": str(tdir / "coremark.log"),
+                    "ipc": 0.5,
+                    "cpi": 2.0,
+                    "cycles": 100,
+                    "commits": 50,
+                    "flush_per_kinst": 0.0,
+                    "bru_per_kinst": 0.0,
+                    "mispredict_flush_count": 0,
+                    "branch_penalty_cycles": 0,
+                    "wrong_path_kill_uops": 0,
+                    "redirect_distance_avg": 0.0,
+                    "redirect_distance_max": 0,
+                    "commit_width_hist": {0: 50, 1: 50, 2: 0, 3: 0, 4: 0},
+                    "stall_category": {"frontend_empty": 11},
+                    "stall_total": 11,
+                    "stall_frontend_empty_total": 13,
+                    "stall_frontend_empty_detail": {
+                        "fe_no_req": 2,
+                        "fe_wait_icache_rsp": 3,
+                        "fe_rsp_blocked_by_fq_full": 1,
+                        "fe_wait_ibuffer_consume": 4,
+                        "fe_redirect_recovery": 0,
+                        "fe_rsp_capture_bubble": 2,
+                        "fe_has_data_decode_gap": 0,
+                        "fe_other": 1,
+                    },
+                    "control": {"control_ratio": 0.0, "est_misp_per_kinst": 0.0},
+                    "predict": {
+                        "cond_hit": 0,
+                        "cond_miss": 0,
+                        "cond_miss_rate": 0.0,
+                        "jump_hit": 0,
+                        "jump_miss": 0,
+                        "jump_miss_rate": 0.0,
+                        "ret_hit": 0,
+                        "ret_miss": 0,
+                        "ret_miss_rate": 0.0,
+                        "call_total": 0,
+                    },
+                    "top_pc": [],
+                    "top_inst": [],
+                    "flush_reason_histogram": {},
+                    "flush_source_histogram": {},
+                    "has_commit_detail": False,
+                    "has_commit_summary": False,
+                    "stall_mode": "cycle",
+                    "quality_warnings": [],
+                    "commit_metrics_source": "none",
+                    "stall_metrics_source": "cycle",
+                }
+            }
+
+            report = mod.build_markdown_report(summary, template)
+
+        self.assertIn("Frontend Empty Breakdown:", report)
+        self.assertIn("fe_wait_ibuffer_consume", report)
+        self.assertIn("fe_wait_icache_rsp", report)
+        self.assertIn("fe_rsp_capture_bubble", report)
+
+    def test_report_includes_predict_tournament_breakdown(self):
+        mod = load_parser_module()
+        with tempfile.TemporaryDirectory() as td:
+            tdir = Path(td)
+            template = Path(__file__).resolve().parents[1] / "report_template.md"
+            summary = {
+                "coremark": {
+                    "log_path": str(tdir / "coremark.log"),
+                    "ipc": 0.5,
+                    "cpi": 2.0,
+                    "cycles": 100,
+                    "commits": 50,
+                    "flush_per_kinst": 0.0,
+                    "bru_per_kinst": 0.0,
+                    "mispredict_flush_count": 0,
+                    "branch_penalty_cycles": 0,
+                    "wrong_path_kill_uops": 0,
+                    "redirect_distance_avg": 0.0,
+                    "redirect_distance_max": 0,
+                    "commit_width_hist": {0: 50, 1: 50, 2: 0, 3: 0, 4: 0},
+                    "stall_category": {},
+                    "stall_total": 0,
+                    "control": {"control_ratio": 0.0, "est_misp_per_kinst": 0.0},
+                    "predict": {
+                        "cond_hit": 80,
+                        "cond_miss": 20,
+                        "cond_miss_rate": 0.2,
+                        "jump_hit": 5,
+                        "jump_miss": 1,
+                        "jump_miss_rate": 1 / 6,
+                        "ret_hit": 2,
+                        "ret_miss": 1,
+                        "ret_miss_rate": 1 / 3,
+                        "call_total": 9,
+                        "cond_update_total": 100,
+                        "cond_local_correct": 78,
+                        "cond_global_correct": 70,
+                        "cond_selected_correct": 82,
+                        "cond_choose_local": 60,
+                        "cond_choose_global": 40,
+                        "cond_local_accuracy": 0.78,
+                        "cond_global_accuracy": 0.70,
+                        "cond_selected_accuracy": 0.82,
+                        "cond_choose_global_ratio": 0.40,
+                    },
+                    "top_pc": [],
+                    "top_inst": [],
+                    "flush_reason_histogram": {},
+                    "flush_source_histogram": {},
+                    "has_commit_detail": False,
+                    "has_commit_summary": False,
+                    "stall_mode": "none",
+                    "quality_warnings": [],
+                    "commit_metrics_source": "none",
+                    "stall_metrics_source": "none",
+                }
+            }
+
+            report = mod.build_markdown_report(summary, template)
+
+        self.assertIn("predict(cond local/global/selected acc)", report)
+        self.assertIn("predict(cond chooser local/global)", report)
 
     def test_commit_summary_without_commit_detail(self):
         mod = load_parser_module()

@@ -70,6 +70,16 @@ module tb_triathlon #(
     output logic [Cfg.INSTR_PER_FETCH-1:0][Cfg.ILEN-1:0] dbg_fe_instrs_o,
     output logic [Cfg.INSTR_PER_FETCH-1:0]     dbg_fe_slot_valid_o,
     output logic [Cfg.INSTR_PER_FETCH-1:0][Cfg.PLEN-1:0] dbg_fe_pred_npc_o,
+    output logic                               dbg_ifu_req_valid_o,
+    output logic                               dbg_ifu_req_ready_o,
+    output logic                               dbg_ifu_req_fire_o,
+    output logic                               dbg_ifu_req_inflight_o,
+    output logic                               dbg_ifu_rsp_valid_o,
+    output logic                               dbg_ifu_rsp_capture_o,
+    output logic [3:0]                         dbg_ifu_fq_count_o,
+    output logic                               dbg_ifu_fq_full_o,
+    output logic                               dbg_ifu_fq_empty_o,
+    output logic                               dbg_ifu_ibuf_pop_o,
     output logic                               dbg_dec_valid_o,
     output logic                               dbg_dec_ready_o,
     output logic                               dbg_rob_ready_o,
@@ -178,6 +188,12 @@ module tb_triathlon #(
     output logic [7:0]                         dbg_bpu_spec_ras_count_o,
     output logic [Cfg.PLEN-1:0]                dbg_bpu_arch_ras_top_o,
     output logic [Cfg.PLEN-1:0]                dbg_bpu_spec_ras_top_o,
+    output logic [63:0]                        dbg_bpu_cond_update_total_o,
+    output logic [63:0]                        dbg_bpu_cond_local_correct_o,
+    output logic [63:0]                        dbg_bpu_cond_global_correct_o,
+    output logic [63:0]                        dbg_bpu_cond_selected_correct_o,
+    output logic [63:0]                        dbg_bpu_cond_choose_local_o,
+    output logic [63:0]                        dbg_bpu_cond_choose_global_o,
     // Debug (BRU mispred info)
     output logic                               dbg_bru_mispred_o,
     output logic [Cfg.PLEN-1:0]                dbg_bru_pc_o,
@@ -257,6 +273,16 @@ module tb_triathlon #(
   assign dbg_fe_instrs_o = dut.fe_ibuf_instrs;
   assign dbg_fe_slot_valid_o = dut.fe_ibuf_slot_valid;
   assign dbg_fe_pred_npc_o = dut.fe_ibuf_pred_npc;
+  assign dbg_ifu_req_valid_o = dut.u_frontend.i_ifu.req_issue_valid_w;
+  assign dbg_ifu_req_ready_o = dut.u_frontend.icache2ifu_rsp_handshake.ready;
+  assign dbg_ifu_req_fire_o = dut.u_frontend.i_ifu.req_issue_fire_w;
+  assign dbg_ifu_req_inflight_o = dut.u_frontend.i_ifu.req_inflight_q;
+  assign dbg_ifu_rsp_valid_o = dut.u_frontend.icache2ifu_rsp_handshake.valid;
+  assign dbg_ifu_rsp_capture_o = dut.u_frontend.i_ifu.rsp_capture_w;
+  assign dbg_ifu_fq_count_o = dut.u_frontend.i_ifu.fq_count_q;
+  assign dbg_ifu_fq_full_o = dut.u_frontend.i_ifu.fq_full_w;
+  assign dbg_ifu_fq_empty_o = dut.u_frontend.i_ifu.fq_empty_w;
+  assign dbg_ifu_ibuf_pop_o = dut.u_frontend.i_ifu.ibuf_pop_w;
   assign dbg_dec_valid_o = dut.u_backend.decode_ibuf_valid;
   assign dbg_dec_ready_o = dut.u_backend.decode_ibuf_ready;
   assign dbg_rob_ready_o = dut.u_backend.rob_ready;
@@ -441,6 +467,12 @@ module tb_triathlon #(
   assign dbg_bpu_spec_ras_count_o = {3'b0, dut.u_frontend.i_bpu.spec_ras_count_q};
   assign dbg_bpu_arch_ras_top_o = dut.u_frontend.i_bpu.arch_ras_top_w;
   assign dbg_bpu_spec_ras_top_o = dut.u_frontend.i_bpu.spec_ras_top_w;
+  assign dbg_bpu_cond_update_total_o = dut.u_frontend.i_bpu.dbg_cond_update_total_q;
+  assign dbg_bpu_cond_local_correct_o = dut.u_frontend.i_bpu.dbg_cond_local_correct_q;
+  assign dbg_bpu_cond_global_correct_o = dut.u_frontend.i_bpu.dbg_cond_global_correct_q;
+  assign dbg_bpu_cond_selected_correct_o = dut.u_frontend.i_bpu.dbg_cond_selected_correct_q;
+  assign dbg_bpu_cond_choose_local_o = dut.u_frontend.i_bpu.dbg_cond_choose_local_q;
+  assign dbg_bpu_cond_choose_global_o = dut.u_frontend.i_bpu.dbg_cond_choose_global_q;
 
   // Debug: BRU info (from backend execute)
   assign dbg_bru_mispred_o  = dut.u_backend.bru_mispred;

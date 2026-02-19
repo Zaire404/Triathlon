@@ -20,6 +20,8 @@ namespace {
 constexpr uint32_t kPmemBase = 0x80000000u;
 constexpr uint32_t kEbreakInsn = 0x00100073u;
 constexpr uint32_t kSerialPort = 0xA00003F8u;
+constexpr uint32_t kRtcPortLow = 0xA0000048u;
+constexpr uint32_t kRtcPortHigh = 0xA000004Cu;
 constexpr uint32_t kPmemSize = 0x08000000u;
 constexpr uint32_t kMmioBase = 0xA0000000u;
 constexpr uint32_t kMmioEnd = 0xAFFFFFFFu;
@@ -363,12 +365,15 @@ class Difftest {
 
 struct UnifiedMem {
   std::vector<uint32_t> pmem_words;
+  uint64_t rtc_time_us = 0;
 
   UnifiedMem() : pmem_words(kPmemSize / sizeof(uint32_t), 0) {}
 
   static bool in_pmem(uint32_t addr) {
     return addr >= kPmemBase && addr < (kPmemBase + kPmemSize);
   }
+
+  void set_time_us(uint64_t t) { rtc_time_us = t; }
 
   void write_word(uint32_t addr, uint32_t data) {
     uint32_t aligned = addr & ~0x3u;
@@ -417,6 +422,8 @@ struct UnifiedMem {
 
   uint32_t read_word(uint32_t addr) const {
     uint32_t aligned = addr & ~0x3u;
+    if (aligned == kRtcPortLow) return static_cast<uint32_t>(rtc_time_us & 0xFFFFFFFFu);
+    if (aligned == kRtcPortHigh) return static_cast<uint32_t>((rtc_time_us >> 32) & 0xFFFFFFFFu);
     if (!in_pmem(aligned)) return 0u;
     uint32_t idx = (aligned - kPmemBase) >> 2;
     if (idx < pmem_words.size()) {
@@ -714,6 +721,9 @@ int main(int argc, char **argv) {
   std::unordered_map<uint32_t, uint64_t> commit_inst_hist;
   std::array<uint64_t, 5> commit_width_hist = {};
   std::array<uint64_t, 8> stall_cycle_hist = {};
+  std::array<uint64_t, 8> stall_frontend_empty_hist = {};
+  std::unordered_map<std::string, uint64_t> stall_decode_blocked_detail_hist;
+  std::unordered_map<std::string, uint64_t> stall_rob_backpressure_detail_hist;
   bool has_prev_commit = false;
   uint32_t prev_commit_pc = 0;
   uint32_t prev_commit_inst = 0;
@@ -743,6 +753,12 @@ int main(int argc, char **argv) {
     uint64_t pred_cond_hit = (pred_cond_total >= pred_cond_miss) ? (pred_cond_total - pred_cond_miss) : 0;
     uint64_t pred_jump_hit = (pred_jump_total >= pred_jump_miss) ? (pred_jump_total - pred_jump_miss) : 0;
     uint64_t pred_ret_hit = (pred_ret_total >= pred_ret_miss) ? (pred_ret_total - pred_ret_miss) : 0;
+    uint64_t cond_update_total = static_cast<uint64_t>(top->dbg_bpu_cond_update_total_o);
+    uint64_t cond_local_correct = static_cast<uint64_t>(top->dbg_bpu_cond_local_correct_o);
+    uint64_t cond_global_correct = static_cast<uint64_t>(top->dbg_bpu_cond_global_correct_o);
+    uint64_t cond_selected_correct = static_cast<uint64_t>(top->dbg_bpu_cond_selected_correct_o);
+    uint64_t cond_choose_local = static_cast<uint64_t>(top->dbg_bpu_cond_choose_local_o);
+    uint64_t cond_choose_global = static_cast<uint64_t>(top->dbg_bpu_cond_choose_global_o);
     std::ios::fmtflags f(std::cout.flags());
     std::cout << "[pred  ] cond_total=" << pred_cond_total
               << " cond_miss=" << pred_cond_miss
@@ -754,6 +770,12 @@ int main(int argc, char **argv) {
               << " ret_miss=" << pred_ret_miss
               << " ret_hit=" << pred_ret_hit
               << " call_total=" << pred_call_total
+              << " cond_update_total=" << cond_update_total
+              << " cond_local_correct=" << cond_local_correct
+              << " cond_global_correct=" << cond_global_correct
+              << " cond_selected_correct=" << cond_selected_correct
+              << " cond_choose_local=" << cond_choose_local
+              << " cond_choose_global=" << cond_choose_global
               << "\n";
     std::cout << "[flushm] wrong_path_killed_uops=" << wrong_path_killed_uops
               << " redirect_distance_samples=" << redirect_distance_samples
@@ -774,6 +796,17 @@ int main(int argc, char **argv) {
     kStallOther = 7,
   };
 
+  enum FrontendEmptyDetailIdx : int {
+    kFeNoReq = 0,
+    kFeWaitICacheRsp = 1,
+    kFeRspBlockedByFQFull = 2,
+    kFeWaitIbufferConsume = 3,
+    kFeRedirectRecovery = 4,
+    kFeRspCaptureBubble = 5,
+    kFeHasDataDecodeGap = 6,
+    kFeOther = 7,
+  };
+
   auto classify_stall_cycle = [&]() -> int {
     if (top->backend_flush_o) return kStallFlushRecovery;
     if (top->icache_miss_req_valid_o) return kStallICacheMissWait;
@@ -783,6 +816,166 @@ int main(int argc, char **argv) {
     if (top->dbg_dec_valid_o && !top->dbg_dec_ready_o) return kStallDecodeBlocked;
     if (top->dbg_lsu_issue_valid_o && !top->dbg_lsu_req_ready_o) return kStallLSUReqBlocked;
     return kStallOther;
+  };
+
+  auto classify_frontend_empty_cycle = [&]() -> int {
+    bool fe_valid = top->dbg_fe_valid_o;
+    bool fe_ready = top->dbg_fe_ready_o;
+    bool ifu_req_valid = top->dbg_ifu_req_valid_o;
+    bool ifu_req_ready = top->dbg_ifu_req_ready_o;
+    bool ifu_req_fire = top->dbg_ifu_req_fire_o;
+    bool ifu_req_inflight = top->dbg_ifu_req_inflight_o;
+    bool ifu_rsp_valid = top->dbg_ifu_rsp_valid_o;
+    bool ifu_rsp_capture = top->dbg_ifu_rsp_capture_o;
+    bool ifu_fq_full = top->dbg_ifu_fq_full_o;
+    bool ifu_fq_empty = top->dbg_ifu_fq_empty_o;
+
+    if (fe_valid && !fe_ready) return kFeWaitIbufferConsume;
+    if (fe_valid && fe_ready) return kFeHasDataDecodeGap;
+    if (ifu_req_inflight && ifu_rsp_valid && ifu_rsp_capture) return kFeRspCaptureBubble;
+    if (ifu_rsp_valid && !ifu_rsp_capture && ifu_fq_full) return kFeRspBlockedByFQFull;
+    if (ifu_req_inflight && !ifu_rsp_valid) return kFeWaitICacheRsp;
+    if (!ifu_req_inflight && ifu_fq_empty && !ifu_req_valid) {
+      if (!ifu_req_ready) return kFeRedirectRecovery;
+      return kFeNoReq;
+    }
+    if (!ifu_req_fire && ifu_req_valid && !ifu_req_ready) return kFeRedirectRecovery;
+    return kFeOther;
+  };
+
+  auto classify_decode_blocked_detail_cycle = [&]() -> const char * {
+    constexpr uint32_t kPendingReplayFullSrc = 4;
+    int has_rs2 = static_cast<int>(top->dbg_lsu_rs_head_has_rs2_o);
+    int rs2_ready = static_cast<int>(top->dbg_lsu_rs_head_r2_ready_o);
+
+    if (top->dbg_ren_src_from_pending_o) {
+      bool full = static_cast<uint32_t>(top->dbg_ren_src_count_o) >= kPendingReplayFullSrc;
+      if (top->dbg_ren_fire_o && static_cast<uint32_t>(top->dbg_ren_sel_count_o) > 0u) {
+        return full ? "pending_replay_progress_full" : "pending_replay_progress_has_room";
+      }
+      return full ? "pending_replay_wait_full" : "pending_replay_wait_has_room";
+    }
+
+    if (static_cast<uint32_t>(top->dbg_lsu_grp_lane_busy_o) != 0u && !top->dbg_lsu_grp_alloc_fire_o) {
+      if (static_cast<uint32_t>(top->dbg_lsu_grp_ld_owner_o) == 0u) return "lsug_wait_dcache_owner";
+      return "lsug_no_free_lane";
+    }
+
+    if (top->dbg_dc_store_wait_same_line_o) return "dc_store_wait_same_line";
+    if (top->dbg_dc_store_wait_mshr_full_o) return "dc_store_wait_mshr_full";
+
+    if (static_cast<uint32_t>(top->dbg_sb_alloc_req_o) != 0u && !top->dbg_sb_alloc_ready_o) return "sb_alloc_blocked";
+
+    if (top->dbg_lsu_rs_head_valid_o) {
+      bool has_rs1 = top->dbg_lsu_rs_head_has_rs1_o;
+      bool rs1_ready = top->dbg_lsu_rs_head_r1_ready_o;
+      bool has_rs2_local = top->dbg_lsu_rs_head_has_rs2_o;
+      bool rs2_ready_local = top->dbg_lsu_rs_head_r2_ready_o;
+      if ((has_rs1 && !rs1_ready) || (has_rs2_local && !rs2_ready_local)) return "lsu_operand_wait";
+    }
+
+    if (static_cast<uint32_t>(top->dbg_lsu_rs_busy_o) != 0u && static_cast<uint32_t>(top->dbg_lsu_rs_ready_o) == 0u) {
+      return "lsu_rs_pressure";
+    }
+
+    if (top->dbg_rob_q2_valid_o && !top->dbg_rob_q2_complete_o && has_rs2 == 1 && rs2_ready == 0) return "rob_q2_wait";
+
+    std::array<int, 5> gate = {static_cast<int>(top->dbg_gate_alu_o), static_cast<int>(top->dbg_gate_bru_o),
+                               static_cast<int>(top->dbg_gate_lsu_o), static_cast<int>(top->dbg_gate_mdu_o),
+                               static_cast<int>(top->dbg_gate_csr_o)};
+    std::array<uint32_t, 5> need = {static_cast<uint32_t>(top->dbg_need_alu_o), static_cast<uint32_t>(top->dbg_need_bru_o),
+                                    static_cast<uint32_t>(top->dbg_need_lsu_o), static_cast<uint32_t>(top->dbg_need_mdu_o),
+                                    static_cast<uint32_t>(top->dbg_need_csr_o)};
+    const std::array<std::pair<int, const char *>, 5> gate_priority = {{
+        {2, "dispatch_gate_lsu"},
+        {0, "dispatch_gate_alu"},
+        {1, "dispatch_gate_bru"},
+        {4, "dispatch_gate_csr"},
+        {3, "dispatch_gate_mdu"},
+    }};
+    for (const auto &entry : gate_priority) {
+      int idx = entry.first;
+      if (gate[idx] == 0 && need[idx] > 0u) return entry.second;
+    }
+    for (const auto &entry : gate_priority) {
+      int idx = entry.first;
+      if (gate[idx] == 0) return entry.second;
+    }
+
+    uint32_t sm = static_cast<uint32_t>(top->dbg_lsu_state_o);
+    if (sm == 1u && !top->dbg_lsu_ld_fire_o) return "lsu_wait_ld_req";
+    if (sm == 2u && !top->dbg_lsu_rsp_fire_o) return "lsu_wait_ld_rsp";
+    return "other";
+  };
+
+  auto classify_rob_backpressure_detail_cycle = [&]() -> const char * {
+    uint32_t fu = static_cast<uint32_t>(top->dbg_rob_head_fu_o);
+    bool complete = top->dbg_rob_head_complete_o;
+    bool is_store = top->dbg_rob_head_is_store_o;
+
+    if (is_store) {
+      if (!top->dbg_sb_head_valid_o) return "rob_store_wait_sb_head";
+      if (!top->dbg_sb_head_committed_o) return "rob_store_wait_commit";
+      if (!top->dbg_sb_head_addr_valid_o) return "rob_store_wait_addr";
+      if (!top->dbg_sb_head_data_valid_o) return "rob_store_wait_data";
+      if (top->dbg_sb_dcache_req_valid_o && !top->dbg_sb_dcache_req_ready_o) return "rob_store_wait_dcache";
+      if (!top->dbg_sb_dcache_req_valid_o) return "rob_store_wait_issue";
+      return "rob_store_wait_other";
+    }
+
+    if (!complete) {
+      if (fu == 1u) return "rob_head_fu_alu_incomplete";
+      if (fu == 2u) return "rob_head_fu_branch_incomplete";
+      if (fu == 3u) {
+        uint32_t sm = static_cast<uint32_t>(top->dbg_lsu_state_o);
+        bool ld_valid = top->dbg_lsu_ld_req_valid_o;
+        bool ld_ready = top->dbg_lsu_ld_req_ready_o;
+        bool rsp_valid = top->dbg_lsu_ld_rsp_valid_o;
+        bool rsp_ready = top->dbg_lsu_ld_rsp_ready_o;
+        uint32_t owner = static_cast<uint32_t>(top->dbg_lsu_grp_ld_owner_o);
+        bool alloc_fire = top->dbg_lsu_grp_alloc_fire_o;
+
+        if (sm == 0u) return "rob_lsu_incomplete_sm_idle";
+        if (sm == 1u) {
+          if (ld_valid && !ld_ready) {
+            if (owner != 0u) {
+              if (rsp_valid && rsp_ready) return "rob_lsu_wait_ld_req_ready_owner_rsp_fire";
+              if (!rsp_valid && rsp_ready) return "rob_lsu_wait_ld_req_ready_owner_rsp_valid";
+              if (rsp_valid && !rsp_ready) return "rob_lsu_wait_ld_req_ready_owner_rsp_ready";
+            }
+            if (top->dbg_sb_dcache_req_valid_o && !top->dbg_sb_dcache_req_ready_o) return "rob_lsu_wait_ld_req_ready_sb_conflict";
+            bool mshr_blocked = top->dbg_dc_mshr_full_o || !top->dbg_dc_mshr_alloc_ready_o;
+            if (mshr_blocked) return "rob_lsu_wait_ld_req_ready_mshr_blocked";
+            if (top->dcache_miss_req_valid_o && !top->dcache_miss_req_ready_i) return "rob_lsu_wait_ld_req_ready_miss_port_busy";
+            return "rob_lsu_wait_ld_req_ready";
+          }
+          if (!ld_valid && !ld_ready) {
+            if (owner != 0u) {
+              if (rsp_valid && rsp_ready) return "rob_lsu_wait_ld_owner_rsp_fire";
+              if (!rsp_valid && rsp_ready) return "rob_lsu_wait_ld_owner_rsp_valid";
+              if (rsp_valid && !rsp_ready) return "rob_lsu_wait_ld_owner_rsp_ready";
+              return "rob_lsu_wait_ld_owner_hold";
+            }
+            if (!alloc_fire) return "rob_lsu_wait_ld_arb_no_grant";
+          }
+          if (!top->dbg_lsu_ld_fire_o) return "rob_lsu_wait_ld_req_fire";
+          return "rob_lsu_incomplete_sm_req_unknown";
+        }
+        if (sm == 2u) {
+          if (!rsp_valid) return "rob_lsu_wait_ld_rsp_valid";
+          if (rsp_valid && !rsp_ready) return "rob_lsu_wait_ld_rsp_ready";
+          if (!top->dbg_lsu_rsp_fire_o) return "rob_lsu_wait_ld_rsp_fire";
+          return "rob_lsu_incomplete_sm_rsp_unknown";
+        }
+        if (sm == 3u) return "rob_lsu_wait_wb";
+        return "rob_lsu_incomplete_sm_illegal";
+      }
+      if (fu == 4u || fu == 5u) return "rob_head_fu_mdu_incomplete";
+      if (fu == 6u) return "rob_head_fu_csr_incomplete";
+      return "rob_head_fu_unknown_incomplete";
+    }
+
+    return "rob_head_complete_but_not_ready";
   };
 
   auto emit_ranked_summary = [&](const char *tag,
@@ -803,6 +996,20 @@ int main(int argc, char **argv) {
     }
     std::cout << "\n";
     std::cout.flags(f);
+  };
+
+  auto emit_detail_summary = [&](const char *tag, const char *total_key, uint64_t total,
+                                 const std::unordered_map<std::string, uint64_t> &hist) {
+    std::vector<std::pair<std::string, uint64_t>> items(hist.begin(), hist.end());
+    std::sort(items.begin(), items.end(), [](const auto &a, const auto &b) {
+      if (a.first != b.first) return a.first < b.first;
+      return a.second > b.second;
+    });
+    std::cout << "[" << tag << "] mode=cycle " << total_key << "=" << total;
+    for (const auto &kv : items) {
+      std::cout << " " << kv.first << "=" << kv.second;
+    }
+    std::cout << "\n";
   };
 
   auto emit_profile_summary = [&](uint64_t final_cycles) {
@@ -853,10 +1060,26 @@ int main(int argc, char **argv) {
               << " lsu_req_blocked=" << stall_cycle_hist[kStallLSUReqBlocked]
               << " other=" << stall_cycle_hist[kStallOther]
               << "\n";
+    std::cout << "[stallm2] mode=cycle"
+              << " frontend_empty_total=" << stall_cycle_hist[kStallFrontendEmpty]
+              << " fe_no_req=" << stall_frontend_empty_hist[kFeNoReq]
+              << " fe_wait_icache_rsp=" << stall_frontend_empty_hist[kFeWaitICacheRsp]
+              << " fe_rsp_blocked_by_fq_full=" << stall_frontend_empty_hist[kFeRspBlockedByFQFull]
+              << " fe_wait_ibuffer_consume=" << stall_frontend_empty_hist[kFeWaitIbufferConsume]
+              << " fe_redirect_recovery=" << stall_frontend_empty_hist[kFeRedirectRecovery]
+              << " fe_rsp_capture_bubble=" << stall_frontend_empty_hist[kFeRspCaptureBubble]
+              << " fe_has_data_decode_gap=" << stall_frontend_empty_hist[kFeHasDataDecodeGap]
+              << " fe_other=" << stall_frontend_empty_hist[kFeOther]
+              << "\n";
+    emit_detail_summary("stallm3", "decode_blocked_total", stall_cycle_hist[kStallDecodeBlocked],
+                        stall_decode_blocked_detail_hist);
+    emit_detail_summary("stallm4", "rob_backpressure_total", stall_cycle_hist[kStallROBBackpressure],
+                        stall_rob_backpressure_detail_hist);
     emit_ranked_summary("hotpcm", "pc", commit_pc_hist);
     emit_ranked_summary("hotinstm", "inst", commit_inst_hist);
   };
   for (uint64_t cycles = 0; cycles < args.max_cycles; cycles++) {
+    mem.mem.set_time_us(cycles);
     tick(top, mem, tfp, sim_time);
 
     if (top->dbg_sb_dcache_req_valid_o && top->dbg_sb_dcache_req_ready_o) {
@@ -993,9 +1216,11 @@ int main(int argc, char **argv) {
                   << std::dec << "\n";
       }
       std::cout.flags(f);
-      pending_flush_penalty = true;
-      pending_flush_cycle = cycles;
-      pending_flush_reason = flush_reason;
+      if (!pending_flush_penalty) {
+        pending_flush_penalty = true;
+        pending_flush_cycle = cycles;
+        pending_flush_reason = flush_reason;
+      }
     }
 
     if (args.bru_trace && top->dbg_bru_wb_valid_o) {
@@ -1113,7 +1338,8 @@ int main(int argc, char **argv) {
     commit_width_hist[std::min<uint32_t>(commit_this_cycle, 4u)]++;
 
     if (commit_this_cycle != 0) {
-      if ((args.commit_trace || args.bru_trace) && pending_flush_penalty) {
+      if ((args.commit_trace || args.bru_trace) && pending_flush_penalty &&
+          cycles > pending_flush_cycle) {
         std::ios::fmtflags f(std::cout.flags());
         std::cout << "[flushp] cycle=" << cycles
                   << " reason=" << pending_flush_reason
@@ -1139,7 +1365,15 @@ int main(int argc, char **argv) {
       no_commit_cycles = 0;
     } else {
       no_commit_cycles++;
-      stall_cycle_hist[classify_stall_cycle()]++;
+      int stall_kind = classify_stall_cycle();
+      stall_cycle_hist[stall_kind]++;
+      if (stall_kind == kStallFrontendEmpty) {
+        stall_frontend_empty_hist[classify_frontend_empty_cycle()]++;
+      } else if (stall_kind == kStallDecodeBlocked) {
+        stall_decode_blocked_detail_hist[classify_decode_blocked_detail_cycle()]++;
+      } else if (stall_kind == kStallROBBackpressure) {
+        stall_rob_backpressure_detail_hist[classify_rob_backpressure_detail_cycle()]++;
+      }
       if (args.stall_trace && args.stall_threshold > 0 &&
           (no_commit_cycles == args.stall_threshold ||
            (no_commit_cycles > args.stall_threshold &&
@@ -1150,6 +1384,19 @@ int main(int argc, char **argv) {
                   << " fe(v/r/pc)=" << static_cast<int>(top->dbg_fe_valid_o) << "/"
                   << static_cast<int>(top->dbg_fe_ready_o) << "/0x" << std::hex
                   << top->dbg_fe_pc_o
+                  << " ifu_req(v/r/fire/inflight)=" << std::dec
+                  << static_cast<int>(top->dbg_ifu_req_valid_o) << "/"
+                  << static_cast<int>(top->dbg_ifu_req_ready_o) << "/"
+                  << static_cast<int>(top->dbg_ifu_req_fire_o) << "/"
+                  << static_cast<int>(top->dbg_ifu_req_inflight_o)
+                  << " ifu_rsp(v/cap)="
+                  << static_cast<int>(top->dbg_ifu_rsp_valid_o) << "/"
+                  << static_cast<int>(top->dbg_ifu_rsp_capture_o)
+                  << " ifu_fq(cnt/full/empty/pop)="
+                  << static_cast<uint32_t>(top->dbg_ifu_fq_count_o) << "/"
+                  << static_cast<int>(top->dbg_ifu_fq_full_o) << "/"
+                  << static_cast<int>(top->dbg_ifu_fq_empty_o) << "/"
+                  << static_cast<int>(top->dbg_ifu_ibuf_pop_o)
                   << " dec(v/r)=" << std::dec << static_cast<int>(top->dbg_dec_valid_o) << "/"
                   << static_cast<int>(top->dbg_dec_ready_o)
                   << " rob_ready=" << static_cast<int>(top->dbg_rob_ready_o)

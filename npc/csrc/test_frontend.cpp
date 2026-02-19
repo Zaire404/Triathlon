@@ -115,26 +115,20 @@ int main(int argc, char **argv) {
 
   std::cout << "============================================================="
             << std::endl;
-  std::cout << " TEST: Sequential -> Flush -> Block(Stall) -> Unblock"
+  std::cout << " TEST: IFU decoupled fetch queue + flush drop stale responses"
             << std::endl;
   std::cout << "============================================================="
             << std::endl;
 
-  // 1. 预加载数据
-  // Group 1 (0x00)
-  mem.preload(0x80000000, {0x00000013, 0x00100093, 0x00200113, 0x00300193});
-  // Group 2 (0x10)
-  mem.preload(0x80000010, {0x00400213, 0x00500293, 0x00600313, 0x00700393});
-  // Group 3 (0x20) - Flush Target
-  mem.preload(0x80000020, {0x00800413, 0x00900493, 0x00A00513, 0x00B00593});
-  // Group 4 (0x30) - Blocking Test Target
-  mem.preload(0x80000030,
-              {0x00C00613, 0x00D00693, 0x00E00713, 0x00F00793}); // Li x12...
-  // Group 5 (0x40) - Recovery Target
-  mem.preload(0x80000040,
-              {0x01000813, 0x01100893, 0x01200913, 0x01300993}); // Li x16...
+  const uint32_t kStartPc = 0x80000000;
+  const uint32_t kRedirectPc = 0x80000100;
 
-  // 2. 复位
+  mem.preload(0x80000000, {0x00000013, 0x00100093, 0x00200113, 0x00300193});
+  mem.preload(0x80000010, {0x00400213, 0x00500293, 0x00600313, 0x00700393});
+  mem.preload(0x80000020, {0x00800413, 0x00900493, 0x00A00513, 0x00B00593});
+  mem.preload(0x80000030, {0x00C00613, 0x00D00693, 0x00E00713, 0x00F00793});
+  mem.preload(0x80000100, {0x10000013, 0x10100093, 0x10200113, 0x10300193});
+
   top->rst_ni = 0;
   top->ibuffer_ready_i = 0;
   top->flush_i = 0;
@@ -149,140 +143,104 @@ int main(int argc, char **argv) {
   top->bpu_ras_update_valid_i = 0;
   top->bpu_ras_update_is_call_i = 0;
   top->bpu_ras_update_is_ret_i = 0;
-  for (int i = 0; i < NRET; i++) {
-    top->bpu_ras_update_pc_i[i] = 0;
-  }
-  for (int i = 0; i < 5; i++)
-    tick(top, mem);
+  for (int i = 0; i < NRET; i++) top->bpu_ras_update_pc_i[i] = 0;
+
+  for (int i = 0; i < 5; i++) tick(top, mem);
   top->rst_ni = 1;
 
-  // 3. 开始测试
-  // 初始状态：IBuffer Ready
+  // Phase-0: no bubble check when ibuffer can consume immediately.
+  // If IFU is truly decoupled, an ICache response should be visible to
+  // ibuffer in the same cycle (bypass), instead of adding a 1-cycle bubble.
   top->ibuffer_ready_i = 1;
-
-  int stage = 0;
-  int stall_counter = 0;
-  int max_cycles = 300;
-
-  for (int i = 0; i < max_cycles; ++i) {
+  bool saw_rsp = false;
+  for (int i = 0; i < 80; ++i) {
     tick(top, mem);
-    std::cout << "stage = " << stage << std::endl;
-    // ====================================================
-    // 状态机检测逻辑
-    // ====================================================
-    if (top->ibuffer_valid_o) {
-      uint32_t pc = top->ibuffer_pc_o;
-      uint32_t instr0 = get_instr(top, 0);
-
-      // ------------------------------------------------
-      // Stage 0: Fetch 1 (0x00)
-      // ------------------------------------------------
-      if (stage == 0) {
-        std::cout << "[" << main_time
-                  << "] [Stage 0] Fetch 0x80000000. Instr0=" << std::hex
-                  << instr0 << std::endl;
-        assert(pc == 0x80000000);
-        stage = 1;
-      }
-      // ------------------------------------------------
-      // Stage 1: Fetch 2 (0x10) -> Trigger Flush
-      // ------------------------------------------------
-      else if (stage == 1) {
-        if (pc == 0x80000010) {
-          std::cout << "[" << main_time
-                    << "] [Stage 1] Fetch 0x80000010. TRIGGERING FLUSH -> 0x20"
-                    << std::endl;
-          // 在这里触发 Flush
-          top->flush_i = 1;
-          top->redirect_pc_i = 0x80000020;
-          stage = 2;
-        }
-      }
-      // ------------------------------------------------
-      // Stage 3: Fetch 3 (0x20) (Redirected) -> Prepare to Block
-      // ------------------------------------------------
-      else if (stage == 3) {
-        if (pc == 0x80000020) {
-          std::cout << "[" << main_time
-                    << "] [Stage 3] Fetch 0x80000020 (Redirected). PASS."
-                    << std::endl;
-          assert(instr0 == 0x00800413); // 验证数据
-
-          // 准备在下一条指令 (0x30) 到来前拉低 Ready
-          // 注意：这里如果不拉低，下一拍 IFU 就会认为握手成功并更新 PC
-          // 我们想要测试 0x30 被阻塞，所以必须在 0x20 握手完成后（或同时）改变
-          // Ready 状态 但由于我们在循环里 tick 已经执行过了，现在的 Ready=1
-          // 意味着 0x20 已经握手成功。 下一拍 IFU 会尝试取 0x30。我们现在拉低
-          // Ready。
-
-          std::cout << "[" << main_time
-                    << "] [Action] Asserting IBuffer BUSY (Ready=0)..."
-                    << std::endl;
-          top->ibuffer_ready_i = 0;
-          stage = 4;
-          stall_counter = 0;
-        }
-      }
-      // ------------------------------------------------
-      // Stage 4: Fetch 4 (0x30) - BLOCKING TEST
-      // ------------------------------------------------
-      else if (stage == 4) {
-        std::cout << " PC = " << pc << std::endl;
-        // 此时 IFU 应该输出了 0x30 的数据，但是因为
-        // Ready=0，它应该保持这个状态 我们多等几个周期，确保它一直卡在这里
-        if (pc == 0x80000030) {
-          if (stall_counter == 0) {
-            std::cout << "[" << main_time
-                      << "] [Stage 4] Fetch 0x80000030 Arrived. Holding..."
-                      << std::endl;
-            assert(instr0 == 0x00C00613); // 验证是 0x30 的数据
-          }
-
-          stall_counter++;
-          std::cout << "stall_counter = " << stall_counter << std::endl;
-          // 检查是否“滑移” (PC 变成了 0x40 ?)
-          // 如果逻辑正确，在 Ready=0 期间，PC 应该一直保持 0x30，Valid 一直为 1
-          assert(pc == 0x80000030 && "PC Advanced despite Ready=0!");
-
-          if (stall_counter >= 10) {
-            std::cout
-                << "[" << main_time
-                << "] [Stage 4] Stall verified for 10 cycles. Unblocking..."
-                << std::endl;
-            top->ibuffer_ready_i = 1; // 解除阻塞
-            stage = 5;
-          }
-        }
-      }
-      // ------------------------------------------------
-      // Stage 5: Fetch 5 (0x40) - RECOVERY TEST
-      // ------------------------------------------------
-      else if (stage == 5) {
-        // 阻塞解除后，0x30 应该在上一拍完成握手，现在应该拿到 0x40
-        if (pc == 0x80000040) {
-          std::cout
-              << "[" << main_time
-              << "] [Stage 5] Fetch 0x80000040 Arrived. Unblock Successful!"
-              << std::endl;
-          assert(instr0 == 0x01000813);
-          std::cout << "--- ALL TESTS PASSED ---" << std::endl;
-          delete top;
-          return 0;
-        }
+    if (top->dbg_ifu_rsp_capture_o) {
+      saw_rsp = true;
+      if (!top->dbg_ifu_ibuf_valid_o) {
+        std::cerr << "[fail] rsp-to-ibuffer bubble detected at cycle "
+                  << main_time << std::endl;
+        delete top;
+        return 1;
       }
     }
+  }
+  if (!saw_rsp) {
+    std::cerr << "[fail] no icache response observed in phase-0" << std::endl;
+    delete top;
+    return 1;
+  }
 
-    // 处理 Flush 信号的撤销 (在 Stage 2 等待一拍后)
-    if (stage == 2) {
-      // 此时 flush_i 已经保持了一个时钟沿
-      top->flush_i = 0;
-      top->redirect_pc_i = 0;
-      stage = 3; // 等待新的指令流
+  // Phase-1: block ibuffer to validate fetch-queue accumulation and flush drop.
+  top->ibuffer_ready_i = 0;
+
+  int req_fire_cnt_while_blocked = 0;
+  std::vector<uint32_t> req_pc_trace;
+  req_pc_trace.reserve(16);
+
+  for (int i = 0; i < 120; ++i) {
+    tick(top, mem);
+    if (top->dbg_ifu_req_fire_o) {
+      req_fire_cnt_while_blocked++;
+      req_pc_trace.push_back(top->dbg_ifu_req_addr_o);
     }
   }
 
-  std::cout << "--- [TIMEOUT] Stage " << stage << " not completed ---"
+  std::cout << "[info] blocked-window req_fire_count=" << req_fire_cnt_while_blocked
             << std::endl;
+  if (req_fire_cnt_while_blocked < 2) {
+    std::cerr << "[fail] IFU did not continue fetching while ibuffer_ready=0"
+              << std::endl;
+    delete top;
+    return 1;
+  }
+
+  top->flush_i = 1;
+  top->redirect_pc_i = kRedirectPc;
+  tick(top, mem);
+  top->flush_i = 0;
+  top->redirect_pc_i = 0;
+
+  for (int i = 0; i < 20; ++i) tick(top, mem);
+
+  bool got_first_rsp = false;
+  uint32_t first_rsp_pc = 0;
+  uint32_t first_rsp_instr0 = 0;
+  for (int i = 0; i < 200; ++i) {
+    tick(top, mem);
+    if (top->ibuffer_valid_o) {
+      got_first_rsp = true;
+      first_rsp_pc = top->ibuffer_pc_o;
+      first_rsp_instr0 = get_instr(top, 0);
+      break;
+    }
+  }
+
+  if (!got_first_rsp) {
+    std::cerr << "[fail] timeout waiting first ibuffer response after flush"
+              << std::endl;
+    delete top;
+    return 1;
+  }
+
+  std::cout << std::hex << std::showbase;
+  std::cout << "[info] first_visible_rsp_pc=" << first_rsp_pc
+            << " first_instr0=" << first_rsp_instr0 << std::endl;
+  std::cout << std::dec << std::noshowbase;
+
+  if (first_rsp_pc != kRedirectPc) {
+    std::cerr << "[fail] stale pre-flush response was not dropped" << std::endl;
+    delete top;
+    return 1;
+  }
+
+  if (first_rsp_instr0 != 0x10000013u) {
+    std::cerr << "[fail] unexpected instruction at redirect target" << std::endl;
+    delete top;
+    return 1;
+  }
+
+  std::cout << "--- ALL TESTS PASSED ---" << std::endl;
   delete top;
-  return 1;
+  return 0;
 }

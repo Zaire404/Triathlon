@@ -44,7 +44,16 @@ module tb_frontend (
     output logic                                  refill_ready_o,
     input  logic [                  Cfg.PLEN-1:0] refill_paddr_i,
     input  logic [Cfg.ICACHE_SET_ASSOC_WIDTH-1:0] refill_way_i,
-    input  logic [     Cfg.ICACHE_LINE_WIDTH-1:0] refill_data_i
+    input  logic [     Cfg.ICACHE_LINE_WIDTH-1:0] refill_data_i,
+
+    // IFU debug (for frontend decoupling tests)
+    output logic                                  dbg_ifu_req_valid_o,
+    output logic                                  dbg_ifu_req_ready_o,
+    output logic                                  dbg_ifu_req_fire_o,
+    output logic [                  Cfg.PLEN-1:0] dbg_ifu_req_addr_o,
+    output logic                                  dbg_ifu_rsp_valid_o,
+    output logic                                  dbg_ifu_rsp_capture_o,
+    output logic                                  dbg_ifu_ibuf_valid_o
 );
 
   // 内部信号转换：将展平的 ibuffer_data_o 转回 frontend 需要的 packed 格式 (如果需要的话，或者直接连接)
@@ -90,5 +99,13 @@ module tb_frontend (
       .refill_way_i  (refill_way_i),
       .refill_data_i (refill_data_i)
   );
+
+  assign dbg_ifu_req_valid_o = DUT.ifu2icache_req_handshake.valid;
+  assign dbg_ifu_req_ready_o = DUT.icache2ifu_rsp_handshake.ready;
+  assign dbg_ifu_req_fire_o = DUT.ifu2icache_req_handshake.valid & DUT.icache2ifu_rsp_handshake.ready;
+  assign dbg_ifu_req_addr_o = DUT.ifu2icache_req_addr;
+  assign dbg_ifu_rsp_valid_o = DUT.icache2ifu_rsp_handshake.valid;
+  assign dbg_ifu_rsp_capture_o = DUT.i_ifu.rsp_capture_w;
+  assign dbg_ifu_ibuf_valid_o = DUT.ibuffer_valid_o;
 
 endmodule
