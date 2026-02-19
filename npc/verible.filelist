@@ -24,6 +24,7 @@
 ./vsrc/cache/icache_axi_wrapper.sv
 ./vsrc/cache/icache.sv
 ./vsrc/cache/lfsr.sv
+./vsrc/cache/mshr.sv
 ./vsrc/cache/sram.sv
 ./vsrc/cache/tag_array.sv
 ./vsrc/frontend/bpu.sv

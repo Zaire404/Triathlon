@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <dlfcn.h>
 #include <fstream>
 #include <iostream>
@@ -520,20 +521,22 @@ struct ICacheModel {
 };
 
 struct DCacheModel {
-  bool pending = false;
-  int delay = 0;
-  uint32_t miss_addr = 0;
-  uint32_t miss_way = 0;
+  struct MissTxn {
+    int delay = 0;
+    uint32_t miss_addr = 0;
+    uint32_t miss_way = 0;
+    std::array<uint32_t, 8> line_words{};
+  };
+
+  std::deque<MissTxn> pending_q{};
   bool refill_pulse = false;
-  std::array<uint32_t, 8> line_words{};
+  MissTxn refill_txn{};
   UnifiedMem *mem = nullptr;
 
   void reset() {
-    pending = false;
-    delay = 0;
-    miss_addr = 0;
-    miss_way = 0;
+    pending_q.clear();
     refill_pulse = false;
+    refill_txn = MissTxn{};
   }
 
   void drive(Vtb_triathlon *top) {
@@ -541,9 +544,9 @@ struct DCacheModel {
     top->dcache_wb_req_ready_i = 1;
     if (refill_pulse) {
       top->dcache_refill_valid_i = 1;
-      top->dcache_refill_paddr_i = miss_addr;
-      top->dcache_refill_way_i = miss_way;
-      for (int i = 0; i < 8; i++) top->dcache_refill_data_i[i] = line_words[i];
+      top->dcache_refill_paddr_i = refill_txn.miss_addr;
+      top->dcache_refill_way_i = refill_txn.miss_way;
+      for (int i = 0; i < 8; i++) top->dcache_refill_data_i[i] = refill_txn.line_words[i];
     } else {
       top->dcache_refill_valid_i = 0;
       top->dcache_refill_paddr_i = 0;
@@ -563,19 +566,25 @@ struct DCacheModel {
     }
 
     if (top->dcache_miss_req_valid_o && top->dcache_miss_req_ready_i) {
-      pending = true;
-      delay = 2;
-      miss_addr = top->dcache_miss_req_paddr_o;
-      miss_way = top->dcache_miss_req_victim_way_o;
-      if (mem) mem->fill_line(miss_addr, line_words);
+      MissTxn txn{};
+      txn.delay = 2;
+      txn.miss_addr = top->dcache_miss_req_paddr_o;
+      txn.miss_way = top->dcache_miss_req_victim_way_o;
+      if (mem) mem->fill_line(txn.miss_addr, txn.line_words);
+      pending_q.push_back(txn);
     }
 
-    if (pending) {
-      if (delay > 0) {
-        delay--;
-      } else if (top->dcache_refill_ready_o) {
+    for (auto &txn : pending_q) {
+      if (txn.delay > 0) {
+        txn.delay--;
+      }
+    }
+
+    if (!pending_q.empty() && pending_q.front().delay == 0) {
+      if (top->dcache_refill_ready_o) {
+        refill_txn = pending_q.front();
+        pending_q.pop_front();
         refill_pulse = true;
-        pending = false;
       }
     }
 
@@ -1078,6 +1087,16 @@ int main(int argc, char **argv) {
                   << " sb_dcache(v/r/addr)=" << static_cast<int>(top->dbg_sb_dcache_req_valid_o)
                   << "/" << static_cast<int>(top->dbg_sb_dcache_req_ready_o) << "/0x"
                   << std::hex << top->dbg_sb_dcache_req_addr_o
+                  << " dc_mshr(cnt/full/empty)=" << std::dec
+                  << static_cast<uint32_t>(top->dbg_dc_mshr_count_o) << "/"
+                  << static_cast<int>(top->dbg_dc_mshr_full_o) << "/"
+                  << static_cast<int>(top->dbg_dc_mshr_empty_o)
+                  << " dc_mshr(alloc_rdy/line_hit)="
+                  << static_cast<int>(top->dbg_dc_mshr_alloc_ready_o) << "/"
+                  << static_cast<int>(top->dbg_dc_mshr_req_line_hit_o)
+                  << " dc_store_wait(same/full)="
+                  << static_cast<int>(top->dbg_dc_store_wait_same_line_o) << "/"
+                  << static_cast<int>(top->dbg_dc_store_wait_mshr_full_o)
                   << " ic_miss(v/r)=" << std::dec
                   << static_cast<int>(top->icache_miss_req_valid_o) << "/"
                   << static_cast<int>(top->icache_miss_req_ready_i)
@@ -1161,6 +1180,16 @@ int main(int argc, char **argv) {
                 << static_cast<int>(top->dbg_sb_dcache_req_valid_o) << "/"
                 << static_cast<int>(top->dbg_sb_dcache_req_ready_o) << "/0x"
                 << std::hex << top->dbg_sb_dcache_req_addr_o
+                << " dc_mshr(cnt/full/empty)=" << std::dec
+                << static_cast<uint32_t>(top->dbg_dc_mshr_count_o) << "/"
+                << static_cast<int>(top->dbg_dc_mshr_full_o) << "/"
+                << static_cast<int>(top->dbg_dc_mshr_empty_o)
+                << " dc_mshr(alloc_rdy/line_hit)="
+                << static_cast<int>(top->dbg_dc_mshr_alloc_ready_o) << "/"
+                << static_cast<int>(top->dbg_dc_mshr_req_line_hit_o)
+                << " dc_store_wait(same/full)="
+                << static_cast<int>(top->dbg_dc_store_wait_same_line_o) << "/"
+                << static_cast<int>(top->dbg_dc_store_wait_mshr_full_o)
                 << " lsu_issue(v/r)=" << std::dec
                 << static_cast<int>(top->dbg_lsu_issue_valid_o) << "/"
                 << static_cast<int>(top->dbg_lsu_req_ready_o)

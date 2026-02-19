@@ -170,6 +170,15 @@ def _classify_decode_blocked_detail(line: str) -> str:
                 return "lsug_wait_dcache_owner"
             return "lsug_no_free_lane"
 
+    m = re.search(r"dc_store_wait\(same/full\)=(\d)/(\d)", line)
+    if m:
+        same_line = int(m.group(1))
+        mshr_full = int(m.group(2))
+        if same_line == 1:
+            return "dc_store_wait_same_line"
+        if mshr_full == 1:
+            return "dc_store_wait_mshr_full"
+
     m = re.search(r"sb_alloc\(req/ready/fire\)=0x([0-9a-fA-F]+)/(\d)/(\d)", line)
     if m:
         alloc_req = int(m.group(1), 16)

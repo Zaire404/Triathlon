@@ -140,6 +140,14 @@ module tb_triathlon #(
     output logic [Cfg.PLEN-1:0]                dbg_sb_dcache_req_addr_o,
     output logic [Cfg.XLEN-1:0]                dbg_sb_dcache_req_data_o,
     output logic [$bits(decode_pkg::lsu_op_e)-1:0] dbg_sb_dcache_req_op_o,
+    // Debug (D$ MSHR)
+    output logic [7:0]                         dbg_dc_mshr_count_o,
+    output logic                               dbg_dc_mshr_full_o,
+    output logic                               dbg_dc_mshr_empty_o,
+    output logic                               dbg_dc_mshr_alloc_ready_o,
+    output logic                               dbg_dc_mshr_req_line_hit_o,
+    output logic                               dbg_dc_store_wait_same_line_o,
+    output logic                               dbg_dc_store_wait_mshr_full_o,
 
     // Debug (ROB head / count)
     output logic [$bits(decode_pkg::fu_e)-1:0] dbg_rob_head_fu_o,
@@ -373,6 +381,19 @@ module tb_triathlon #(
   assign dbg_sb_dcache_req_addr_o  = dut.u_backend.sb_dcache_req_addr;
   assign dbg_sb_dcache_req_data_o  = dut.u_backend.sb_dcache_req_data;
   assign dbg_sb_dcache_req_op_o    = dut.u_backend.sb_dcache_req_op;
+  assign dbg_dc_mshr_count_o = {4'b0, dut.u_backend.u_dcache.mshr_count};
+  assign dbg_dc_mshr_full_o = dut.u_backend.u_dcache.mshr_full;
+  assign dbg_dc_mshr_empty_o = dut.u_backend.u_dcache.mshr_empty;
+  assign dbg_dc_mshr_alloc_ready_o = dut.u_backend.u_dcache.mshr_alloc_ready;
+  assign dbg_dc_mshr_req_line_hit_o = dut.u_backend.u_dcache.mshr_req_line_hit;
+  assign dbg_dc_store_wait_same_line_o =
+      dut.u_backend.sb_dcache_req_valid &&
+      !dut.u_backend.sb_dcache_req_ready &&
+      dut.u_backend.u_dcache.mshr_req_line_hit;
+  assign dbg_dc_store_wait_mshr_full_o =
+      dut.u_backend.sb_dcache_req_valid &&
+      !dut.u_backend.sb_dcache_req_ready &&
+      !dut.u_backend.u_dcache.mshr_alloc_ready;
 
   // Debug: ROB head state
   assign dbg_rob_head_fu_o       = dut.u_backend.u_rob.rob_ram[dut.u_backend.u_rob.head_ptr_q].fu_type;

@@ -3,7 +3,8 @@ import config_pkg::*;
 import decode_pkg::*;
 
 module dcache #(
-    parameter config_pkg::cfg_t Cfg = config_pkg::EmptyCfg
+    parameter config_pkg::cfg_t Cfg = config_pkg::EmptyCfg,
+    parameter int unsigned      N_MSHR = 1
 ) (
     input logic clk_i,
     input logic rst_ni,
@@ -71,6 +72,8 @@ module dcache #(
 
   // Tag meta bits: {dirty, valid}
   localparam int unsigned META_WIDTH = 2;
+  localparam int unsigned MSHR_ENTRIES = (N_MSHR < 1) ? 1 : N_MSHR;
+  localparam int unsigned MSHR_IDX_WIDTH = (MSHR_ENTRIES <= 1) ? 1 : $clog2(MSHR_ENTRIES);
 
   // ---------------------------------------------------------------------------
   // Helper functions (op decode / store merge / load extract)
@@ -188,11 +191,15 @@ module dcache #(
   logic [Cfg.PLEN-1:0] sel_addr;
   decode_pkg::lsu_op_e sel_op;
   logic [Cfg.XLEN-1:0] sel_wdata;
+  logic ld_req_line_in_mshr;
+  logic st_req_line_in_mshr;
 
-  // Ready/accept policy: blocking cache; accept new req only in IDLE.
+  // Ready policy: serve requests in IDLE, but give refill handshake priority.
   always_comb begin
-    ld_req_ready_o = (state_q == S_IDLE) && !flush_i;
-    st_req_ready_o = (state_q == S_IDLE) && !ld_req_valid_i && !flush_i;  // load wins if same cycle
+    ld_req_ready_o = (state_q == S_IDLE) && !flush_i && !refill_valid_i &&
+                     (!ld_req_valid_i || !ld_req_line_in_mshr);
+    st_req_ready_o = (state_q == S_IDLE) && !ld_req_valid_i && !flush_i && !refill_valid_i &&
+                     (!st_req_valid_i || !st_req_line_in_mshr);
 
     sel_is_load    = 1'b0;
     sel_is_store   = 1'b0;
@@ -225,11 +232,15 @@ module dcache #(
   logic [    INDEX_WIDTH-1:0] sel_index;
   logic [      TAG_WIDTH-1:0] sel_tag;
   logic [   OFFSET_WIDTH-1:0] sel_byte_off;
+  logic [LINE_ADDR_WIDTH-1:0] ld_req_line_addr;
+  logic [LINE_ADDR_WIDTH-1:0] st_req_line_addr;
 
   assign sel_line_addr = sel_addr[Cfg.PLEN-1:OFFSET_WIDTH];
   assign sel_index     = sel_line_addr[INDEX_WIDTH-1:0];
   assign sel_tag       = sel_line_addr[INDEX_WIDTH+:TAG_WIDTH];
   assign sel_byte_off  = sel_addr[OFFSET_WIDTH-1:0];
+  assign ld_req_line_addr = ld_req_addr_i[Cfg.PLEN-1:OFFSET_WIDTH];
+  assign st_req_line_addr = st_req_addr_i[Cfg.PLEN-1:OFFSET_WIDTH];
 
   logic [SETS_PER_BANK_WIDTH-1:0] sel_bank_addr;
   logic [     BANK_SEL_WIDTH-1:0] sel_bank_sel;
@@ -322,6 +333,67 @@ module dcache #(
   logic                [                  Cfg.XLEN-1:0] rsp_data_q;
 
   // ---------------------------------------------------------------------------
+  // MSHR (load-miss tracking, parameterized)
+  // ---------------------------------------------------------------------------
+  typedef struct packed {
+    logic wb_done;
+    logic miss_sent;
+    logic is_store;
+    logic [Cfg.DCACHE_SET_ASSOC_WIDTH-1:0] victim_way;
+    logic [TAG_WIDTH-1:0] victim_tag;
+    logic [LINE_WIDTH-1:0] victim_line;
+    logic victim_valid;
+    logic victim_dirty;
+    logic [INDEX_WIDTH-1:0] index;
+    logic [SETS_PER_BANK_WIDTH-1:0] bank_addr;
+    logic [BANK_SEL_WIDTH-1:0] bank_sel;
+    logic [OFFSET_WIDTH-1:0] byte_off;
+    decode_pkg::lsu_op_e op;
+    logic [Cfg.XLEN-1:0] store_wdata;
+  } mshr_entry_t;
+
+  localparam int unsigned MSHR_DATA_WIDTH = $bits(mshr_entry_t);
+
+  logic [MSHR_ENTRIES-1:0] mshr_entry_valid;
+  logic [MSHR_ENTRIES-1:0][LINE_ADDR_WIDTH-1:0] mshr_entry_key;
+  logic [MSHR_ENTRIES-1:0][MSHR_DATA_WIDTH-1:0] mshr_entry_data_packed;
+  mshr_entry_t [MSHR_ENTRIES-1:0] mshr_entry_data;
+
+  logic mshr_alloc_valid, mshr_alloc_ready, mshr_alloc_fire;
+  logic [MSHR_IDX_WIDTH-1:0] mshr_alloc_idx;
+  logic [LINE_ADDR_WIDTH-1:0] mshr_alloc_key;
+  logic [MSHR_DATA_WIDTH-1:0] mshr_alloc_data_packed;
+
+  logic mshr_update_valid;
+  logic [MSHR_IDX_WIDTH-1:0] mshr_update_idx;
+  logic [MSHR_DATA_WIDTH-1:0] mshr_update_data_packed;
+
+  logic mshr_dealloc_valid;
+  logic [MSHR_IDX_WIDTH-1:0] mshr_dealloc_idx;
+
+  logic mshr_full, mshr_empty;
+  logic [$clog2(MSHR_ENTRIES + 1)-1:0] mshr_count;
+
+  logic mshr_req_line_hit;
+  logic [MSHR_IDX_WIDTH-1:0] mshr_req_line_idx;
+  logic mshr_refill_hit;
+  logic [MSHR_IDX_WIDTH-1:0] mshr_refill_idx;
+  logic [LINE_ADDR_WIDTH-1:0] refill_line_addr;
+
+  logic mshr_wb_candidate_valid;
+  logic [MSHR_IDX_WIDTH-1:0] mshr_wb_candidate_idx;
+  logic mshr_miss_candidate_valid;
+  logic [MSHR_IDX_WIDTH-1:0] mshr_miss_candidate_idx;
+  mshr_entry_t mshr_alloc_entry_d;
+  mshr_entry_t mshr_update_entry_d;
+
+  logic idle_refill_fire;
+  logic idle_refill_match;
+  logic idle_refill_is_store;
+  logic lookup_store_refill_fire;
+  logic miss_alloc_fire;
+
+  // ---------------------------------------------------------------------------
   // Replacement policy (pseudo-random)
   // ---------------------------------------------------------------------------
   logic                [Cfg.DCACHE_SET_ASSOC_WIDTH-1:0] lfsr_out;
@@ -333,6 +405,43 @@ module dcache #(
       .rst_ni(rst_ni),
       .en_i  (1'b1),
       .out_o (lfsr_out)
+  );
+
+  generate
+    for (genvar mi = 0; mi < MSHR_ENTRIES; mi++) begin : g_mshr_unpack
+      assign mshr_entry_data[mi] = mshr_entry_t'(mshr_entry_data_packed[mi]);
+    end
+  endgenerate
+
+  mshr #(
+      .N_ENTRIES (MSHR_ENTRIES),
+      .KEY_WIDTH (LINE_ADDR_WIDTH),
+      .DATA_WIDTH(MSHR_DATA_WIDTH)
+  ) u_mshr (
+      .clk_i,
+      .rst_ni,
+      .flush_i,
+
+      .alloc_valid_i(mshr_alloc_valid),
+      .alloc_ready_o(mshr_alloc_ready),
+      .alloc_key_i  (mshr_alloc_key),
+      .alloc_data_i (mshr_alloc_data_packed),
+      .alloc_fire_o (mshr_alloc_fire),
+      .alloc_idx_o  (mshr_alloc_idx),
+
+      .update_valid_i(mshr_update_valid),
+      .update_idx_i  (mshr_update_idx),
+      .update_data_i (mshr_update_data_packed),
+
+      .dealloc_valid_i(mshr_dealloc_valid),
+      .dealloc_idx_i  (mshr_dealloc_idx),
+
+      .entry_valid_o(mshr_entry_valid),
+      .entry_key_o  (mshr_entry_key),
+      .entry_data_o (mshr_entry_data_packed),
+      .full_o       (mshr_full),
+      .empty_o      (mshr_empty),
+      .count_o      (mshr_count)
   );
 
   // ---------------------------------------------------------------------------
@@ -436,6 +545,114 @@ module dcache #(
     else victim_way_d = lfsr_out;
   end
 
+  assign refill_line_addr = refill_paddr_i[Cfg.PLEN-1:OFFSET_WIDTH];
+
+  always_comb begin
+    mshr_req_line_hit = 1'b0;
+    mshr_req_line_idx = '0;
+    ld_req_line_in_mshr = 1'b0;
+    st_req_line_in_mshr = 1'b0;
+    mshr_refill_hit = 1'b0;
+    mshr_refill_idx = '0;
+    mshr_wb_candidate_valid = 1'b0;
+    mshr_wb_candidate_idx = '0;
+    mshr_miss_candidate_valid = 1'b0;
+    mshr_miss_candidate_idx = '0;
+
+    for (int i = 0; i < MSHR_ENTRIES; i++) begin
+      if (!mshr_req_line_hit && mshr_entry_valid[i] && (mshr_entry_key[i] == req_line_addr_q)) begin
+        mshr_req_line_hit = 1'b1;
+        mshr_req_line_idx = MSHR_IDX_WIDTH'(i);
+      end
+      if (!ld_req_line_in_mshr && mshr_entry_valid[i] && (mshr_entry_key[i] == ld_req_line_addr)) begin
+        ld_req_line_in_mshr = 1'b1;
+      end
+      if (!st_req_line_in_mshr && mshr_entry_valid[i] && (mshr_entry_key[i] == st_req_line_addr)) begin
+        st_req_line_in_mshr = 1'b1;
+      end
+      if (!mshr_refill_hit && mshr_entry_valid[i] && (mshr_entry_key[i] == refill_line_addr)) begin
+        mshr_refill_hit = 1'b1;
+        mshr_refill_idx = MSHR_IDX_WIDTH'(i);
+      end
+      if (!mshr_wb_candidate_valid && mshr_entry_valid[i] && !mshr_entry_data[i].wb_done) begin
+        mshr_wb_candidate_valid = 1'b1;
+        mshr_wb_candidate_idx = MSHR_IDX_WIDTH'(i);
+      end
+      if (!mshr_miss_candidate_valid && mshr_entry_valid[i] &&
+          mshr_entry_data[i].wb_done && !mshr_entry_data[i].miss_sent) begin
+        mshr_miss_candidate_valid = 1'b1;
+        mshr_miss_candidate_idx = MSHR_IDX_WIDTH'(i);
+      end
+    end
+  end
+
+  assign idle_refill_fire = (state_q == S_IDLE) && refill_valid_i && refill_ready_o;
+  assign idle_refill_match = idle_refill_fire && mshr_refill_hit;
+  assign idle_refill_is_store = idle_refill_match && mshr_entry_data[mshr_refill_idx].is_store;
+  assign lookup_store_refill_fire =
+      (state_q == S_LOOKUP) && refill_valid_i && refill_ready_o &&
+      mshr_refill_hit && mshr_entry_data[mshr_refill_idx].is_store;
+
+  assign miss_alloc_fire =
+      (state_q == S_LOOKUP) && !req_err_q && !hit &&
+      !mshr_req_line_hit && mshr_alloc_ready;
+
+  always_comb begin
+    mshr_alloc_valid = 1'b0;
+    mshr_alloc_key = req_line_addr_q;
+    mshr_alloc_data_packed = '0;
+    mshr_alloc_entry_d = '0;
+
+    mshr_update_valid = 1'b0;
+    mshr_update_idx = '0;
+    mshr_update_data_packed = '0;
+    mshr_update_entry_d = '0;
+
+    mshr_dealloc_valid = 1'b0;
+    mshr_dealloc_idx = '0;
+
+    if (miss_alloc_fire) begin
+      mshr_alloc_entry_d.wb_done = !(way_valid[victim_way_d] && way_dirty[victim_way_d]);
+      mshr_alloc_entry_d.miss_sent = 1'b0;
+      mshr_alloc_entry_d.is_store = req_is_store_q;
+      mshr_alloc_entry_d.victim_way = victim_way_d;
+      mshr_alloc_entry_d.victim_tag = tag_a[victim_way_d];
+      mshr_alloc_entry_d.victim_line = line_a_all[victim_way_d];
+      mshr_alloc_entry_d.victim_valid = way_valid[victim_way_d];
+      mshr_alloc_entry_d.victim_dirty = way_dirty[victim_way_d];
+      mshr_alloc_entry_d.index = req_index_q;
+      mshr_alloc_entry_d.bank_addr = req_bank_addr_q;
+      mshr_alloc_entry_d.bank_sel = req_bank_sel_q;
+      mshr_alloc_entry_d.byte_off = req_byte_off_q;
+      mshr_alloc_entry_d.op = req_op_q;
+      mshr_alloc_entry_d.store_wdata = req_wdata_q;
+
+      mshr_alloc_valid = 1'b1;
+      mshr_alloc_key = req_line_addr_q;
+      mshr_alloc_data_packed = MSHR_DATA_WIDTH'(mshr_alloc_entry_d);
+    end
+
+    if ((state_q != S_WB_REQ) && mshr_wb_candidate_valid && wb_req_ready_i) begin
+      mshr_update_entry_d = mshr_entry_data[mshr_wb_candidate_idx];
+      mshr_update_entry_d.wb_done = 1'b1;
+      mshr_update_valid = 1'b1;
+      mshr_update_idx = mshr_wb_candidate_idx;
+      mshr_update_data_packed = MSHR_DATA_WIDTH'(mshr_update_entry_d);
+    end else if ((state_q != S_MISS_REQ) && !mshr_wb_candidate_valid &&
+                 mshr_miss_candidate_valid && miss_req_ready_i) begin
+      mshr_update_entry_d = mshr_entry_data[mshr_miss_candidate_idx];
+      mshr_update_entry_d.miss_sent = 1'b1;
+      mshr_update_valid = 1'b1;
+      mshr_update_idx = mshr_miss_candidate_idx;
+      mshr_update_data_packed = MSHR_DATA_WIDTH'(mshr_update_entry_d);
+    end
+
+    if (idle_refill_match || lookup_store_refill_fire) begin
+      mshr_dealloc_valid = 1'b1;
+      mshr_dealloc_idx = mshr_refill_idx;
+    end
+  end
+
   // ---------------------------------------------------------------------------
   // Read-address mux (keep aligned with write address when writing)
   // ---------------------------------------------------------------------------
@@ -448,6 +665,11 @@ module dcache #(
     if (state_q == S_IDLE && accept_req) begin
       r_bank_addr = sel_bank_addr;
       r_bank_sel  = sel_bank_sel;
+    end
+
+    if ((state_q == S_IDLE && idle_refill_match) || lookup_store_refill_fire) begin
+      r_bank_addr = mshr_entry_data[mshr_refill_idx].bank_addr;
+      r_bank_sel  = mshr_entry_data[mshr_refill_idx].bank_sel;
     end
 
     // During store-hit update, force read A to same bank/address as the write
@@ -493,7 +715,9 @@ module dcache #(
     miss_req_victim_way_o = victim_way_q;
     miss_req_index_o      = miss_index_q;
 
-    refill_ready_o        = 1'b0;
+    refill_ready_o        = ((state_q == S_WAIT_REFILL) || (state_q == S_IDLE) ||
+                             ((state_q == S_LOOKUP) && mshr_refill_hit &&
+                              mshr_entry_data[mshr_refill_idx].is_store));
 
     // Writeback defaults
     wb_req_valid_o        = 1'b0;
@@ -526,7 +750,6 @@ module dcache #(
       end
 
       S_WAIT_REFILL: begin
-        refill_ready_o = 1'b1;
         if (refill_valid_i) begin
           // Write refill (load miss) or refill+merge (store miss)
           we_way_mask = '0;
@@ -549,6 +772,42 @@ module dcache #(
       end
     endcase
 
+    // MSHR-driven non-blocking writeback/miss request path.
+    if ((state_q != S_WB_REQ) && mshr_wb_candidate_valid) begin
+      wb_req_valid_o = 1'b1;
+      wb_req_paddr_o = {
+          mshr_entry_data[mshr_wb_candidate_idx].victim_tag,
+          mshr_entry_data[mshr_wb_candidate_idx].index,
+          {OFFSET_WIDTH{1'b0}}
+      };
+      wb_req_data_o = mshr_entry_data[mshr_wb_candidate_idx].victim_line;
+    end else if ((state_q != S_MISS_REQ) && !mshr_wb_candidate_valid && mshr_miss_candidate_valid) begin
+      miss_req_valid_o = 1'b1;
+      miss_req_paddr_o = {mshr_entry_key[mshr_miss_candidate_idx], {OFFSET_WIDTH{1'b0}}};
+      miss_req_victim_way_o = mshr_entry_data[mshr_miss_candidate_idx].victim_way;
+      miss_req_index_o = mshr_entry_data[mshr_miss_candidate_idx].index;
+    end
+
+    // Refill response for an MSHR-tracked load miss.
+    if (idle_refill_match || lookup_store_refill_fire) begin
+      we_way_mask = '0;
+      we_way_mask[mshr_entry_data[mshr_refill_idx].victim_way] = 1'b1;
+      w_bank_addr = mshr_entry_data[mshr_refill_idx].bank_addr;
+      w_bank_sel = mshr_entry_data[mshr_refill_idx].bank_sel;
+      w_tag = refill_paddr_i[Cfg.PLEN-1:OFFSET_WIDTH][INDEX_WIDTH+:TAG_WIDTH];
+      w_meta = {mshr_entry_data[mshr_refill_idx].is_store, 1'b1};
+      if (mshr_entry_data[mshr_refill_idx].is_store) begin
+        w_line = apply_store(
+            refill_data_i,
+            mshr_entry_data[mshr_refill_idx].byte_off,
+            mshr_entry_data[mshr_refill_idx].op,
+            mshr_entry_data[mshr_refill_idx].store_wdata
+        );
+      end else begin
+        w_line = refill_data_i;
+      end
+    end
+
     // On flush, suppress handshakes/responses.
     if (flush_i && !(state_q != S_IDLE && req_is_store_q)) begin
       miss_req_valid_o = 1'b0;
@@ -568,7 +827,9 @@ module dcache #(
 
     unique case (state_q)
       S_IDLE: begin
-        if (accept_req) begin
+        if (idle_refill_match && !idle_refill_is_store) begin
+          state_d = S_RESP;
+        end else if (accept_req) begin
           state_d = S_LOOKUP;
         end
       end
@@ -586,8 +847,21 @@ module dcache #(
           else state_d = S_RESP;
         end else begin
           // Miss path
-          if (victim_valid_q && victim_dirty_q) state_d = S_WB_REQ;
-          else state_d = S_MISS_REQ;
+          if (req_is_store_q) begin
+            // Store miss: allocate MSHR and return to IDLE.
+            if (mshr_req_line_hit || !mshr_alloc_ready) begin
+              state_d = S_LOOKUP;
+            end else begin
+              state_d = S_IDLE;
+            end
+          end else begin
+            // Load miss: allocate MSHR and return to IDLE.
+            if (mshr_req_line_hit || !mshr_alloc_ready) begin
+              state_d = S_LOOKUP;
+            end else begin
+              state_d = S_IDLE;
+            end
+          end
         end
       end
 
@@ -789,6 +1063,15 @@ module dcache #(
         end
       end
 
+      if (idle_refill_match && !mshr_entry_data[mshr_refill_idx].is_store) begin
+        rsp_err_q  <= 1'b0;
+        rsp_data_q <= extract_load(
+            refill_data_i,
+            mshr_entry_data[mshr_refill_idx].byte_off,
+            mshr_entry_data[mshr_refill_idx].op
+        );
+      end
+
       // ----------------------------------------------------------
       // Track last write to handle RAW hazards on the same line/way
       // ----------------------------------------------------------
@@ -798,6 +1081,21 @@ module dcache #(
         last_write_index_q <= req_index_q;
         last_write_way_q   <= store_hit_way_q;
         last_write_line_q  <= store_new_line_q;
+      end else if (idle_refill_match || lookup_store_refill_fire) begin
+        last_write_valid_q <= 1'b1;
+        last_write_tag_q   <= refill_paddr_i[Cfg.PLEN-1:OFFSET_WIDTH][INDEX_WIDTH+:TAG_WIDTH];
+        last_write_index_q <= mshr_entry_data[mshr_refill_idx].index;
+        last_write_way_q   <= mshr_entry_data[mshr_refill_idx].victim_way;
+        if (mshr_entry_data[mshr_refill_idx].is_store) begin
+          last_write_line_q <= apply_store(
+              refill_data_i,
+              mshr_entry_data[mshr_refill_idx].byte_off,
+              mshr_entry_data[mshr_refill_idx].op,
+              mshr_entry_data[mshr_refill_idx].store_wdata
+          );
+        end else begin
+          last_write_line_q <= refill_data_i;
+        end
       end else if (state_q == S_WAIT_REFILL && refill_valid_i && refill_ready_o) begin
         last_write_valid_q <= 1'b1;
         last_write_tag_q   <= refill_paddr_i[Cfg.PLEN-1:OFFSET_WIDTH][INDEX_WIDTH+:TAG_WIDTH];

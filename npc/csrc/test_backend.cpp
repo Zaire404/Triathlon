@@ -70,6 +70,10 @@ static inline uint32_t insn_add(uint32_t rd, uint32_t rs1, uint32_t rs2) {
   return enc_r(0x00, rs2, rs1, 0x0, rd, 0x33);
 }
 
+static inline uint32_t insn_mul(uint32_t rd, uint32_t rs1, uint32_t rs2) {
+  return enc_r(0x01, rs2, rs1, 0x0, rd, 0x33);
+}
+
 static inline uint32_t insn_lw(uint32_t rd, uint32_t rs1, int32_t imm) {
   return enc_i(imm, rs1, 0x2, rd, 0x03);
 }
@@ -232,6 +236,33 @@ static void send_group(Vtb_backend *top, MemModel &mem,
     for (int i = 0; i < INSTR_PER_FETCH; i++) {
       top->frontend_ibuf_instrs[i] = instrs[i];
       top->frontend_ibuf_slot_valid |= (1u << i);
+      top->frontend_ibuf_pred_npc[i] = base_pc + static_cast<uint32_t>((i + 1) * 4);
+    }
+    bool ready = tick_sample_frontend_ready(top, mem);
+    update_commits(top, rf, commit_log);
+    if (ready) {
+      sent = true;
+    }
+  }
+  top->frontend_ibuf_valid = 0;
+}
+
+static void send_group_masked(Vtb_backend *top, MemModel &mem,
+                              std::array<uint32_t, 32> &rf,
+                              std::vector<uint32_t> &commit_log,
+                              uint32_t base_pc,
+                              const std::array<uint32_t, 4> &instrs,
+                              uint32_t slot_valid_mask) {
+  bool sent = false;
+  while (!sent) {
+    top->frontend_ibuf_valid = 1;
+    top->frontend_ibuf_pc = base_pc;
+    top->frontend_ibuf_slot_valid = 0;
+    for (int i = 0; i < INSTR_PER_FETCH; i++) {
+      top->frontend_ibuf_instrs[i] = instrs[i];
+      if ((slot_valid_mask >> i) & 0x1u) {
+        top->frontend_ibuf_slot_valid |= (1u << i);
+      }
       top->frontend_ibuf_pred_npc[i] = base_pc + static_cast<uint32_t>((i + 1) * 4);
     }
     bool ready = tick_sample_frontend_ready(top, mem);
@@ -676,6 +707,78 @@ static void test_dual_lane_can_hold_two_blocked_loads(Vtb_backend *top, MemModel
   mem.block_miss_req = false;
 }
 
+static void test_pending_replay_allows_decoder_progress(Vtb_backend *top, MemModel &mem) {
+  std::array<uint32_t, 32> rf{};
+  std::vector<uint32_t> commits;
+
+  reset(top, mem);
+
+  // slot1 invalid forces rename stop_accept, slot2/3 replay into pending.
+  // FU_MUL is currently not implemented, so pending replay remains active.
+  const std::array<uint32_t, 4> replay_seed = {
+      insn_addi(10, 0, 1),
+      insn_nop(),
+      insn_mul(11, 0, 0),
+      insn_mul(12, 0, 0)};
+
+  send_group_masked(top, mem, rf, commits, 0x11000, replay_seed, 0xDu);
+
+  bool replay_seen = run_until(top, mem, rf, commits, [&]() {
+    return top->dbg_ren_src_from_pending_o != 0;
+  }, 300);
+  expect(replay_seen, "Replay path: pending-replay becomes active");
+
+  const std::array<uint32_t, 4> addi_group = {
+      insn_addi(14, 0, 14),
+      insn_addi(15, 0, 15),
+      insn_addi(16, 0, 16),
+      insn_addi(17, 0, 17)};
+
+  int dec_ready_while_pending = 0;
+  int pending_cycles = 0;
+  for (int cyc = 0; cyc < 80; cyc++) {
+    top->frontend_ibuf_valid = 1;
+    top->frontend_ibuf_pc = 0x11010;
+    top->frontend_ibuf_slot_valid = 0;
+    for (int i = 0; i < INSTR_PER_FETCH; i++) {
+      top->frontend_ibuf_instrs[i] = addi_group[i];
+      top->frontend_ibuf_slot_valid |= (1u << i);
+      top->frontend_ibuf_pred_npc[i] = top->frontend_ibuf_pc + static_cast<uint32_t>((i + 1) * 4);
+    }
+
+    mem.drive(top);
+    top->clk_i = 0;
+    top->eval();
+    bool pending = top->dbg_ren_src_from_pending_o != 0;
+    bool dec_ready = top->dbg_dec_ready_o != 0;
+    uint32_t src_count = static_cast<uint32_t>(top->dbg_ren_src_count_o);
+    top->clk_i = 1;
+    top->eval();
+    mem.observe(top);
+    update_commits(top, rf, commits);
+
+    if (pending && src_count < INSTR_PER_FETCH) {
+      pending_cycles++;
+    }
+    if (pending && src_count < INSTR_PER_FETCH && dec_ready) {
+      dec_ready_while_pending++;
+      break;
+    }
+  }
+  top->frontend_ibuf_valid = 0;
+
+  if (dec_ready_while_pending == 0) {
+    std::cout << "    [DEBUG] pending_cycles=" << pending_cycles
+              << " src_count=" << static_cast<uint32_t>(top->dbg_ren_src_count_o)
+              << " dec_ready=" << static_cast<int>(top->dbg_dec_ready_o)
+              << " pending=" << static_cast<int>(top->dbg_ren_src_from_pending_o)
+              << std::endl;
+  }
+
+  expect(dec_ready_while_pending > 0,
+         "Replay path: decoder can make progress while pending replay has free slots");
+}
+
 int main(int argc, char **argv) {
   Verilated::commandArgs(argc, argv);
   Vtb_backend *top = new Vtb_backend;
@@ -691,6 +794,7 @@ int main(int argc, char **argv) {
   test_flush_stress_no_wrong_path_commit(top, mem);
   test_partial_dispatch_accepts_non_lsu_prefix_when_lsu_blocked(top, mem);
   test_dual_lane_can_hold_two_blocked_loads(top, mem);
+  test_pending_replay_allows_decoder_progress(top, mem);
 
   std::cout << ANSI_RES_GRN << "--- [ALL BACKEND TESTS PASSED] ---" << ANSI_RES_RST << std::endl;
   delete top;
