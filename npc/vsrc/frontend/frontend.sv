@@ -51,11 +51,6 @@ module frontend #(
     input  logic [     Cfg.ICACHE_LINE_WIDTH-1:0] refill_data_i
 );
 
-`ifdef BPU_ENABLE_GSHARE
-  localparam bit BPU_USE_GSHARE = 1'b1;
-`else
-  localparam bit BPU_USE_GSHARE = 1'b0;
-`endif
   localparam int unsigned BPU_BTB_ENTRIES = 128;
   localparam int unsigned BPU_BHT_ENTRIES = 512;
 
@@ -145,7 +140,7 @@ module frontend #(
       .Cfg(Cfg),
       .BTB_ENTRIES(BPU_BTB_ENTRIES),
       .BHT_ENTRIES(BPU_BHT_ENTRIES),
-      .USE_GSHARE(BPU_USE_GSHARE)
+      .USE_GSHARE(Cfg.BPU_USE_GSHARE != 0)
   ) i_bpu (
       .clk_i(clk_i),
       .rst_i(~rst_ni), // 高电平复位

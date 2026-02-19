@@ -27,11 +27,9 @@ module tb_bpu (
     output logic [$clog2(Cfg.INSTR_PER_FETCH)-1:0] pred_slot_idx_o,
     output logic [Cfg.XLEN-1:0] pred_slot_target_o
 );
-`ifdef BPU_ENABLE_GSHARE
-  localparam bit TB_BPU_USE_GSHARE = 1'b1;
-`else
+  // Keep tb_bpu deterministic for legacy hysteresis tests.
+  // Frontend integration uses Cfg.BPU_USE_GSHARE.
   localparam bit TB_BPU_USE_GSHARE = 1'b0;
-`endif
   localparam int unsigned TB_BPU_BTB_ENTRIES = 128;
   localparam int unsigned TB_BPU_BHT_ENTRIES = 512;
   localparam bit TB_BPU_BTB_HASH_ENABLE = 1'b1;

@@ -10,6 +10,7 @@ module tb_build_config (
     input int unsigned i_XLEN,
     input int unsigned i_VLEN,
     input int unsigned i_ILEN,
+    input int unsigned i_BPU_USE_GSHARE,
     input int unsigned i_ICACHE_BYTE_SIZE,
     input int unsigned i_ICACHE_SET_ASSOC,
     input int unsigned i_ICACHE_LINE_WIDTH,
@@ -21,6 +22,7 @@ module tb_build_config (
     output int unsigned o_PLEN,
     output int unsigned o_GPLEN,
     output int unsigned o_INSTR_PER_FETCH,
+    output int unsigned o_BPU_USE_GSHARE,
     output int unsigned o_ICACHE_BYTE_SIZE,
     output int unsigned o_ICACHE_SET_ASSOC,
     output int unsigned o_ICACHE_SET_ASSOC_WIDTH,
@@ -40,6 +42,7 @@ module tb_build_config (
   assign user_cfg_in.XLEN              = i_XLEN;
   assign user_cfg_in.VLEN              = i_VLEN;
   assign user_cfg_in.ILEN              = i_ILEN;
+  assign user_cfg_in.BPU_USE_GSHARE    = i_BPU_USE_GSHARE;
   assign user_cfg_in.INSTR_PER_FETCH   = i_INSTR_PER_FETCH;
   assign user_cfg_in.ICACHE_BYTE_SIZE  = i_ICACHE_BYTE_SIZE;
   assign user_cfg_in.ICACHE_SET_ASSOC  = i_ICACHE_SET_ASSOC;
@@ -60,6 +63,7 @@ module tb_build_config (
   assign o_PLEN                   = cfg_out.PLEN;
   assign o_GPLEN                  = cfg_out.GPLEN;
   assign o_INSTR_PER_FETCH        = cfg_out.INSTR_PER_FETCH;
+  assign o_BPU_USE_GSHARE         = cfg_out.BPU_USE_GSHARE;
   assign o_ICACHE_BYTE_SIZE       = cfg_out.ICACHE_BYTE_SIZE;
   assign o_ICACHE_SET_ASSOC       = cfg_out.ICACHE_SET_ASSOC;
   assign o_ICACHE_SET_ASSOC_WIDTH = cfg_out.ICACHE_SET_ASSOC_WIDTH;

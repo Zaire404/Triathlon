@@ -21,6 +21,8 @@ package config_pkg;
     int unsigned VLEN;
     // Instruction Length (in bits)
     int unsigned ILEN;
+    // Branch predictor mode: 1 enables gshare, 0 uses PC-only index
+    int unsigned BPU_USE_GSHARE;
 
     // ICache configuration
     // Instruction cache size (in bytes)
@@ -61,6 +63,8 @@ package config_pkg;
     int unsigned INSTR_PER_FETCH;
     // Fetch width (in bits)
     int unsigned FETCH_WIDTH;
+    // Branch predictor mode: 1 enables gshare, 0 uses PC-only index
+    int unsigned BPU_USE_GSHARE;
 
     // ICache configuration
     int unsigned ICACHE_BYTE_SIZE;

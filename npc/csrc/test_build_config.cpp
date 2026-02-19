@@ -15,6 +15,7 @@ int main(int argc, char **argv) {
   top->i_XLEN = 32;
   top->i_VLEN = 32;
   top->i_ILEN = 32;
+  top->i_BPU_USE_GSHARE = 1;
   top->i_INSTR_PER_FETCH = 4;
   top->i_ICACHE_BYTE_SIZE = 8192;
   top->i_ICACHE_SET_ASSOC = 8;
@@ -35,6 +36,9 @@ int main(int argc, char **argv) {
 
   std::cout << "Checking ICACHE_SET_ASSOC_WIDTH..." << std::endl;
   assert(top->o_ICACHE_SET_ASSOC_WIDTH == expected_assoc_width);
+
+  std::cout << "Checking BPU_USE_GSHARE..." << std::endl;
+  assert(top->o_BPU_USE_GSHARE == 1);
 
   std::cout << "Checking ICACHE_INDEX_WIDTH..." << std::endl;
   assert(top->o_ICACHE_INDEX_WIDTH == expected_index_width);
