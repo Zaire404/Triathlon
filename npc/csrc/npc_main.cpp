@@ -721,7 +721,7 @@ int main(int argc, char **argv) {
   std::unordered_map<uint32_t, uint64_t> commit_inst_hist;
   std::array<uint64_t, 5> commit_width_hist = {};
   std::array<uint64_t, 8> stall_cycle_hist = {};
-  std::array<uint64_t, 8> stall_frontend_empty_hist = {};
+  std::array<uint64_t, 9> stall_frontend_empty_hist = {};
   std::unordered_map<std::string, uint64_t> stall_decode_blocked_detail_hist;
   std::unordered_map<std::string, uint64_t> stall_rob_backpressure_detail_hist;
   bool has_prev_commit = false;
@@ -798,13 +798,14 @@ int main(int argc, char **argv) {
 
   enum FrontendEmptyDetailIdx : int {
     kFeNoReq = 0,
-    kFeWaitICacheRsp = 1,
-    kFeRspBlockedByFQFull = 2,
-    kFeWaitIbufferConsume = 3,
-    kFeRedirectRecovery = 4,
-    kFeRspCaptureBubble = 5,
-    kFeHasDataDecodeGap = 6,
-    kFeOther = 7,
+    kFeWaitICacheRspHitLatency = 1,
+    kFeWaitICacheRspMissWait = 2,
+    kFeRspBlockedByFQFull = 3,
+    kFeWaitIbufferConsume = 4,
+    kFeRedirectRecovery = 5,
+    kFeRspCaptureBubble = 6,
+    kFeHasDataDecodeGap = 7,
+    kFeOther = 8,
   };
 
   auto classify_stall_cycle = [&]() -> int {
@@ -834,7 +835,11 @@ int main(int argc, char **argv) {
     if (fe_valid && fe_ready) return kFeHasDataDecodeGap;
     if (ifu_req_inflight && ifu_rsp_valid && ifu_rsp_capture) return kFeRspCaptureBubble;
     if (ifu_rsp_valid && !ifu_rsp_capture && ifu_fq_full) return kFeRspBlockedByFQFull;
-    if (ifu_req_inflight && !ifu_rsp_valid) return kFeWaitICacheRsp;
+    if (ifu_req_inflight && !ifu_rsp_valid) {
+      uint32_t icache_state = static_cast<uint32_t>(top->dbg_icache_state_o);
+      if (icache_state == 2u || icache_state == 3u) return kFeWaitICacheRspMissWait;
+      return kFeWaitICacheRspHitLatency;
+    }
     if (!ifu_req_inflight && ifu_fq_empty && !ifu_req_valid) {
       if (!ifu_req_ready) return kFeRedirectRecovery;
       return kFeNoReq;
@@ -1063,7 +1068,8 @@ int main(int argc, char **argv) {
     std::cout << "[stallm2] mode=cycle"
               << " frontend_empty_total=" << stall_cycle_hist[kStallFrontendEmpty]
               << " fe_no_req=" << stall_frontend_empty_hist[kFeNoReq]
-              << " fe_wait_icache_rsp=" << stall_frontend_empty_hist[kFeWaitICacheRsp]
+              << " fe_wait_icache_rsp_hit_latency=" << stall_frontend_empty_hist[kFeWaitICacheRspHitLatency]
+              << " fe_wait_icache_rsp_miss_wait=" << stall_frontend_empty_hist[kFeWaitICacheRspMissWait]
               << " fe_rsp_blocked_by_fq_full=" << stall_frontend_empty_hist[kFeRspBlockedByFQFull]
               << " fe_wait_ibuffer_consume=" << stall_frontend_empty_hist[kFeWaitIbufferConsume]
               << " fe_redirect_recovery=" << stall_frontend_empty_hist[kFeRedirectRecovery]
@@ -1478,6 +1484,7 @@ int main(int argc, char **argv) {
                   << " ic_miss(v/r)=" << std::dec
                   << static_cast<int>(top->icache_miss_req_valid_o) << "/"
                   << static_cast<int>(top->icache_miss_req_ready_i)
+                  << " ic_sm=" << static_cast<uint32_t>(top->dbg_icache_state_o)
                   << " dc_miss(v/r)=" << static_cast<int>(top->dcache_miss_req_valid_o) << "/"
                   << static_cast<int>(top->dcache_miss_req_ready_i)
                   << " flush=" << static_cast<int>(top->backend_flush_o)

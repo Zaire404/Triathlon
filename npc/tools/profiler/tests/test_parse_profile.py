@@ -601,7 +601,7 @@ class ParseProfileTest(unittest.TestCase):
                 "\n".join(
                     [
                         "[stallm] mode=cycle stall_total_cycles=60 flush_recovery=5 icache_miss_wait=7 dcache_miss_wait=3 rob_backpressure=20 frontend_empty=11 decode_blocked=9 lsu_req_blocked=1 other=4",
-                        "[stallm2] mode=cycle frontend_empty_total=13 fe_no_req=2 fe_wait_icache_rsp=3 fe_rsp_blocked_by_fq_full=1 fe_wait_ibuffer_consume=4 fe_redirect_recovery=0 fe_rsp_capture_bubble=2 fe_has_data_decode_gap=0 fe_other=1",
+                        "[stallm2] mode=cycle frontend_empty_total=13 fe_no_req=2 fe_wait_icache_rsp_hit_latency=2 fe_wait_icache_rsp_miss_wait=1 fe_rsp_blocked_by_fq_full=1 fe_wait_ibuffer_consume=4 fe_redirect_recovery=0 fe_rsp_capture_bubble=2 fe_has_data_decode_gap=0 fe_other=1",
                         "IPC=0.500000 CPI=2.000000 cycles=100 commits=50",
                     ]
                 ),
@@ -613,7 +613,8 @@ class ParseProfileTest(unittest.TestCase):
         self.assertEqual(result["stall_frontend_empty_total"], 13)
         detail = result["stall_frontend_empty_detail"]
         self.assertEqual(detail["fe_no_req"], 2)
-        self.assertEqual(detail["fe_wait_icache_rsp"], 3)
+        self.assertEqual(detail["fe_wait_icache_rsp_hit_latency"], 2)
+        self.assertEqual(detail["fe_wait_icache_rsp_miss_wait"], 1)
         self.assertEqual(detail["fe_rsp_blocked_by_fq_full"], 1)
         self.assertEqual(detail["fe_wait_ibuffer_consume"], 4)
         self.assertEqual(detail["fe_redirect_recovery"], 0)
@@ -674,7 +675,8 @@ class ParseProfileTest(unittest.TestCase):
                     "stall_frontend_empty_total": 13,
                     "stall_frontend_empty_detail": {
                         "fe_no_req": 2,
-                        "fe_wait_icache_rsp": 3,
+                        "fe_wait_icache_rsp_hit_latency": 2,
+                        "fe_wait_icache_rsp_miss_wait": 1,
                         "fe_rsp_blocked_by_fq_full": 1,
                         "fe_wait_ibuffer_consume": 4,
                         "fe_redirect_recovery": 0,
@@ -712,7 +714,8 @@ class ParseProfileTest(unittest.TestCase):
 
         self.assertIn("Frontend Empty Breakdown:", report)
         self.assertIn("fe_wait_ibuffer_consume", report)
-        self.assertIn("fe_wait_icache_rsp", report)
+        self.assertIn("fe_wait_icache_rsp_hit_latency", report)
+        self.assertIn("fe_wait_icache_rsp_miss_wait", report)
         self.assertIn("fe_rsp_capture_bubble", report)
 
     def test_report_includes_predict_tournament_breakdown(self):

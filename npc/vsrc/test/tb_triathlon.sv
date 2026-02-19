@@ -76,6 +76,7 @@ module tb_triathlon #(
     output logic                               dbg_ifu_req_inflight_o,
     output logic                               dbg_ifu_rsp_valid_o,
     output logic                               dbg_ifu_rsp_capture_o,
+    output logic [2:0]                         dbg_icache_state_o,
     output logic [3:0]                         dbg_ifu_fq_count_o,
     output logic                               dbg_ifu_fq_full_o,
     output logic                               dbg_ifu_fq_empty_o,
@@ -279,6 +280,7 @@ module tb_triathlon #(
   assign dbg_ifu_req_inflight_o = dut.u_frontend.i_ifu.req_inflight_q;
   assign dbg_ifu_rsp_valid_o = dut.u_frontend.icache2ifu_rsp_handshake.valid;
   assign dbg_ifu_rsp_capture_o = dut.u_frontend.i_ifu.rsp_capture_w;
+  assign dbg_icache_state_o = dut.u_frontend.i_icache.state_q;
   assign dbg_ifu_fq_count_o = dut.u_frontend.i_ifu.fq_count_q;
   assign dbg_ifu_fq_full_o = dut.u_frontend.i_ifu.fq_full_w;
   assign dbg_ifu_fq_empty_o = dut.u_frontend.i_ifu.fq_empty_w;

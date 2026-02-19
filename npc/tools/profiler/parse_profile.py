@@ -38,7 +38,8 @@ STALL_CATEGORY_KEYS = (
 )
 STALL_FRONTEND_EMPTY_DETAIL_KEYS = (
     "fe_no_req",
-    "fe_wait_icache_rsp",
+    "fe_wait_icache_rsp_hit_latency",
+    "fe_wait_icache_rsp_miss_wait",
     "fe_rsp_blocked_by_fq_full",
     "fe_wait_ibuffer_consume",
     "fe_redirect_recovery",
@@ -750,6 +751,15 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
             for key in STALL_FRONTEND_EMPTY_DETAIL_KEYS:
                 if key in kv:
                     stall_frontend_empty_detail_summary[key] = _parse_int(kv.get(key), 0)
+            # Backward compatibility: old logs may only provide unsplit key.
+            if (
+                "fe_wait_icache_rsp" in kv
+                and "fe_wait_icache_rsp_hit_latency" not in kv
+                and "fe_wait_icache_rsp_miss_wait" not in kv
+            ):
+                stall_frontend_empty_detail_summary["fe_wait_icache_rsp_miss_wait"] = _parse_int(
+                    kv.get("fe_wait_icache_rsp"), 0
+                )
             if stall_frontend_empty_total == 0:
                 stall_frontend_empty_total = sum(stall_frontend_empty_detail_summary.values())
             continue
