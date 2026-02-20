@@ -148,6 +148,44 @@ int main(int argc, char **argv) {
   for (int i = 0; i < 5; i++) tick(top, mem);
   top->rst_ni = 1;
 
+  // Phase--1: outstanding observability sanity check.
+  // Current baseline is single-outstanding IFU, so we only require seeing
+  // at least one outstanding request before first response.
+  int req_fire_before_first_rsp = 0;
+  int max_outstanding_before_first_rsp = 0;
+  bool first_rsp_seen = false;
+  top->ibuffer_ready_i = 0;
+  for (int i = 0; i < 80; ++i) {
+    tick(top, mem);
+    if (top->dbg_ifu_rsp_capture_o) {
+      first_rsp_seen = true;
+      break;
+    }
+    if (int(top->dbg_ifu_outstanding_o) > max_outstanding_before_first_rsp) {
+      max_outstanding_before_first_rsp = int(top->dbg_ifu_outstanding_o);
+    }
+    if (top->dbg_ifu_req_fire_o) {
+      req_fire_before_first_rsp++;
+    }
+  }
+  std::cout << "[info] req_fire_before_first_rsp=" << req_fire_before_first_rsp
+            << " max_outstanding_before_first_rsp="
+            << max_outstanding_before_first_rsp
+            << std::endl;
+  if (!first_rsp_seen) {
+    std::cerr << "[fail] timeout waiting first icache response in phase--1"
+              << std::endl;
+    delete top;
+    return 1;
+  }
+  if (max_outstanding_before_first_rsp < 1) {
+    std::cerr << "[fail] IFU outstanding debug signal did not observe "
+                 "inflight request before first response"
+              << std::endl;
+    delete top;
+    return 1;
+  }
+
   // Phase-0: no bubble check when ibuffer can consume immediately.
   // If IFU is truly decoupled, an ICache response should be visible to
   // ibuffer in the same cycle (bypass), instead of adding a 1-cycle bubble.

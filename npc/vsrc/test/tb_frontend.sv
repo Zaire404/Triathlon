@@ -53,7 +53,9 @@ module tb_frontend (
     output logic [                  Cfg.PLEN-1:0] dbg_ifu_req_addr_o,
     output logic                                  dbg_ifu_rsp_valid_o,
     output logic                                  dbg_ifu_rsp_capture_o,
-    output logic                                  dbg_ifu_ibuf_valid_o
+    output logic                                  dbg_ifu_ibuf_valid_o,
+    output logic [                           3:0] dbg_ifu_outstanding_o,
+    output logic                                  dbg_ifu_drop_stale_rsp_o
 );
 
   // 内部信号转换：将展平的 ibuffer_data_o 转回 frontend 需要的 packed 格式 (如果需要的话，或者直接连接)
@@ -107,5 +109,7 @@ module tb_frontend (
   assign dbg_ifu_rsp_valid_o = DUT.icache2ifu_rsp_handshake.valid;
   assign dbg_ifu_rsp_capture_o = DUT.i_ifu.rsp_capture_w;
   assign dbg_ifu_ibuf_valid_o = DUT.ibuffer_valid_o;
+  assign dbg_ifu_outstanding_o = {3'b0, DUT.i_ifu.req_inflight_q};
+  assign dbg_ifu_drop_stale_rsp_o = 1'b0;
 
 endmodule
