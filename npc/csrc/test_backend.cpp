@@ -874,6 +874,49 @@ static void test_pending_replay_buffer_can_absorb_multiple_single_slot_groups(Vt
          "Replay depth: pending buffer absorbs >=4 single-slot groups while replay active");
 }
 
+static void test_pending_replay_buffer_depth_scales_for_single_slot_groups(Vtb_backend *top, MemModel &mem) {
+  std::array<uint32_t, 32> rf{};
+  std::vector<uint32_t> commits;
+
+  reset(top, mem);
+
+  const std::array<uint32_t, 4> replay_seed = {
+      insn_addi(10, 0, 1),
+      insn_nop(),
+      insn_mul(11, 0, 0),
+      insn_mul(12, 0, 0)};
+  send_group_masked(top, mem, rf, commits, 0x13000, replay_seed, 0xDu);
+
+  bool replay_seen = run_until(top, mem, rf, commits, [&]() {
+    return top->dbg_ren_src_from_pending_o != 0;
+  }, 200);
+  expect(replay_seen, "Replay depth scale: pending-replay becomes active");
+
+  const std::array<uint32_t, 4> one_slot_group = {
+      insn_addi(20, 0, 20),
+      insn_nop(),
+      insn_nop(),
+      insn_nop()};
+
+  int accepted_single_slot_groups = 0;
+  for (int g = 0; g < 12; g++) {
+    uint32_t pc = 0x13010 + static_cast<uint32_t>(g * 16);
+    bool accepted = try_send_group_masked_limited(
+        top, mem, rf, commits, pc, one_slot_group, 0x1u, 40);
+    if (!accepted) break;
+    accepted_single_slot_groups++;
+  }
+
+  if (accepted_single_slot_groups < 10) {
+    std::cout << "    [DEBUG] accepted_single_slot_groups=" << accepted_single_slot_groups
+              << " pending=" << static_cast<int>(top->dbg_ren_src_from_pending_o)
+              << " src_count=" << static_cast<uint32_t>(top->dbg_ren_src_count_o)
+              << std::endl;
+  }
+  expect(accepted_single_slot_groups >= 10,
+         "Replay depth scale: pending buffer absorbs >=10 single-slot groups while replay active");
+}
+
 int main(int argc, char **argv) {
   Verilated::commandArgs(argc, argv);
   Vtb_backend *top = new Vtb_backend;
@@ -891,6 +934,7 @@ int main(int argc, char **argv) {
   test_dual_lane_can_hold_two_blocked_loads(top, mem);
   test_pending_replay_allows_decoder_progress(top, mem);
   test_pending_replay_buffer_can_absorb_multiple_single_slot_groups(top, mem);
+  test_pending_replay_buffer_depth_scales_for_single_slot_groups(top, mem);
 
   std::cout << ANSI_RES_GRN << "--- [ALL BACKEND TESTS PASSED] ---" << ANSI_RES_RST << std::endl;
   delete top;

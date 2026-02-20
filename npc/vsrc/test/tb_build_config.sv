@@ -21,6 +21,7 @@ module tb_build_config (
     input int unsigned i_IFU_FQ_DEPTH,
     input int unsigned i_ENABLE_COMMIT_RAS_UPDATE,
     input int unsigned i_DCACHE_MSHR_SIZE,
+    input int unsigned i_RENAME_PENDING_DEPTH,
     input int unsigned i_ICACHE_BYTE_SIZE,
     input int unsigned i_ICACHE_SET_ASSOC,
     input int unsigned i_ICACHE_LINE_WIDTH,
@@ -43,6 +44,7 @@ module tb_build_config (
     output int unsigned o_IFU_FQ_DEPTH,
     output int unsigned o_ENABLE_COMMIT_RAS_UPDATE,
     output int unsigned o_DCACHE_MSHR_SIZE,
+    output int unsigned o_RENAME_PENDING_DEPTH,
     output int unsigned o_ICACHE_BYTE_SIZE,
     output int unsigned o_ICACHE_SET_ASSOC,
     output int unsigned o_ICACHE_SET_ASSOC_WIDTH,
@@ -73,6 +75,7 @@ module tb_build_config (
   assign user_cfg_in.IFU_FQ_DEPTH = i_IFU_FQ_DEPTH;
   assign user_cfg_in.ENABLE_COMMIT_RAS_UPDATE = i_ENABLE_COMMIT_RAS_UPDATE;
   assign user_cfg_in.DCACHE_MSHR_SIZE = i_DCACHE_MSHR_SIZE;
+  assign user_cfg_in.RENAME_PENDING_DEPTH = i_RENAME_PENDING_DEPTH;
   assign user_cfg_in.INSTR_PER_FETCH   = i_INSTR_PER_FETCH;
   assign user_cfg_in.ICACHE_BYTE_SIZE  = i_ICACHE_BYTE_SIZE;
   assign user_cfg_in.ICACHE_SET_ASSOC  = i_ICACHE_SET_ASSOC;
@@ -104,6 +107,7 @@ module tb_build_config (
   assign o_IFU_FQ_DEPTH           = cfg_out.IFU_FQ_DEPTH;
   assign o_ENABLE_COMMIT_RAS_UPDATE = cfg_out.ENABLE_COMMIT_RAS_UPDATE;
   assign o_DCACHE_MSHR_SIZE         = cfg_out.DCACHE_MSHR_SIZE;
+  assign o_RENAME_PENDING_DEPTH     = cfg_out.RENAME_PENDING_DEPTH;
   assign o_ICACHE_BYTE_SIZE       = cfg_out.ICACHE_BYTE_SIZE;
   assign o_ICACHE_SET_ASSOC       = cfg_out.ICACHE_SET_ASSOC;
   assign o_ICACHE_SET_ASSOC_WIDTH = cfg_out.ICACHE_SET_ASSOC_WIDTH;

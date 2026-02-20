@@ -39,6 +39,7 @@ package config_pkg;
     // Backend micro-architecture toggles
     int unsigned ENABLE_COMMIT_RAS_UPDATE;
     int unsigned DCACHE_MSHR_SIZE;
+    int unsigned RENAME_PENDING_DEPTH;
 
     // ICache configuration
     // Instruction cache size (in bytes)
@@ -97,6 +98,7 @@ package config_pkg;
     // Backend micro-architecture toggles
     int unsigned ENABLE_COMMIT_RAS_UPDATE;
     int unsigned DCACHE_MSHR_SIZE;
+    int unsigned RENAME_PENDING_DEPTH;
 
     // ICache configuration
     int unsigned ICACHE_BYTE_SIZE;

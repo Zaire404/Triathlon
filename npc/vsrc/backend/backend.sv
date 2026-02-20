@@ -59,7 +59,10 @@ module backend #(
   localparam int unsigned LSU_GROUP_SIZE = 2;
   localparam int unsigned LSU_LD_ID_WIDTH = (LSU_GROUP_SIZE <= 1) ? 1 : $clog2(LSU_GROUP_SIZE);
   localparam int unsigned DCACHE_MSHR_SIZE = (Cfg.DCACHE_MSHR_SIZE >= 1) ? Cfg.DCACHE_MSHR_SIZE : 1;
-  localparam int unsigned RENAME_PENDING_DEPTH = DISPATCH_WIDTH * 2;
+  localparam int unsigned RENAME_PENDING_DEPTH_CFG = (Cfg.RENAME_PENDING_DEPTH > 0) ? Cfg.RENAME_PENDING_DEPTH :
+      (DISPATCH_WIDTH * 2);
+  localparam int unsigned RENAME_PENDING_DEPTH = (RENAME_PENDING_DEPTH_CFG >= DISPATCH_WIDTH) ?
+      RENAME_PENDING_DEPTH_CFG : DISPATCH_WIDTH;
   localparam int unsigned RENAME_PENDING_CNT_W = $clog2(RENAME_PENDING_DEPTH + 1);
   // A2.2: 开启 commit-time call/ret 更新，配合 BPU speculative RAS 降低 return miss。
   localparam bit ENABLE_COMMIT_RAS_UPDATE = (Cfg.ENABLE_COMMIT_RAS_UPDATE != 0);

@@ -76,6 +76,7 @@ module tb_triathlon #(
     output logic                               dbg_ifu_req_inflight_o,
     output logic                               dbg_ifu_rsp_valid_o,
     output logic                               dbg_ifu_rsp_capture_o,
+    output logic                               dbg_ifu_drop_stale_rsp_o,
     output logic [2:0]                         dbg_icache_state_o,
     output logic [3:0]                         dbg_ifu_fq_count_o,
     output logic                               dbg_ifu_fq_full_o,
@@ -85,6 +86,12 @@ module tb_triathlon #(
     output logic                               dbg_ifu_fq_bypass_fire_o,
     output logic                               dbg_ifu_fq_enq_blocked_o,
     output logic                               dbg_ifu_ibuf_pop_o,
+    output logic                               dbg_ifu_reqq_empty_o,
+    output logic                               dbg_ifu_inf_full_o,
+    output logic                               dbg_ifu_block_flush_o,
+    output logic                               dbg_ifu_block_reqq_empty_o,
+    output logic                               dbg_ifu_block_inf_full_o,
+    output logic                               dbg_ifu_block_storage_budget_o,
     output logic                               dbg_dec_valid_o,
     output logic                               dbg_dec_ready_o,
     output logic                               dbg_rob_ready_o,
@@ -284,6 +291,7 @@ module tb_triathlon #(
   assign dbg_ifu_req_inflight_o = (dut.u_frontend.i_ifu.inf_count_q != '0);
   assign dbg_ifu_rsp_valid_o = dut.u_frontend.icache2ifu_rsp_handshake.valid;
   assign dbg_ifu_rsp_capture_o = dut.u_frontend.i_ifu.rsp_capture_w;
+  assign dbg_ifu_drop_stale_rsp_o = dut.u_frontend.i_ifu.drop_stale_rsp_w;
   assign dbg_icache_state_o = dut.u_frontend.i_icache.state_q;
   assign dbg_ifu_fq_count_o = dut.u_frontend.i_ifu.fq_count_q;
   assign dbg_ifu_fq_full_o = dut.u_frontend.i_ifu.fq_full_w;
@@ -295,6 +303,12 @@ module tb_triathlon #(
                                      dut.u_frontend.i_ifu.fq_deq_ready_w;
   assign dbg_ifu_fq_enq_blocked_o = dut.u_frontend.i_ifu.fq_enq_valid_w & ~dut.u_frontend.i_ifu.fq_enq_ready_w;
   assign dbg_ifu_ibuf_pop_o = dut.u_frontend.i_ifu.ibuf_pop_w;
+  assign dbg_ifu_reqq_empty_o = dut.u_frontend.i_ifu.req_fifo_empty_w;
+  assign dbg_ifu_inf_full_o = dut.u_frontend.i_ifu.inf_fifo_full_w;
+  assign dbg_ifu_block_flush_o = dut.u_frontend.i_ifu.req_block_flush_w;
+  assign dbg_ifu_block_reqq_empty_o = dut.u_frontend.i_ifu.req_block_reqq_empty_w;
+  assign dbg_ifu_block_inf_full_o = dut.u_frontend.i_ifu.req_block_inf_full_w;
+  assign dbg_ifu_block_storage_budget_o = dut.u_frontend.i_ifu.req_block_storage_budget_w;
   assign dbg_dec_valid_o = dut.u_backend.decode_ibuf_valid;
   assign dbg_dec_ready_o = dut.u_backend.decode_ibuf_ready;
   assign dbg_rob_ready_o = dut.u_backend.rob_ready;

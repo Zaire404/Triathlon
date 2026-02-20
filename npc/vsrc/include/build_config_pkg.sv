@@ -25,6 +25,8 @@ package build_config_pkg;
     cfg.IFU_FQ_DEPTH = user_cfg.IFU_FQ_DEPTH;
     cfg.ENABLE_COMMIT_RAS_UPDATE = user_cfg.ENABLE_COMMIT_RAS_UPDATE;
     cfg.DCACHE_MSHR_SIZE = user_cfg.DCACHE_MSHR_SIZE;
+    cfg.RENAME_PENDING_DEPTH = (user_cfg.RENAME_PENDING_DEPTH > 0) ? user_cfg.RENAME_PENDING_DEPTH :
+        (user_cfg.INSTR_PER_FETCH * 4);
 
     // ICache 配置
     cfg.ICACHE_BYTE_SIZE = user_cfg.ICACHE_BYTE_SIZE;

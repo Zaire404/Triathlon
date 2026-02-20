@@ -20,6 +20,7 @@ package test_config_pkg;
       IFU_FQ_DEPTH : unsigned'(8),
       ENABLE_COMMIT_RAS_UPDATE : unsigned'(1),
       DCACHE_MSHR_SIZE : unsigned'(4),
+      RENAME_PENDING_DEPTH : unsigned'(16),
       RS_DEPTH     : unsigned'(16),
       ALU_COUNT    : unsigned'(2),
       ICACHE_BYTE_SIZE : unsigned'(4096),

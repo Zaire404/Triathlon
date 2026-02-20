@@ -66,7 +66,9 @@ module ifu #(
                                       Cfg.INSTR_PER_FETCH + (Cfg.INSTR_PER_FETCH * Cfg.PLEN);
 
   logic [Cfg.PLEN-1:0] pc_reg;
+  logic [Cfg.PLEN-1:0] bpu_query_pc_w;
   logic [EPOCH_W-1:0] fetch_epoch_q;
+  logic [EPOCH_W-1:0] flush_next_epoch_w;
 
   // Pending FIFO metadata
   logic [REQ_DEPTH-1:0][Cfg.PLEN-1:0] req_pc_fifo_q;
@@ -115,6 +117,10 @@ module ifu #(
 
   logic can_accept_bpu_w;
   logic req_enq_fire_w;
+  logic req_block_flush_w;
+  logic req_block_reqq_empty_w;
+  logic req_block_inf_full_w;
+  logic req_block_storage_budget_w;
 
   logic can_issue_req_w;
   logic req_issue_valid_w;
@@ -160,10 +166,12 @@ module ifu #(
     req_outstanding_w = {1'b0, req_count_q} + {{(REQ_CNT_W + 1 - (INF_CNT_W)){1'b0}}, inf_count_q};
     storage_budget_w = {1'b0, fq_count_q} + {{(FQ_CNT_W + 1 - (INF_CNT_W)){1'b0}}, inf_count_q};
   end
+  assign flush_next_epoch_w = fetch_epoch_q + EPOCH_W'(1);
 
   // BPU side: enqueue requests into pending FIFO when space is available.
-  assign can_accept_bpu_w = !flush_i && (!req_fifo_full_w || req_issue_fire_w);
-  assign ifu2bpu_pc_o = pc_reg;
+  assign bpu_query_pc_w = flush_i ? redirect_pc_i : pc_reg;
+  assign can_accept_bpu_w = flush_i ? 1'b1 : (!req_fifo_full_w || req_issue_fire_w);
+  assign ifu2bpu_pc_o = bpu_query_pc_w;
   assign ifu2bpu_handshake_o.valid = can_accept_bpu_w;
   assign ifu2bpu_handshake_o.ready = can_accept_bpu_w && bpu2ifu_handshake_i.valid;
   assign req_enq_fire_w = ifu2bpu_handshake_o.valid && ifu2bpu_handshake_o.ready;
@@ -181,6 +189,11 @@ module ifu #(
   // fq_count + inflight_count tracks worst-case buffered responses pressure.
   assign can_issue_req_w = !flush_i && !req_fifo_empty_w && !inf_fifo_full_w &&
                            (storage_budget_w < (FQ_CNT_W + 1)'(FQ_DEPTH));
+  assign req_block_flush_w = flush_i;
+  assign req_block_reqq_empty_w = !flush_i && req_fifo_empty_w;
+  assign req_block_inf_full_w = !flush_i && !req_fifo_empty_w && inf_fifo_full_w;
+  assign req_block_storage_budget_w = !flush_i && !req_fifo_empty_w && !inf_fifo_full_w &&
+                                      (storage_budget_w >= (FQ_CNT_W + 1)'(FQ_DEPTH));
   assign req_issue_valid_w = can_issue_req_w;
   assign req_issue_fire_w = req_issue_valid_w && icache2ifu_rsp_handshake_i.ready;
 
@@ -262,12 +275,23 @@ module ifu #(
         $fatal(1, "[ifu] rsp captured while fetch queue not ready (response drop hazard)");
       end
       if (flush_i) begin
-        pc_reg <= redirect_pc_i;
-        fetch_epoch_q <= fetch_epoch_q + EPOCH_W'(1);
+        fetch_epoch_q <= flush_next_epoch_w;
 
         req_head_q <= '0;
-        req_tail_q <= '0;
-        req_count_q <= '0;
+        if (req_enq_fire_w) begin
+          req_pc_fifo_q['0] <= bpu_query_pc_w;
+          req_pred_slot_valid_fifo_q['0] <= bpu2ifu_pred_slot_valid_i;
+          req_pred_slot_idx_fifo_q['0] <= bpu2ifu_pred_slot_idx_i;
+          req_pred_target_fifo_q['0] <= bpu2ifu_pred_target_i;
+          req_epoch_fifo_q['0] <= flush_next_epoch_w;
+          req_tail_q <= REQ_PTR_W'(1);
+          req_count_q <= REQ_CNT_W'(1);
+          pc_reg <= bpu2ifu_predicted_pc_i;
+        end else begin
+          req_tail_q <= '0;
+          req_count_q <= '0;
+          pc_reg <= redirect_pc_i;
+        end
 
         inf_head_q <= '0;
         inf_tail_q <= '0;

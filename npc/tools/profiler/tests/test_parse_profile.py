@@ -622,6 +622,35 @@ class ParseProfileTest(unittest.TestCase):
         self.assertEqual(detail["fe_has_data_decode_gap"], 0)
         self.assertEqual(detail["fe_other"], 1)
 
+    def test_cycle_stallm2_frontend_empty_secondary_breakdown(self):
+        mod = load_parser_module()
+        with tempfile.TemporaryDirectory() as td:
+            log = Path(td) / "coremark.log"
+            log.write_text(
+                "\n".join(
+                    [
+                        "[stallm] mode=cycle stall_total_cycles=100 flush_recovery=0 icache_miss_wait=0 dcache_miss_wait=0 rob_backpressure=20 frontend_empty=60 decode_blocked=20 lsu_req_blocked=0 other=0",
+                        "[stallm2] mode=cycle frontend_empty_total=60 fe_no_req=30 fe_wait_icache_rsp_hit_latency=10 fe_wait_icache_rsp_miss_wait=2 fe_rsp_blocked_by_fq_full=0 fe_wait_ibuffer_consume=0 fe_redirect_recovery=1 fe_rsp_capture_bubble=0 fe_has_data_decode_gap=0 fe_drop_stale_rsp=8 fe_no_req_reqq_empty=12 fe_no_req_inf_full=3 fe_no_req_storage_budget=4 fe_no_req_flush_block=9 fe_no_req_other=2 fe_req_fire_no_inflight=5 fe_rsp_no_inflight=2 fe_fq_nonempty_no_fevalid=1 fe_req_ready_nofire=1 fe_other=0",
+                        "IPC=0.500000 CPI=2.000000 cycles=100 commits=50",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            result = mod.parse_single_log(log)
+
+        detail = result["stall_frontend_empty_detail"]
+        self.assertEqual(detail["fe_drop_stale_rsp"], 8)
+        self.assertEqual(detail["fe_no_req_reqq_empty"], 12)
+        self.assertEqual(detail["fe_no_req_inf_full"], 3)
+        self.assertEqual(detail["fe_no_req_storage_budget"], 4)
+        self.assertEqual(detail["fe_no_req_flush_block"], 9)
+        self.assertEqual(detail["fe_no_req_other"], 2)
+        self.assertEqual(detail["fe_req_fire_no_inflight"], 5)
+        self.assertEqual(detail["fe_rsp_no_inflight"], 2)
+        self.assertEqual(detail["fe_fq_nonempty_no_fevalid"], 1)
+        self.assertEqual(detail["fe_req_ready_nofire"], 1)
+
     def test_cycle_stallm34_secondary_breakdown_takes_priority(self):
         mod = load_parser_module()
         with tempfile.TemporaryDirectory() as td:

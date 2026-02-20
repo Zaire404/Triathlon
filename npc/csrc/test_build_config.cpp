@@ -26,6 +26,7 @@ int main(int argc, char **argv) {
   top->i_IFU_FQ_DEPTH = 8;
   top->i_ENABLE_COMMIT_RAS_UPDATE = 1;
   top->i_DCACHE_MSHR_SIZE = 4;
+  top->i_RENAME_PENDING_DEPTH = 16;
   top->i_INSTR_PER_FETCH = 4;
   top->i_ICACHE_BYTE_SIZE = 8192;
   top->i_ICACHE_SET_ASSOC = 8;
@@ -59,6 +60,7 @@ int main(int argc, char **argv) {
   assert(top->o_IFU_FQ_DEPTH == 8);
   assert(top->o_ENABLE_COMMIT_RAS_UPDATE == 1);
   assert(top->o_DCACHE_MSHR_SIZE == 4);
+  assert(top->o_RENAME_PENDING_DEPTH == 16);
 
   std::cout << "Checking ICACHE_INDEX_WIDTH..." << std::endl;
   assert(top->o_ICACHE_INDEX_WIDTH == expected_index_width);

@@ -45,6 +45,16 @@ STALL_FRONTEND_EMPTY_DETAIL_KEYS = (
     "fe_redirect_recovery",
     "fe_rsp_capture_bubble",
     "fe_has_data_decode_gap",
+    "fe_drop_stale_rsp",
+    "fe_no_req_reqq_empty",
+    "fe_no_req_inf_full",
+    "fe_no_req_storage_budget",
+    "fe_no_req_flush_block",
+    "fe_no_req_other",
+    "fe_req_fire_no_inflight",
+    "fe_rsp_no_inflight",
+    "fe_fq_nonempty_no_fevalid",
+    "fe_req_ready_nofire",
     "fe_other",
 )
 

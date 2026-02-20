@@ -721,7 +721,7 @@ int main(int argc, char **argv) {
   std::unordered_map<uint32_t, uint64_t> commit_inst_hist;
   std::array<uint64_t, 5> commit_width_hist = {};
   std::array<uint64_t, 8> stall_cycle_hist = {};
-  std::array<uint64_t, 9> stall_frontend_empty_hist = {};
+  std::array<uint64_t, 19> stall_frontend_empty_hist = {};
   std::unordered_map<std::string, uint64_t> stall_decode_blocked_detail_hist;
   std::unordered_map<std::string, uint64_t> stall_rob_backpressure_detail_hist;
   uint64_t ifu_fq_enq = 0;
@@ -816,6 +816,16 @@ int main(int argc, char **argv) {
     kFeRspCaptureBubble = 6,
     kFeHasDataDecodeGap = 7,
     kFeOther = 8,
+    kFeDropStaleRsp = 9,
+    kFeNoReqReqQEmpty = 10,
+    kFeNoReqInfFull = 11,
+    kFeNoReqStorageBudget = 12,
+    kFeNoReqFlushBlock = 13,
+    kFeNoReqOther = 14,
+    kFeReqFireNoInflight = 15,
+    kFeRspNoInflight = 16,
+    kFeFQNonemptyNoFeValid = 17,
+    kFeReqReadyNoFire = 18,
   };
 
   auto classify_stall_cycle = [&]() -> int {
@@ -838,12 +848,18 @@ int main(int argc, char **argv) {
     bool ifu_req_inflight = top->dbg_ifu_req_inflight_o;
     bool ifu_rsp_valid = top->dbg_ifu_rsp_valid_o;
     bool ifu_rsp_capture = top->dbg_ifu_rsp_capture_o;
+    bool ifu_drop_stale_rsp = top->dbg_ifu_drop_stale_rsp_o;
     bool ifu_fq_full = top->dbg_ifu_fq_full_o;
     bool ifu_fq_empty = top->dbg_ifu_fq_empty_o;
+    bool ifu_block_flush = top->dbg_ifu_block_flush_o;
+    bool ifu_block_reqq_empty = top->dbg_ifu_block_reqq_empty_o;
+    bool ifu_block_inf_full = top->dbg_ifu_block_inf_full_o;
+    bool ifu_block_storage_budget = top->dbg_ifu_block_storage_budget_o;
 
     if (fe_valid && !fe_ready) return kFeWaitIbufferConsume;
     if (fe_valid && fe_ready) return kFeHasDataDecodeGap;
     if (ifu_req_inflight && ifu_rsp_valid && ifu_rsp_capture) return kFeRspCaptureBubble;
+    if (ifu_drop_stale_rsp) return kFeDropStaleRsp;
     if (ifu_rsp_valid && !ifu_rsp_capture && ifu_fq_full) return kFeRspBlockedByFQFull;
     if (ifu_req_inflight && !ifu_rsp_valid) {
       uint32_t icache_state = static_cast<uint32_t>(top->dbg_icache_state_o);
@@ -851,10 +867,18 @@ int main(int argc, char **argv) {
       return kFeWaitICacheRspHitLatency;
     }
     if (!ifu_req_inflight && ifu_fq_empty && !ifu_req_valid) {
+      if (ifu_block_flush) return kFeNoReqFlushBlock;
+      if (ifu_block_reqq_empty) return kFeNoReqReqQEmpty;
+      if (ifu_block_inf_full) return kFeNoReqInfFull;
+      if (ifu_block_storage_budget) return kFeNoReqStorageBudget;
       if (!ifu_req_ready) return kFeRedirectRecovery;
-      return kFeNoReq;
+      return kFeNoReqOther;
     }
     if (!ifu_req_fire && ifu_req_valid && !ifu_req_ready) return kFeRedirectRecovery;
+    if (ifu_req_fire && !ifu_req_inflight && !ifu_rsp_valid) return kFeReqFireNoInflight;
+    if (ifu_rsp_valid && !ifu_rsp_capture && !ifu_req_inflight) return kFeRspNoInflight;
+    if (!ifu_fq_empty && !fe_valid) return kFeFQNonemptyNoFeValid;
+    if (ifu_req_valid && ifu_req_ready && !ifu_req_fire) return kFeReqReadyNoFire;
     return kFeOther;
   };
 
@@ -1075,9 +1099,15 @@ int main(int argc, char **argv) {
               << " lsu_req_blocked=" << stall_cycle_hist[kStallLSUReqBlocked]
               << " other=" << stall_cycle_hist[kStallOther]
               << "\n";
+    uint64_t fe_no_req_total = stall_frontend_empty_hist[kFeNoReq] +
+                               stall_frontend_empty_hist[kFeNoReqReqQEmpty] +
+                               stall_frontend_empty_hist[kFeNoReqInfFull] +
+                               stall_frontend_empty_hist[kFeNoReqStorageBudget] +
+                               stall_frontend_empty_hist[kFeNoReqFlushBlock] +
+                               stall_frontend_empty_hist[kFeNoReqOther];
     std::cout << "[stallm2] mode=cycle"
               << " frontend_empty_total=" << stall_cycle_hist[kStallFrontendEmpty]
-              << " fe_no_req=" << stall_frontend_empty_hist[kFeNoReq]
+              << " fe_no_req=" << fe_no_req_total
               << " fe_wait_icache_rsp_hit_latency=" << stall_frontend_empty_hist[kFeWaitICacheRspHitLatency]
               << " fe_wait_icache_rsp_miss_wait=" << stall_frontend_empty_hist[kFeWaitICacheRspMissWait]
               << " fe_rsp_blocked_by_fq_full=" << stall_frontend_empty_hist[kFeRspBlockedByFQFull]
@@ -1085,6 +1115,16 @@ int main(int argc, char **argv) {
               << " fe_redirect_recovery=" << stall_frontend_empty_hist[kFeRedirectRecovery]
               << " fe_rsp_capture_bubble=" << stall_frontend_empty_hist[kFeRspCaptureBubble]
               << " fe_has_data_decode_gap=" << stall_frontend_empty_hist[kFeHasDataDecodeGap]
+              << " fe_drop_stale_rsp=" << stall_frontend_empty_hist[kFeDropStaleRsp]
+              << " fe_no_req_reqq_empty=" << stall_frontend_empty_hist[kFeNoReqReqQEmpty]
+              << " fe_no_req_inf_full=" << stall_frontend_empty_hist[kFeNoReqInfFull]
+              << " fe_no_req_storage_budget=" << stall_frontend_empty_hist[kFeNoReqStorageBudget]
+              << " fe_no_req_flush_block=" << stall_frontend_empty_hist[kFeNoReqFlushBlock]
+              << " fe_no_req_other=" << stall_frontend_empty_hist[kFeNoReqOther]
+              << " fe_req_fire_no_inflight=" << stall_frontend_empty_hist[kFeReqFireNoInflight]
+              << " fe_rsp_no_inflight=" << stall_frontend_empty_hist[kFeRspNoInflight]
+              << " fe_fq_nonempty_no_fevalid=" << stall_frontend_empty_hist[kFeFQNonemptyNoFeValid]
+              << " fe_req_ready_nofire=" << stall_frontend_empty_hist[kFeReqReadyNoFire]
               << " fe_other=" << stall_frontend_empty_hist[kFeOther]
               << "\n";
     uint64_t fq_samples = final_cycles;
