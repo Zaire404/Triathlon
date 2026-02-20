@@ -12,13 +12,15 @@ module tag_array #(
 
     // --- 读端口 A (用于 Line 1) ---
     input logic [SETS_PER_BANK_WIDTH-1:0] bank_addr_ra_i,  // Bank内读地址 A (Index)
-    input logic [$clog2(NUM_BANKS)-1:0] bank_sel_ra_i,  // Bank选择 A
+    input logic [$clog2(NUM_BANKS)-1:0] bank_sel_ra_i,    // Bank选择 A (用于寻址)
+    input logic [$clog2(NUM_BANKS)-1:0] bank_sel_ra_o_i,  // Bank选择 A (用于读数输出mux)
     output logic [NUM_WAYS-1:0][TAG_WIDTH-1:0] rdata_tag_a_o,  // 读出的Tag A
     output logic [NUM_WAYS-1:0][VALID_WIDTH-1:0] rdata_valid_a_o,  // 读出的Valid A
 
     // --- 读端口 B (用于 Line 2) ---
     input logic [SETS_PER_BANK_WIDTH-1:0] bank_addr_rb_i,  // Bank内读地址 B (Index)
-    input logic [$clog2(NUM_BANKS)-1:0] bank_sel_rb_i,  // Bank选择 B
+    input logic [$clog2(NUM_BANKS)-1:0] bank_sel_rb_i,    // Bank选择 B (用于寻址)
+    input logic [$clog2(NUM_BANKS)-1:0] bank_sel_rb_o_i,  // Bank选择 B (用于读数输出mux)
     output logic [NUM_WAYS-1:0][TAG_WIDTH-1:0] rdata_tag_b_o,  // 读出的Tag B
     output logic [NUM_WAYS-1:0][VALID_WIDTH-1:0] rdata_valid_b_o,  // 读出的Valid B
 
@@ -116,14 +118,13 @@ module tag_array #(
   // --- 读数据选择 (Mux) ---
   always_comb begin
     for (int i = 0; i < NUM_WAYS; i++) begin
-      // A 端口：从 bank_sel_ra_i 对应的Bank选择数据
-      {rdata_tag_a_o[i], rdata_valid_a_o[i]} = sram_rdata[i][bank_sel_ra_i];
+      // A 端口：从 bank_sel_ra_o_i 对应的Bank选择数据
+      {rdata_tag_a_o[i], rdata_valid_a_o[i]} = sram_rdata[i][bank_sel_ra_o_i];
 
-      // B 端口：从 bank_sel_rb_i 对应的Bank选择数据
-      {rdata_tag_b_o[i], rdata_valid_b_o[i]} = sram_rdata[i][bank_sel_rb_i];
+      // B 端口：从 bank_sel_rb_o_i 对应的Bank选择数据
+      {rdata_tag_b_o[i], rdata_valid_b_o[i]} = sram_rdata[i][bank_sel_rb_o_i];
     end
   end
 
 endmodule : tag_array
-
 
