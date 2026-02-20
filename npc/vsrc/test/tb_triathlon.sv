@@ -277,7 +277,7 @@ module tb_triathlon #(
   assign dbg_ifu_req_valid_o = dut.u_frontend.i_ifu.req_issue_valid_w;
   assign dbg_ifu_req_ready_o = dut.u_frontend.icache2ifu_rsp_handshake.ready;
   assign dbg_ifu_req_fire_o = dut.u_frontend.i_ifu.req_issue_fire_w;
-  assign dbg_ifu_req_inflight_o = dut.u_frontend.i_ifu.req_inflight_q;
+  assign dbg_ifu_req_inflight_o = (dut.u_frontend.i_ifu.inf_count_q != '0);
   assign dbg_ifu_rsp_valid_o = dut.u_frontend.icache2ifu_rsp_handshake.valid;
   assign dbg_ifu_rsp_capture_o = dut.u_frontend.i_ifu.rsp_capture_w;
   assign dbg_icache_state_o = dut.u_frontend.i_icache.state_q;

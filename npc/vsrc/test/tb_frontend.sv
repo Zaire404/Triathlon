@@ -55,6 +55,8 @@ module tb_frontend (
     output logic                                  dbg_ifu_rsp_capture_o,
     output logic                                  dbg_ifu_ibuf_valid_o,
     output logic [                           3:0] dbg_ifu_outstanding_o,
+    output logic [                           3:0] dbg_ifu_pending_o,
+    output logic [                           3:0] dbg_ifu_inflight_o,
     output logic                                  dbg_ifu_drop_stale_rsp_o
 );
 
@@ -109,7 +111,9 @@ module tb_frontend (
   assign dbg_ifu_rsp_valid_o = DUT.icache2ifu_rsp_handshake.valid;
   assign dbg_ifu_rsp_capture_o = DUT.i_ifu.rsp_capture_w;
   assign dbg_ifu_ibuf_valid_o = DUT.ibuffer_valid_o;
-  assign dbg_ifu_outstanding_o = {3'b0, DUT.i_ifu.req_inflight_q};
-  assign dbg_ifu_drop_stale_rsp_o = 1'b0;
+  assign dbg_ifu_outstanding_o = 4'(DUT.i_ifu.req_outstanding_w);
+  assign dbg_ifu_pending_o = 4'(DUT.i_ifu.req_count_q);
+  assign dbg_ifu_inflight_o = 4'(DUT.i_ifu.inf_count_q);
+  assign dbg_ifu_drop_stale_rsp_o = DUT.i_ifu.drop_stale_rsp_w;
 
 endmodule

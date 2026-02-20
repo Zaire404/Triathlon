@@ -148,11 +148,13 @@ int main(int argc, char **argv) {
   for (int i = 0; i < 5; i++) tick(top, mem);
   top->rst_ni = 1;
 
-  // Phase--1: outstanding observability sanity check.
-  // Current baseline is single-outstanding IFU, so we only require seeing
-  // at least one outstanding request before first response.
+  // Phase--1: multi-outstanding precondition check (RED->GREEN for A4.1).
+  // Before the first visible ICache response, IFU should have built up
+  // at least two outstanding fetch requests.
   int req_fire_before_first_rsp = 0;
   int max_outstanding_before_first_rsp = 0;
+  int max_pending_before_first_rsp = 0;
+  int max_inflight_before_first_rsp = 0;
   bool first_rsp_seen = false;
   top->ibuffer_ready_i = 0;
   for (int i = 0; i < 80; ++i) {
@@ -164,6 +166,22 @@ int main(int argc, char **argv) {
     if (int(top->dbg_ifu_outstanding_o) > max_outstanding_before_first_rsp) {
       max_outstanding_before_first_rsp = int(top->dbg_ifu_outstanding_o);
     }
+    if (int(top->dbg_ifu_pending_o) > max_pending_before_first_rsp) {
+      max_pending_before_first_rsp = int(top->dbg_ifu_pending_o);
+    }
+    if (int(top->dbg_ifu_inflight_o) > max_inflight_before_first_rsp) {
+      max_inflight_before_first_rsp = int(top->dbg_ifu_inflight_o);
+    }
+    if (int(top->dbg_ifu_outstanding_o) !=
+        int(top->dbg_ifu_pending_o) + int(top->dbg_ifu_inflight_o)) {
+      std::cerr << "[fail] IFU outstanding mismatch: outstanding="
+                << int(top->dbg_ifu_outstanding_o)
+                << " pending=" << int(top->dbg_ifu_pending_o)
+                << " inflight=" << int(top->dbg_ifu_inflight_o)
+                << std::endl;
+      delete top;
+      return 1;
+    }
     if (top->dbg_ifu_req_fire_o) {
       req_fire_before_first_rsp++;
     }
@@ -171,6 +189,8 @@ int main(int argc, char **argv) {
   std::cout << "[info] req_fire_before_first_rsp=" << req_fire_before_first_rsp
             << " max_outstanding_before_first_rsp="
             << max_outstanding_before_first_rsp
+            << " max_pending_before_first_rsp=" << max_pending_before_first_rsp
+            << " max_inflight_before_first_rsp=" << max_inflight_before_first_rsp
             << std::endl;
   if (!first_rsp_seen) {
     std::cerr << "[fail] timeout waiting first icache response in phase--1"
@@ -178,9 +198,9 @@ int main(int argc, char **argv) {
     delete top;
     return 1;
   }
-  if (max_outstanding_before_first_rsp < 1) {
+  if (max_outstanding_before_first_rsp < 2) {
     std::cerr << "[fail] IFU outstanding debug signal did not observe "
-                 "inflight request before first response"
+                 ">=2 outstanding requests before first response"
               << std::endl;
     delete top;
     return 1;
@@ -250,7 +270,13 @@ int main(int argc, char **argv) {
   top->flush_i = 0;
   top->redirect_pc_i = 0;
 
-  for (int i = 0; i < 20; ++i) tick(top, mem);
+  int drop_stale_after_flush = 0;
+  for (int i = 0; i < 20; ++i) {
+    tick(top, mem);
+    if (top->dbg_ifu_drop_stale_rsp_o) {
+      drop_stale_after_flush++;
+    }
+  }
 
   bool got_first_rsp = false;
   uint32_t first_rsp_pc = 0;
@@ -285,6 +311,12 @@ int main(int argc, char **argv) {
 
   if (first_rsp_instr0 != 0x10000013u) {
     std::cerr << "[fail] unexpected instruction at redirect target" << std::endl;
+    delete top;
+    return 1;
+  }
+  if (drop_stale_after_flush == 0) {
+    std::cerr << "[fail] expected stale response drop after flush, but observed none"
+              << std::endl;
     delete top;
     return 1;
   }
