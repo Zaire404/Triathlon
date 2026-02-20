@@ -218,7 +218,10 @@ module dcache #(
     sel_wdata      = '0;
     sel_id         = '0;
 
-    if (!flush_i) begin
+    // Never start a new lookup in the same cycle that a refill request is
+    // presented. This prevents pending-load dequeue from racing with refill-side
+    // array access in banked single-port SRAM.
+    if (!flush_i && !refill_valid_i) begin
       if ((state_q == S_IDLE) && pending_ld_valid_q) begin
         sel_is_load = 1'b1;
         sel_use_pending_load = 1'b1;
@@ -485,11 +488,13 @@ module dcache #(
 
       .bank_addr_ra_i (r_bank_addr),
       .bank_sel_ra_i  (r_bank_sel),
+      .bank_sel_ra_o_i(r_bank_sel),
       .rdata_tag_a_o  (tag_a),
       .rdata_valid_a_o(meta_a),
 
       .bank_addr_rb_i (r_bank_addr),
       .bank_sel_rb_i  (r_bank_sel),
+      .bank_sel_rb_o_i(r_bank_sel),
       .rdata_tag_b_o  (tag_b),
       .rdata_valid_b_o(meta_b),
 
@@ -511,10 +516,12 @@ module dcache #(
 
       .bank_addr_ra_i(r_bank_addr),
       .bank_sel_ra_i (r_bank_sel),
+      .bank_sel_ra_o_i(r_bank_sel),
       .rdata_a_o     (line_a_all),
 
       .bank_addr_rb_i(r_bank_addr),
       .bank_sel_rb_i (r_bank_sel),
+      .bank_sel_rb_o_i(r_bank_sel),
       .rdata_b_o     (line_b_all),
 
       .w_bank_addr_i(w_bank_addr),
