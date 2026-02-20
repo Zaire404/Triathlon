@@ -11,6 +11,16 @@ module tb_build_config (
     input int unsigned i_VLEN,
     input int unsigned i_ILEN,
     input int unsigned i_BPU_USE_GSHARE,
+    input int unsigned i_BPU_USE_TOURNAMENT,
+    input int unsigned i_BPU_BTB_HASH_ENABLE,
+    input int unsigned i_BPU_BHT_HASH_ENABLE,
+    input int unsigned i_ICACHE_HIT_PIPELINE_EN,
+    input int unsigned i_IFU_FETCHQ_BYPASS_EN,
+    input int unsigned i_IFU_REQ_DEPTH,
+    input int unsigned i_IFU_INF_DEPTH,
+    input int unsigned i_IFU_FQ_DEPTH,
+    input int unsigned i_ENABLE_COMMIT_RAS_UPDATE,
+    input int unsigned i_DCACHE_MSHR_SIZE,
     input int unsigned i_ICACHE_BYTE_SIZE,
     input int unsigned i_ICACHE_SET_ASSOC,
     input int unsigned i_ICACHE_LINE_WIDTH,
@@ -23,6 +33,16 @@ module tb_build_config (
     output int unsigned o_GPLEN,
     output int unsigned o_INSTR_PER_FETCH,
     output int unsigned o_BPU_USE_GSHARE,
+    output int unsigned o_BPU_USE_TOURNAMENT,
+    output int unsigned o_BPU_BTB_HASH_ENABLE,
+    output int unsigned o_BPU_BHT_HASH_ENABLE,
+    output int unsigned o_ICACHE_HIT_PIPELINE_EN,
+    output int unsigned o_IFU_FETCHQ_BYPASS_EN,
+    output int unsigned o_IFU_REQ_DEPTH,
+    output int unsigned o_IFU_INF_DEPTH,
+    output int unsigned o_IFU_FQ_DEPTH,
+    output int unsigned o_ENABLE_COMMIT_RAS_UPDATE,
+    output int unsigned o_DCACHE_MSHR_SIZE,
     output int unsigned o_ICACHE_BYTE_SIZE,
     output int unsigned o_ICACHE_SET_ASSOC,
     output int unsigned o_ICACHE_SET_ASSOC_WIDTH,
@@ -43,6 +63,16 @@ module tb_build_config (
   assign user_cfg_in.VLEN              = i_VLEN;
   assign user_cfg_in.ILEN              = i_ILEN;
   assign user_cfg_in.BPU_USE_GSHARE    = i_BPU_USE_GSHARE;
+  assign user_cfg_in.BPU_USE_TOURNAMENT = i_BPU_USE_TOURNAMENT;
+  assign user_cfg_in.BPU_BTB_HASH_ENABLE = i_BPU_BTB_HASH_ENABLE;
+  assign user_cfg_in.BPU_BHT_HASH_ENABLE = i_BPU_BHT_HASH_ENABLE;
+  assign user_cfg_in.ICACHE_HIT_PIPELINE_EN = i_ICACHE_HIT_PIPELINE_EN;
+  assign user_cfg_in.IFU_FETCHQ_BYPASS_EN = i_IFU_FETCHQ_BYPASS_EN;
+  assign user_cfg_in.IFU_REQ_DEPTH = i_IFU_REQ_DEPTH;
+  assign user_cfg_in.IFU_INF_DEPTH = i_IFU_INF_DEPTH;
+  assign user_cfg_in.IFU_FQ_DEPTH = i_IFU_FQ_DEPTH;
+  assign user_cfg_in.ENABLE_COMMIT_RAS_UPDATE = i_ENABLE_COMMIT_RAS_UPDATE;
+  assign user_cfg_in.DCACHE_MSHR_SIZE = i_DCACHE_MSHR_SIZE;
   assign user_cfg_in.INSTR_PER_FETCH   = i_INSTR_PER_FETCH;
   assign user_cfg_in.ICACHE_BYTE_SIZE  = i_ICACHE_BYTE_SIZE;
   assign user_cfg_in.ICACHE_SET_ASSOC  = i_ICACHE_SET_ASSOC;
@@ -64,6 +94,16 @@ module tb_build_config (
   assign o_GPLEN                  = cfg_out.GPLEN;
   assign o_INSTR_PER_FETCH        = cfg_out.INSTR_PER_FETCH;
   assign o_BPU_USE_GSHARE         = cfg_out.BPU_USE_GSHARE;
+  assign o_BPU_USE_TOURNAMENT     = cfg_out.BPU_USE_TOURNAMENT;
+  assign o_BPU_BTB_HASH_ENABLE    = cfg_out.BPU_BTB_HASH_ENABLE;
+  assign o_BPU_BHT_HASH_ENABLE    = cfg_out.BPU_BHT_HASH_ENABLE;
+  assign o_ICACHE_HIT_PIPELINE_EN = cfg_out.ICACHE_HIT_PIPELINE_EN;
+  assign o_IFU_FETCHQ_BYPASS_EN   = cfg_out.IFU_FETCHQ_BYPASS_EN;
+  assign o_IFU_REQ_DEPTH          = cfg_out.IFU_REQ_DEPTH;
+  assign o_IFU_INF_DEPTH          = cfg_out.IFU_INF_DEPTH;
+  assign o_IFU_FQ_DEPTH           = cfg_out.IFU_FQ_DEPTH;
+  assign o_ENABLE_COMMIT_RAS_UPDATE = cfg_out.ENABLE_COMMIT_RAS_UPDATE;
+  assign o_DCACHE_MSHR_SIZE         = cfg_out.DCACHE_MSHR_SIZE;
   assign o_ICACHE_BYTE_SIZE       = cfg_out.ICACHE_BYTE_SIZE;
   assign o_ICACHE_SET_ASSOC       = cfg_out.ICACHE_SET_ASSOC;
   assign o_ICACHE_SET_ASSOC_WIDTH = cfg_out.ICACHE_SET_ASSOC_WIDTH;

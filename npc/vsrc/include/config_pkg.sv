@@ -23,6 +23,22 @@ package config_pkg;
     int unsigned ILEN;
     // Branch predictor mode: 1 enables gshare, 0 uses PC-only index
     int unsigned BPU_USE_GSHARE;
+    // Branch predictor mode: 1 enables tournament chooser
+    int unsigned BPU_USE_TOURNAMENT;
+    // Branch predictor index hash controls
+    int unsigned BPU_BTB_HASH_ENABLE;
+    int unsigned BPU_BHT_HASH_ENABLE;
+
+    // Frontend micro-architecture toggles
+    int unsigned ICACHE_HIT_PIPELINE_EN;
+    int unsigned IFU_FETCHQ_BYPASS_EN;
+    int unsigned IFU_REQ_DEPTH;
+    int unsigned IFU_INF_DEPTH;
+    int unsigned IFU_FQ_DEPTH;
+
+    // Backend micro-architecture toggles
+    int unsigned ENABLE_COMMIT_RAS_UPDATE;
+    int unsigned DCACHE_MSHR_SIZE;
 
     // ICache configuration
     // Instruction cache size (in bytes)
@@ -65,6 +81,22 @@ package config_pkg;
     int unsigned FETCH_WIDTH;
     // Branch predictor mode: 1 enables gshare, 0 uses PC-only index
     int unsigned BPU_USE_GSHARE;
+    // Branch predictor mode: 1 enables tournament chooser
+    int unsigned BPU_USE_TOURNAMENT;
+    // Branch predictor index hash controls
+    int unsigned BPU_BTB_HASH_ENABLE;
+    int unsigned BPU_BHT_HASH_ENABLE;
+
+    // Frontend micro-architecture toggles
+    int unsigned ICACHE_HIT_PIPELINE_EN;
+    int unsigned IFU_FETCHQ_BYPASS_EN;
+    int unsigned IFU_REQ_DEPTH;
+    int unsigned IFU_INF_DEPTH;
+    int unsigned IFU_FQ_DEPTH;
+
+    // Backend micro-architecture toggles
+    int unsigned ENABLE_COMMIT_RAS_UPDATE;
+    int unsigned DCACHE_MSHR_SIZE;
 
     // ICache configuration
     int unsigned ICACHE_BYTE_SIZE;

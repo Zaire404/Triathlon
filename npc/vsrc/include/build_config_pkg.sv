@@ -15,6 +15,16 @@ package build_config_pkg;
     cfg.ILEN = user_cfg.ILEN;
     cfg.FETCH_WIDTH = user_cfg.INSTR_PER_FETCH * user_cfg.ILEN / 8;
     cfg.BPU_USE_GSHARE = user_cfg.BPU_USE_GSHARE;
+    cfg.BPU_USE_TOURNAMENT = user_cfg.BPU_USE_TOURNAMENT;
+    cfg.BPU_BTB_HASH_ENABLE = user_cfg.BPU_BTB_HASH_ENABLE;
+    cfg.BPU_BHT_HASH_ENABLE = user_cfg.BPU_BHT_HASH_ENABLE;
+    cfg.ICACHE_HIT_PIPELINE_EN = user_cfg.ICACHE_HIT_PIPELINE_EN;
+    cfg.IFU_FETCHQ_BYPASS_EN = user_cfg.IFU_FETCHQ_BYPASS_EN;
+    cfg.IFU_REQ_DEPTH = user_cfg.IFU_REQ_DEPTH;
+    cfg.IFU_INF_DEPTH = user_cfg.IFU_INF_DEPTH;
+    cfg.IFU_FQ_DEPTH = user_cfg.IFU_FQ_DEPTH;
+    cfg.ENABLE_COMMIT_RAS_UPDATE = user_cfg.ENABLE_COMMIT_RAS_UPDATE;
+    cfg.DCACHE_MSHR_SIZE = user_cfg.DCACHE_MSHR_SIZE;
 
     // ICache 配置
     cfg.ICACHE_BYTE_SIZE = user_cfg.ICACHE_BYTE_SIZE;

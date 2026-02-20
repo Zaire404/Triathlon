@@ -16,6 +16,16 @@ int main(int argc, char **argv) {
   top->i_VLEN = 32;
   top->i_ILEN = 32;
   top->i_BPU_USE_GSHARE = 1;
+  top->i_BPU_USE_TOURNAMENT = 1;
+  top->i_BPU_BTB_HASH_ENABLE = 1;
+  top->i_BPU_BHT_HASH_ENABLE = 1;
+  top->i_ICACHE_HIT_PIPELINE_EN = 1;
+  top->i_IFU_FETCHQ_BYPASS_EN = 1;
+  top->i_IFU_REQ_DEPTH = 8;
+  top->i_IFU_INF_DEPTH = 8;
+  top->i_IFU_FQ_DEPTH = 8;
+  top->i_ENABLE_COMMIT_RAS_UPDATE = 1;
+  top->i_DCACHE_MSHR_SIZE = 4;
   top->i_INSTR_PER_FETCH = 4;
   top->i_ICACHE_BYTE_SIZE = 8192;
   top->i_ICACHE_SET_ASSOC = 8;
@@ -39,6 +49,16 @@ int main(int argc, char **argv) {
 
   std::cout << "Checking BPU_USE_GSHARE..." << std::endl;
   assert(top->o_BPU_USE_GSHARE == 1);
+  assert(top->o_BPU_USE_TOURNAMENT == 1);
+  assert(top->o_BPU_BTB_HASH_ENABLE == 1);
+  assert(top->o_BPU_BHT_HASH_ENABLE == 1);
+  assert(top->o_ICACHE_HIT_PIPELINE_EN == 1);
+  assert(top->o_IFU_FETCHQ_BYPASS_EN == 1);
+  assert(top->o_IFU_REQ_DEPTH == 8);
+  assert(top->o_IFU_INF_DEPTH == 8);
+  assert(top->o_IFU_FQ_DEPTH == 8);
+  assert(top->o_ENABLE_COMMIT_RAS_UPDATE == 1);
+  assert(top->o_DCACHE_MSHR_SIZE == 4);
 
   std::cout << "Checking ICACHE_INDEX_WIDTH..." << std::endl;
   assert(top->o_ICACHE_INDEX_WIDTH == expected_index_width);
