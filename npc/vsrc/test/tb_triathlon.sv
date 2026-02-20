@@ -80,6 +80,10 @@ module tb_triathlon #(
     output logic [3:0]                         dbg_ifu_fq_count_o,
     output logic                               dbg_ifu_fq_full_o,
     output logic                               dbg_ifu_fq_empty_o,
+    output logic                               dbg_ifu_fq_enq_fire_o,
+    output logic                               dbg_ifu_fq_deq_fire_o,
+    output logic                               dbg_ifu_fq_bypass_fire_o,
+    output logic                               dbg_ifu_fq_enq_blocked_o,
     output logic                               dbg_ifu_ibuf_pop_o,
     output logic                               dbg_dec_valid_o,
     output logic                               dbg_dec_ready_o,
@@ -284,6 +288,12 @@ module tb_triathlon #(
   assign dbg_ifu_fq_count_o = dut.u_frontend.i_ifu.fq_count_q;
   assign dbg_ifu_fq_full_o = dut.u_frontend.i_ifu.fq_full_w;
   assign dbg_ifu_fq_empty_o = dut.u_frontend.i_ifu.fq_empty_w;
+  assign dbg_ifu_fq_enq_fire_o = dut.u_frontend.i_ifu.rsp_push_fq_w;
+  assign dbg_ifu_fq_deq_fire_o = dut.u_frontend.i_ifu.fq_deq_valid_w & dut.u_frontend.i_ifu.fq_deq_ready_w;
+  assign dbg_ifu_fq_bypass_fire_o = dut.u_frontend.i_ifu.fq_empty_w &
+                                     dut.u_frontend.i_ifu.fq_enq_valid_w &
+                                     dut.u_frontend.i_ifu.fq_deq_ready_w;
+  assign dbg_ifu_fq_enq_blocked_o = dut.u_frontend.i_ifu.fq_enq_valid_w & ~dut.u_frontend.i_ifu.fq_enq_ready_w;
   assign dbg_ifu_ibuf_pop_o = dut.u_frontend.i_ifu.ibuf_pop_w;
   assign dbg_dec_valid_o = dut.u_backend.decode_ibuf_valid;
   assign dbg_dec_ready_o = dut.u_backend.decode_ibuf_ready;

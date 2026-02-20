@@ -575,6 +575,9 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
     has_stall_rob_backpressure_summary = False
     stall_rob_backpressure_total_summary = 0
     stall_rob_backpressure_detail_summary: Counter[str] = Counter()
+    has_ifu_fq_summary = False
+    ifu_fq_summary: dict[str, int] = {}
+    ifu_fq_occ_hist_summary: dict[int, int] = {}
 
     for raw in p.read_text(encoding="utf-8", errors="ignore").splitlines():
         m = IPC_RE.search(raw)
@@ -790,6 +793,26 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
                 stall_rob_backpressure_total_summary = sum(stall_rob_backpressure_detail_summary.values())
             continue
 
+        ifum_pos = raw.find("[ifum]")
+        if ifum_pos >= 0:
+            kv = _parse_kv_pairs(raw[ifum_pos:])
+            has_ifu_fq_summary = True
+            ifu_fq_summary = {}
+            ifu_fq_occ_hist_summary = {}
+            for key, val in kv.items():
+                if key == "mode":
+                    continue
+                if key.startswith("fq_occ_bin"):
+                    idx_text = key[len("fq_occ_bin") :]
+                    try:
+                        idx = int(idx_text, 10)
+                    except ValueError:
+                        continue
+                    ifu_fq_occ_hist_summary[idx] = _parse_int(val, 0)
+                    continue
+                ifu_fq_summary[key] = _parse_int(val, 0)
+            continue
+
         m = COMMIT_RE.match(raw)
         if m:
             cycle = int(m.group(1))
@@ -1000,6 +1023,30 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
         benchmark_time_source = "self_reported"
         effective_benchmark_time_ms = bench_reported_time_ms
 
+    ifu_fq: dict[str, Any] = {}
+    if has_ifu_fq_summary:
+        fq_samples = int(ifu_fq_summary.get("fq_samples", cycles))
+        fq_enq = int(ifu_fq_summary.get("fq_enq", 0))
+        fq_deq = int(ifu_fq_summary.get("fq_deq", 0))
+        fq_bypass = int(ifu_fq_summary.get("fq_bypass", 0))
+        fq_enq_blocked = int(ifu_fq_summary.get("fq_enq_blocked", 0))
+        fq_full_cycles = int(ifu_fq_summary.get("fq_full_cycles", 0))
+        fq_empty_cycles = int(ifu_fq_summary.get("fq_empty_cycles", 0))
+        fq_nonempty_cycles = int(ifu_fq_summary.get("fq_nonempty_cycles", max(0, fq_samples - fq_empty_cycles)))
+        fq_occ_sum = int(ifu_fq_summary.get("fq_occ_sum", 0))
+        ifu_fq = dict(ifu_fq_summary)
+        ifu_fq["fq_samples"] = fq_samples
+        ifu_fq["fq_nonempty_cycles"] = fq_nonempty_cycles
+        ifu_fq["fq_occ_hist"] = dict(sorted(ifu_fq_occ_hist_summary.items()))
+        ifu_fq["fq_occ_avg"] = _safe_div(fq_occ_sum, fq_samples)
+        ifu_fq["fq_bypass_ratio"] = _safe_div(fq_bypass, fq_deq)
+        ifu_fq["fq_enq_blocked_ratio"] = _safe_div(fq_enq_blocked, fq_samples)
+        ifu_fq["fq_full_ratio"] = _safe_div(fq_full_cycles, fq_samples)
+        ifu_fq["fq_empty_ratio"] = _safe_div(fq_empty_cycles, fq_samples)
+        ifu_fq["fq_nonempty_ratio"] = _safe_div(fq_nonempty_cycles, fq_samples)
+        if "fq_occ_avg_x1000" in ifu_fq_summary:
+            ifu_fq["fq_occ_avg_from_line"] = _safe_div(int(ifu_fq_summary["fq_occ_avg_x1000"]), 1000.0)
+
     return {
         "log_path": str(p),
         "ipc": ipc,
@@ -1043,6 +1090,7 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
         "stall_rob_backpressure_detail": dict(stall_rob_backpressure_detail),
         "stall_frontend_empty_total": stall_frontend_empty_total,
         "stall_frontend_empty_detail": dict(stall_frontend_empty_detail_summary),
+        "ifu_fq": ifu_fq,
         "top_pc": top_pc,
         "top_inst": top_inst,
         "control": control,
@@ -1104,6 +1152,7 @@ def _bench_markdown(name: str, data: dict[str, Any]) -> str:
     rob_backpressure_detail = data.get("stall_rob_backpressure_detail", {})
     frontend_empty_total = data.get("stall_frontend_empty_total", 0)
     frontend_empty_detail = data.get("stall_frontend_empty_detail", {})
+    ifu_fq = data.get("ifu_fq", {})
     control = data.get("control", {})
     flush_hist = data.get("flush_reason_histogram", {})
     flush_src_hist = data.get("flush_source_histogram", {})
@@ -1185,6 +1234,45 @@ def _bench_markdown(name: str, data: dict[str, Any]) -> str:
     else:
         for key, val in sorted(frontend_empty_detail.items(), key=lambda x: x[1], reverse=True):
             lines.append(f"- {key}: `{val}` ({_fmt_pct(val, frontend_empty_total)})")
+
+    lines.append("")
+    lines.append("Fetch Queue Effectiveness:")
+    if not ifu_fq:
+        lines.append("- (no fetch_queue summary, missing [ifum])")
+    else:
+        fq_samples = int(ifu_fq.get("fq_samples", 0))
+        fq_enq = int(ifu_fq.get("fq_enq", 0))
+        fq_deq = int(ifu_fq.get("fq_deq", 0))
+        fq_bypass = int(ifu_fq.get("fq_bypass", 0))
+        fq_enq_blocked = int(ifu_fq.get("fq_enq_blocked", 0))
+        fq_full_cycles = int(ifu_fq.get("fq_full_cycles", 0))
+        fq_empty_cycles = int(ifu_fq.get("fq_empty_cycles", 0))
+        fq_nonempty_cycles = int(ifu_fq.get("fq_nonempty_cycles", 0))
+        fq_occ_avg = float(ifu_fq.get("fq_occ_avg", 0.0))
+        fq_occ_max = int(ifu_fq.get("fq_occ_max", 0))
+        lines.append(
+            f"- enq/deq/bypass: `{fq_enq}` / `{fq_deq}` / `{fq_bypass}` (bypass_in_deq `{_safe_div(fq_bypass, fq_deq) * 100.0:.2f}%`)"
+        )
+        lines.append(
+            f"- blocked/full/empty/nonempty cycles: `{fq_enq_blocked}` / `{fq_full_cycles}` / `{fq_empty_cycles}` / `{fq_nonempty_cycles}`"
+        )
+        lines.append(
+            f"- ratios(blocked/full/empty/nonempty): `{_safe_div(fq_enq_blocked, fq_samples) * 100.0:.2f}%` / `{_safe_div(fq_full_cycles, fq_samples) * 100.0:.2f}%` / `{_safe_div(fq_empty_cycles, fq_samples) * 100.0:.2f}%` / `{_safe_div(fq_nonempty_cycles, fq_samples) * 100.0:.2f}%`"
+        )
+        lines.append(f"- occupancy(avg/max): `{fq_occ_avg:.3f}` / `{fq_occ_max}`")
+        occ_hist = ifu_fq.get("fq_occ_hist", {})
+        if occ_hist:
+            lines.append("- occupancy_hist:")
+            occ_items = sorted(
+                occ_hist.items(),
+                key=lambda kv: int(kv[0]) if isinstance(kv[0], str) else kv[0],
+            )
+            for occ, cnt in occ_items:
+                cnt_i = int(cnt)
+                if cnt_i == 0:
+                    continue
+                occ_idx = int(occ)
+                lines.append(f"  - occ={occ_idx}: `{cnt_i}` ({_fmt_pct(cnt_i, fq_samples)})")
 
     lines.append("")
     lines.append("ROB-Backpressure Correlation:")

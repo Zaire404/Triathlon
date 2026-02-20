@@ -724,6 +724,16 @@ int main(int argc, char **argv) {
   std::array<uint64_t, 9> stall_frontend_empty_hist = {};
   std::unordered_map<std::string, uint64_t> stall_decode_blocked_detail_hist;
   std::unordered_map<std::string, uint64_t> stall_rob_backpressure_detail_hist;
+  uint64_t ifu_fq_enq = 0;
+  uint64_t ifu_fq_deq = 0;
+  uint64_t ifu_fq_bypass = 0;
+  uint64_t ifu_fq_enq_blocked = 0;
+  uint64_t ifu_fq_full_cycles = 0;
+  uint64_t ifu_fq_empty_cycles = 0;
+  uint64_t ifu_fq_nonempty_cycles = 0;
+  uint64_t ifu_fq_occ_sum = 0;
+  uint64_t ifu_fq_occ_max = 0;
+  std::array<uint64_t, 16> ifu_fq_occ_hist = {};
   bool has_prev_commit = false;
   uint32_t prev_commit_pc = 0;
   uint32_t prev_commit_inst = 0;
@@ -1077,6 +1087,24 @@ int main(int argc, char **argv) {
               << " fe_has_data_decode_gap=" << stall_frontend_empty_hist[kFeHasDataDecodeGap]
               << " fe_other=" << stall_frontend_empty_hist[kFeOther]
               << "\n";
+    uint64_t fq_samples = final_cycles;
+    uint64_t fq_occ_avg_x1000 = (fq_samples == 0) ? 0 : ((ifu_fq_occ_sum * 1000ull + fq_samples / 2ull) / fq_samples);
+    std::cout << "[ifum] mode=cycle"
+              << " fq_samples=" << fq_samples
+              << " fq_enq=" << ifu_fq_enq
+              << " fq_deq=" << ifu_fq_deq
+              << " fq_bypass=" << ifu_fq_bypass
+              << " fq_enq_blocked=" << ifu_fq_enq_blocked
+              << " fq_full_cycles=" << ifu_fq_full_cycles
+              << " fq_empty_cycles=" << ifu_fq_empty_cycles
+              << " fq_nonempty_cycles=" << ifu_fq_nonempty_cycles
+              << " fq_occ_sum=" << ifu_fq_occ_sum
+              << " fq_occ_max=" << ifu_fq_occ_max
+              << " fq_occ_avg_x1000=" << fq_occ_avg_x1000;
+    for (size_t i = 0; i < ifu_fq_occ_hist.size(); i++) {
+      std::cout << " fq_occ_bin" << i << "=" << ifu_fq_occ_hist[i];
+    }
+    std::cout << "\n";
     emit_detail_summary("stallm3", "decode_blocked_total", stall_cycle_hist[kStallDecodeBlocked],
                         stall_decode_blocked_detail_hist);
     emit_detail_summary("stallm4", "rob_backpressure_total", stall_cycle_hist[kStallROBBackpressure],
@@ -1087,6 +1115,21 @@ int main(int argc, char **argv) {
   for (uint64_t cycles = 0; cycles < args.max_cycles; cycles++) {
     mem.mem.set_time_us(cycles);
     tick(top, mem, tfp, sim_time);
+    uint32_t fq_count = static_cast<uint32_t>(top->dbg_ifu_fq_count_o);
+    if (fq_count >= ifu_fq_occ_hist.size()) fq_count = static_cast<uint32_t>(ifu_fq_occ_hist.size() - 1);
+    ifu_fq_occ_sum += fq_count;
+    ifu_fq_occ_hist[fq_count]++;
+    ifu_fq_occ_max = std::max<uint64_t>(ifu_fq_occ_max, fq_count);
+    if (top->dbg_ifu_fq_full_o) ifu_fq_full_cycles++;
+    if (top->dbg_ifu_fq_empty_o) {
+      ifu_fq_empty_cycles++;
+    } else {
+      ifu_fq_nonempty_cycles++;
+    }
+    if (top->dbg_ifu_fq_enq_fire_o) ifu_fq_enq++;
+    if (top->dbg_ifu_fq_deq_fire_o) ifu_fq_deq++;
+    if (top->dbg_ifu_fq_bypass_fire_o) ifu_fq_bypass++;
+    if (top->dbg_ifu_fq_enq_blocked_o) ifu_fq_enq_blocked++;
 
     if (top->dbg_sb_dcache_req_valid_o && top->dbg_sb_dcache_req_ready_o) {
       uint32_t addr = top->dbg_sb_dcache_req_addr_o;

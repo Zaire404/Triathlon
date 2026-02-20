@@ -650,6 +650,35 @@ class ParseProfileTest(unittest.TestCase):
         self.assertEqual(result["stall_rob_backpressure_detail"]["rob_lsu_wait_ld_rsp_valid"], 12)
         self.assertEqual(result["stall_rob_backpressure_detail"]["rob_store_wait_dcache"], 8)
 
+    def test_parse_ifum_fetch_queue_summary(self):
+        mod = load_parser_module()
+        with tempfile.TemporaryDirectory() as td:
+            log = Path(td) / "coremark.log"
+            log.write_text(
+                "\n".join(
+                    [
+                        "[ifum] mode=cycle fq_samples=100 fq_enq=40 fq_deq=38 fq_bypass=12 fq_enq_blocked=3 fq_full_cycles=5 fq_empty_cycles=60 fq_nonempty_cycles=40 fq_occ_sum=55 fq_occ_max=3 fq_occ_avg_x1000=550 fq_occ_bin0=60 fq_occ_bin1=25 fq_occ_bin2=10 fq_occ_bin3=5 fq_occ_bin4=0",
+                        "IPC=0.500000 CPI=2.000000 cycles=100 commits=50",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            result = mod.parse_single_log(log)
+
+        fq = result["ifu_fq"]
+        self.assertEqual(fq["fq_samples"], 100)
+        self.assertEqual(fq["fq_enq"], 40)
+        self.assertEqual(fq["fq_deq"], 38)
+        self.assertEqual(fq["fq_bypass"], 12)
+        self.assertEqual(fq["fq_enq_blocked"], 3)
+        self.assertEqual(fq["fq_occ_max"], 3)
+        self.assertAlmostEqual(fq["fq_occ_avg"], 0.55)
+        self.assertAlmostEqual(fq["fq_occ_avg_from_line"], 0.55)
+        self.assertAlmostEqual(fq["fq_bypass_ratio"], 12 / 38)
+        self.assertEqual(fq["fq_occ_hist"][0], 60)
+        self.assertEqual(fq["fq_occ_hist"][3], 5)
+
     def test_report_includes_frontend_empty_breakdown(self):
         mod = load_parser_module()
         with tempfile.TemporaryDirectory() as td:
@@ -717,6 +746,74 @@ class ParseProfileTest(unittest.TestCase):
         self.assertIn("fe_wait_icache_rsp_hit_latency", report)
         self.assertIn("fe_wait_icache_rsp_miss_wait", report)
         self.assertIn("fe_rsp_capture_bubble", report)
+
+    def test_report_includes_fetch_queue_effectiveness(self):
+        mod = load_parser_module()
+        with tempfile.TemporaryDirectory() as td:
+            tdir = Path(td)
+            template = Path(__file__).resolve().parents[1] / "report_template.md"
+            summary = {
+                "coremark": {
+                    "log_path": str(tdir / "coremark.log"),
+                    "ipc": 0.5,
+                    "cpi": 2.0,
+                    "cycles": 100,
+                    "commits": 50,
+                    "flush_per_kinst": 0.0,
+                    "bru_per_kinst": 0.0,
+                    "mispredict_flush_count": 0,
+                    "branch_penalty_cycles": 0,
+                    "wrong_path_kill_uops": 0,
+                    "redirect_distance_avg": 0.0,
+                    "redirect_distance_max": 0,
+                    "commit_width_hist": {0: 50, 1: 50, 2: 0, 3: 0, 4: 0},
+                    "stall_category": {},
+                    "stall_total": 0,
+                    "control": {"control_ratio": 0.0, "est_misp_per_kinst": 0.0},
+                    "predict": {
+                        "cond_hit": 0,
+                        "cond_miss": 0,
+                        "cond_miss_rate": 0.0,
+                        "jump_hit": 0,
+                        "jump_miss": 0,
+                        "jump_miss_rate": 0.0,
+                        "ret_hit": 0,
+                        "ret_miss": 0,
+                        "ret_miss_rate": 0.0,
+                        "call_total": 0,
+                    },
+                    "ifu_fq": {
+                        "fq_samples": 100,
+                        "fq_enq": 40,
+                        "fq_deq": 38,
+                        "fq_bypass": 12,
+                        "fq_enq_blocked": 3,
+                        "fq_full_cycles": 5,
+                        "fq_empty_cycles": 60,
+                        "fq_nonempty_cycles": 40,
+                        "fq_occ_avg": 0.55,
+                        "fq_occ_max": 3,
+                        "fq_occ_hist": {0: 60, 1: 25, 2: 10, 3: 5},
+                    },
+                    "top_pc": [],
+                    "top_inst": [],
+                    "flush_reason_histogram": {},
+                    "flush_source_histogram": {},
+                    "has_commit_detail": False,
+                    "has_commit_summary": False,
+                    "stall_mode": "none",
+                    "quality_warnings": [],
+                    "commit_metrics_source": "none",
+                    "stall_metrics_source": "none",
+                }
+            }
+
+            report = mod.build_markdown_report(summary, template)
+
+        self.assertIn("Fetch Queue Effectiveness:", report)
+        self.assertIn("enq/deq/bypass", report)
+        self.assertIn("occupancy(avg/max)", report)
+        self.assertIn("occ=3", report)
 
     def test_report_includes_predict_tournament_breakdown(self):
         mod = load_parser_module()
