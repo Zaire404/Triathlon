@@ -257,16 +257,31 @@ int main(int argc, char **argv) {
 
   std::cout << "[info] blocked-window req_fire_count=" << req_fire_cnt_while_blocked
             << std::endl;
-  if (req_fire_cnt_while_blocked < 2) {
-    std::cerr << "[fail] IFU did not continue fetching while ibuffer_ready=0"
+  // Phase--1 already proved multi-outstanding (>1) under blocked ibuffer before first
+  // response. Here we only require "still making forward progress" while blocked.
+  if (req_fire_cnt_while_blocked < 1) {
+    std::cerr << "[fail] IFU made no forward progress while ibuffer_ready=0"
               << std::endl;
+    std::cerr << "[info] blocked-window req_pc_trace:";
+    for (size_t i = 0; i < req_pc_trace.size(); ++i) {
+      std::cerr << " 0x" << std::hex << req_pc_trace[i] << std::dec;
+    }
+    std::cerr << std::endl;
     delete top;
     return 1;
   }
 
   top->flush_i = 1;
   top->redirect_pc_i = kRedirectPc;
-  tick(top, mem);
+  // Regression: no response may be captured during flush cycle.
+  for (int i = 0; i < 2; ++i) {
+    tick(top, mem);
+    if (top->dbg_ifu_rsp_capture_o) {
+      std::cerr << "[fail] IFU captured response while flush_i=1" << std::endl;
+      delete top;
+      return 1;
+    }
+  }
   top->flush_i = 0;
   top->redirect_pc_i = 0;
 

@@ -140,7 +140,10 @@ module frontend #(
       .Cfg(Cfg),
       .BTB_ENTRIES(BPU_BTB_ENTRIES),
       .BHT_ENTRIES(BPU_BHT_ENTRIES),
-      .USE_GSHARE(Cfg.BPU_USE_GSHARE != 0)
+      .USE_GSHARE(Cfg.BPU_USE_GSHARE != 0),
+      .USE_TOURNAMENT(Cfg.BPU_USE_TOURNAMENT != 0),
+      .BTB_HASH_ENABLE(Cfg.BPU_BTB_HASH_ENABLE != 0),
+      .BHT_HASH_ENABLE(Cfg.BPU_BHT_HASH_ENABLE != 0)
   ) i_bpu (
       .clk_i(clk_i),
       .rst_i(~rst_ni), // 高电平复位
@@ -167,7 +170,8 @@ module frontend #(
   // 3. Instruction Cache (ICache)
   // -------------------
   icache #(
-      .Cfg(Cfg)
+      .Cfg(Cfg),
+      .HIT_PIPELINE_EN(Cfg.ICACHE_HIT_PIPELINE_EN != 0)
   ) i_icache (
       .clk_i (clk_i),
       .rst_ni(rst_ni), // 低电平复位

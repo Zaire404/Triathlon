@@ -47,17 +47,20 @@ module ifu #(
   localparam int unsigned EPOCH_W = 3;
 
   // Pending request FIFO (BPU generated).
-  localparam int unsigned REQ_DEPTH = (Cfg.INSTR_PER_FETCH >= 2) ? Cfg.INSTR_PER_FETCH : 2;
+  localparam int unsigned REQ_DEPTH =
+      (Cfg.IFU_REQ_DEPTH >= 2) ? Cfg.IFU_REQ_DEPTH : ((Cfg.INSTR_PER_FETCH >= 2) ? Cfg.INSTR_PER_FETCH : 2);
   localparam int unsigned REQ_PTR_W = (REQ_DEPTH > 1) ? $clog2(REQ_DEPTH) : 1;
   localparam int unsigned REQ_CNT_W = $clog2(REQ_DEPTH + 1);
 
   // Inflight request FIFO (issued to ICache, waiting for response).
-  localparam int unsigned INF_DEPTH = REQ_DEPTH;
+  localparam int unsigned INF_DEPTH =
+      (Cfg.IFU_INF_DEPTH >= 2) ? Cfg.IFU_INF_DEPTH : REQ_DEPTH;
   localparam int unsigned INF_PTR_W = (INF_DEPTH > 1) ? $clog2(INF_DEPTH) : 1;
   localparam int unsigned INF_CNT_W = $clog2(INF_DEPTH + 1);
 
   // Fetch response queue to decouple ICache and IBuffer.
-  localparam int unsigned FQ_DEPTH = (Cfg.INSTR_PER_FETCH >= 2) ? Cfg.INSTR_PER_FETCH : 2;
+  localparam int unsigned FQ_DEPTH =
+      (Cfg.IFU_FQ_DEPTH >= 2) ? Cfg.IFU_FQ_DEPTH : ((Cfg.INSTR_PER_FETCH >= 2) ? Cfg.INSTR_PER_FETCH : 2);
   localparam int unsigned FQ_CNT_W = $clog2(FQ_DEPTH + 1);
   localparam int unsigned FQ_DATA_W = Cfg.PLEN + (Cfg.INSTR_PER_FETCH * Cfg.ILEN) +
                                       Cfg.INSTR_PER_FETCH + (Cfg.INSTR_PER_FETCH * Cfg.PLEN);
@@ -167,8 +170,12 @@ module ifu #(
 
   // ICache side: issue oldest pending request.
   assign rsp_epoch_match_w = !inf_fifo_empty_w && (inf_head_epoch_w == fetch_epoch_q);
-  assign rsp_capture_w = !inf_fifo_empty_w && icache2ifu_rsp_handshake_i.valid && rsp_epoch_match_w;
-  assign drop_stale_rsp_w = icache2ifu_rsp_handshake_i.valid && (!rsp_epoch_match_w);
+  // During flush, IFU clears request/inflight queues. Incoming ICache responses in
+  // that cycle must be ignored, otherwise a stale response may be captured and
+  // consumed by the new control-flow epoch.
+  assign rsp_capture_w = !flush_i && !inf_fifo_empty_w &&
+                         icache2ifu_rsp_handshake_i.valid && rsp_epoch_match_w;
+  assign drop_stale_rsp_w = !flush_i && icache2ifu_rsp_handshake_i.valid && (!rsp_epoch_match_w);
 
   // Conservative safety gate:
   // fq_count + inflight_count tracks worst-case buffered responses pressure.
@@ -211,7 +218,7 @@ module ifu #(
   bundle_fifo #(
       .DATA_W(FQ_DATA_W),
       .DEPTH(FQ_DEPTH),
-      .BYPASS_EN(1'b1)
+      .BYPASS_EN(Cfg.IFU_FETCHQ_BYPASS_EN != 0)
   ) u_fetch_queue (
       .clk_i(clk),
       .rst_ni(~rst),
@@ -251,6 +258,9 @@ module ifu #(
       inf_count_q <= '0;
 
     end else begin
+      if (rsp_capture_w && !fq_enq_ready_w) begin
+        $fatal(1, "[ifu] rsp captured while fetch queue not ready (response drop hazard)");
+      end
       if (flush_i) begin
         pc_reg <= redirect_pc_i;
         fetch_epoch_q <= fetch_epoch_q + EPOCH_W'(1);

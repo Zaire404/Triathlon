@@ -1,6 +1,7 @@
 // vsrc/cache/icache.sv
 module icache #(
-    parameter config_pkg::cfg_t Cfg = config_pkg::EmptyCfg
+    parameter config_pkg::cfg_t Cfg = config_pkg::EmptyCfg,
+    parameter bit HIT_PIPELINE_EN = 1'b0
 ) (
     input logic clk_i,
     input logic rst_ni,
@@ -90,8 +91,10 @@ module icache #(
   // Otherwise, using index_a_q/index_b_q directly would introduce an extra
   // cycle of latency (and can cause functional mismatch in simulation).
   logic [INDEX_WIDTH-1:0] index_a_mem, index_b_mem;
-  assign index_a_mem = (state_q == IDLE && ifu_req_handshake_i.valid && !ifu_req_flush_i) ? index_a_d : index_a_q;
-  assign index_b_mem = (state_q == IDLE && ifu_req_handshake_i.valid && !ifu_req_flush_i) ? index_b_d : index_b_q;
+  logic req_accept_w;
+  assign req_accept_w = ifu_req_handshake_i.valid && ifu_rsp_handshake_o.ready && !ifu_req_flush_i;
+  assign index_a_mem = req_accept_w ? index_a_d : index_a_q;
+  assign index_b_mem = req_accept_w ? index_b_d : index_b_q;
 
   // Miss context
   logic [                  Cfg.PLEN-1:0] miss_paddr_q;
@@ -167,11 +170,13 @@ module icache #(
       // Read port A
       .bank_addr_ra_i (index_a_mem[INDEX_WIDTH-1:BANK_SEL_WIDTH]),
       .bank_sel_ra_i  (index_a_mem[BANK_SEL_WIDTH-1:0]),
+      .bank_sel_ra_o_i(index_a_q[BANK_SEL_WIDTH-1:0]),
       .rdata_tag_a_o  (tag_a),
       .rdata_valid_a_o(valid_a),
       // Read port B
       .bank_addr_rb_i (index_b_mem[INDEX_WIDTH-1:BANK_SEL_WIDTH]),
       .bank_sel_rb_i  (index_b_mem[BANK_SEL_WIDTH-1:0]),
+      .bank_sel_rb_o_i(index_b_q[BANK_SEL_WIDTH-1:0]),
       .rdata_tag_b_o  (tag_b),
       .rdata_valid_b_o(valid_b),
       // Write port
@@ -194,10 +199,12 @@ module icache #(
       // Read port A
       .bank_addr_ra_i(index_a_mem[INDEX_WIDTH-1:BANK_SEL_WIDTH]),
       .bank_sel_ra_i (index_a_mem[BANK_SEL_WIDTH-1:0]),
+      .bank_sel_ra_o_i(index_a_q[BANK_SEL_WIDTH-1:0]),
       .rdata_a_o     (line_a_all),
       // Read port B
       .bank_addr_rb_i(index_b_mem[INDEX_WIDTH-1:BANK_SEL_WIDTH]),
       .bank_sel_rb_i (index_b_mem[BANK_SEL_WIDTH-1:0]),
+      .bank_sel_rb_o_i(index_b_q[BANK_SEL_WIDTH-1:0]),
       .rdata_b_o     (line_b_all),
       // Write port
       .w_bank_addr_i (w_bank_addr),
@@ -344,7 +351,8 @@ module icache #(
 
   assign ifu_rsp_instrs_o          = rsp_instrs_q;
   assign ifu_rsp_handshake_o.valid = rsp_valid_q;
-  assign ifu_rsp_handshake_o.ready = (state_q == IDLE);
+  assign ifu_rsp_handshake_o.ready = (state_q == IDLE) ||
+      (HIT_PIPELINE_EN && (state_q == LOOKUP) && hit_all && !ifu_req_flush_i);
 
   // ---------------------------------------------------------------------------
   // Miss / refill write port & handshake defaults
@@ -431,7 +439,7 @@ module icache #(
 
       unique case (state_q)
         IDLE: begin
-          if (ifu_req_handshake_i.valid && !ifu_req_flush_i) begin
+          if (req_accept_w) begin
             // Latch request (Use computed _d signals)
             pc_q             <= ifu_req_pc_i;
             line_addr_a_q    <= line_addr_a_d;
@@ -456,6 +464,19 @@ module icache #(
                 rsp_instrs_q <= assembled_instrs;
               end else begin
                 rsp_valid_q <= 1'b0;
+              end
+              if (HIT_PIPELINE_EN && req_accept_w) begin
+                // Accept next request in the same cycle as current hit resolution.
+                pc_q             <= ifu_req_pc_i;
+                line_addr_a_q    <= line_addr_a_d;
+                line_addr_b_q    <= line_addr_b_d;
+                index_a_q        <= index_a_d;
+                index_b_q        <= index_b_d;
+                tag_a_expected_q <= tag_a_expected_d;
+                tag_b_expected_q <= tag_b_expected_d;
+                start_slot_q     <= start_slot_d;
+                cross_line_q     <= cross_line_d;
+                req_killed_q     <= 1'b0;
               end
             end else begin
               rsp_valid_q <= 1'b0;
@@ -520,7 +541,11 @@ module icache #(
 
       LOOKUP: begin
         if (hit_all) begin
-          state_d = IDLE;
+          if (HIT_PIPELINE_EN && req_accept_w) begin
+            state_d = LOOKUP;
+          end else begin
+            state_d = IDLE;
+          end
         end else begin
           state_d = MISS_REQ;
         end
