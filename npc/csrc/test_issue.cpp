@@ -9,7 +9,6 @@
 // =================================================================
 // 配置参数
 // =================================================================
-const int RS_DEPTH = 16;
 const int INSTR_PER_FETCH = 4;
 // uop_t 大约 100+ bits，Verilator 会映射为 VlWide<4> (4个32位字)
 // 根据生成的头文件，这里通常假设宽度足以容纳。
@@ -247,14 +246,19 @@ int main(int argc, char **argv) {
     DispatchInstr stall_instr = {true, OP_STALL, 99, 0, 99, 0, 0, 99, 0};
     std::vector<DispatchInstr> batch(4, stall_instr); 
 
-    // 发射 4 次，共 16 条
-    for(int i=0; i<4; ++i) {
-        std::cout << "  Filling Batch " << i+1 << " (Ready=" << (int)top->issue_ready << ")" << std::endl;
-        assert(top->issue_ready == 1); 
+    // 按当前配置动态填满 RS（避免与可配置 RS_DEPTH 脱节）。
+    int fill_batches = 0;
+    const int max_fill_batches = 64; // 4 entries/batch -> supports RS up to 256
+    while (top->issue_ready && fill_batches < max_fill_batches) {
+        std::cout << "  Filling Batch " << fill_batches + 1
+                  << " (Ready=" << (int)top->issue_ready << ")" << std::endl;
         set_dispatch(top, batch);
         tick(top);
+        fill_batches++;
     }
     set_dispatch(top, {});
+    assert(fill_batches > 0 && "RS should accept at least one batch before full");
+    assert(fill_batches < max_fill_batches && "RS did not become full within safety bound");
     
     top->eval();
     std::cout << "  [Check] RS Full. issue_ready = " << (int)top->issue_ready << std::endl;
