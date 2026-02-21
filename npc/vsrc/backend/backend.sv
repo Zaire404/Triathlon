@@ -76,6 +76,7 @@ module backend #(
   localparam int unsigned LSU_LQ_DEPTH = (Cfg.ROB_DEPTH >= 16) ? 16 : Cfg.ROB_DEPTH;
   localparam int unsigned LSU_SQ_DEPTH = (Cfg.SB_DEPTH >= 16) ? 16 : Cfg.SB_DEPTH;
   localparam int unsigned MEM_DEP_STORE_DEPTH = 8;
+  localparam int unsigned COMPLETION_Q_DEPTH = 32;
   // A2.2: 开启 commit-time call/ret 更新，配合 BPU speculative RAS 降低 return miss。
   localparam bit ENABLE_COMMIT_RAS_UPDATE = (Cfg.ENABLE_COMMIT_RAS_UPDATE != 0);
 
@@ -232,6 +233,7 @@ module backend #(
   ) u_rob (
       .clk_i (clk_i),
       .rst_ni(rst_ni),
+      .flush_i(flush_from_backend),
 
       .dispatch_valid_i(rob_dispatch_valid),
       .dispatch_pc_i   (rob_dispatch_pc),
@@ -1564,6 +1566,14 @@ module backend #(
     fu_ecause[6]      = csr_wb_ecause;
   end
 
+  logic [WB_WIDTH-1:0]                    wb_raw_valid;
+  logic [WB_WIDTH-1:0][     Cfg.XLEN-1:0] wb_raw_data;
+  logic [WB_WIDTH-1:0][ROB_IDX_WIDTH-1:0] wb_raw_rob_idx;
+  logic [WB_WIDTH-1:0]                    wb_raw_exception;
+  logic [WB_WIDTH-1:0][              4:0] wb_raw_ecause;
+  logic [WB_WIDTH-1:0]                    wb_raw_is_mispred;
+  logic [WB_WIDTH-1:0][     Cfg.PLEN-1:0] wb_raw_redirect_pc;
+
   logic [WB_WIDTH-1:0]                    wb_valid;
   logic [WB_WIDTH-1:0][     Cfg.XLEN-1:0] wb_data;
   logic [WB_WIDTH-1:0][ROB_IDX_WIDTH-1:0] wb_rob_idx;
@@ -1571,6 +1581,7 @@ module backend #(
   logic [WB_WIDTH-1:0][              4:0] wb_ecause;
   logic [WB_WIDTH-1:0]                    wb_is_mispred;
   logic [WB_WIDTH-1:0][     Cfg.PLEN-1:0] wb_redirect_pc;
+  logic [$clog2(COMPLETION_Q_DEPTH + 1)-1:0] completion_q_count;
 
   writeback #(
       .Cfg          (Cfg),
@@ -1588,13 +1599,39 @@ module backend #(
 
       .fu_ready_o(fu_ready),
 
-      .wb_valid_o      (wb_valid),
-      .wb_data_o       (wb_data),
-      .wb_rob_idx_o    (wb_rob_idx),
-      .wb_exception_o  (wb_exception),
-      .wb_ecause_o     (wb_ecause),
-      .wb_is_mispred_o (wb_is_mispred),
-      .wb_redirect_pc_o(wb_redirect_pc)
+      .wb_valid_o      (wb_raw_valid),
+      .wb_data_o       (wb_raw_data),
+      .wb_rob_idx_o    (wb_raw_rob_idx),
+      .wb_exception_o  (wb_raw_exception),
+      .wb_ecause_o     (wb_raw_ecause),
+      .wb_is_mispred_o (wb_raw_is_mispred),
+      .wb_redirect_pc_o(wb_raw_redirect_pc)
+  );
+
+  completion_queue #(
+      .Cfg(Cfg),
+      .WB_WIDTH(WB_WIDTH),
+      .ROB_IDX_WIDTH(ROB_IDX_WIDTH),
+      .DEPTH(COMPLETION_Q_DEPTH)
+  ) u_completion_q (
+      .clk_i,
+      .rst_ni,
+      .flush_i(flush_from_backend),
+      .enq_valid_i(wb_raw_valid),
+      .enq_data_i(wb_raw_data),
+      .enq_rob_idx_i(wb_raw_rob_idx),
+      .enq_exception_i(wb_raw_exception),
+      .enq_ecause_i(wb_raw_ecause),
+      .enq_is_mispred_i(wb_raw_is_mispred),
+      .enq_redirect_pc_i(wb_raw_redirect_pc),
+      .deq_valid_o(wb_valid),
+      .deq_data_o(wb_data),
+      .deq_rob_idx_o(wb_rob_idx),
+      .deq_exception_o(wb_exception),
+      .deq_ecause_o(wb_ecause),
+      .deq_is_mispred_o(wb_is_mispred),
+      .deq_redirect_pc_o(wb_redirect_pc),
+      .count_o(completion_q_count)
   );
 
   always_comb begin

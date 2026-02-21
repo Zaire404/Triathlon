@@ -1083,6 +1083,30 @@ static void test_memdep_violation_requests_replay_without_deadlock(Vtb_backend *
   expect(committed_after_replay, "Mem-dep replay: backend still commits after replay request");
 }
 
+static void test_completion_queue_captures_non_hol_events(Vtb_backend *top, MemModel &mem) {
+  std::array<uint32_t, 32> rf{};
+  std::vector<uint32_t> commits;
+
+  reset(top, mem);
+  mem.block_miss_req = true;
+
+  send_group(top, mem, rf, commits, 0x15000,
+             {insn_lw(10, 0, 0x100), insn_addi(11, 0, 1), insn_addi(12, 0, 2), insn_addi(13, 0, 3)});
+
+  uint32_t max_completion_q_count = 0;
+  for (int cyc = 0; cyc < 120; cyc++) {
+    tick(top, mem);
+    update_commits(top, rf, commits);
+    if (static_cast<uint32_t>(top->dbg_completion_q_count_o) > max_completion_q_count) {
+      max_completion_q_count = static_cast<uint32_t>(top->dbg_completion_q_count_o);
+    }
+  }
+
+  expect(max_completion_q_count > 0,
+         "Completion queue: younger completed uops are visible while LSU head is blocked");
+  mem.block_miss_req = false;
+}
+
 int main(int argc, char **argv) {
   Verilated::commandArgs(argc, argv);
   Vtb_backend *top = new Vtb_backend;
@@ -1104,6 +1128,7 @@ int main(int argc, char **argv) {
   test_pending_replay_buffer_can_absorb_multiple_single_slot_groups(top, mem);
   test_pending_replay_buffer_depth_scales_for_single_slot_groups(top, mem);
   test_memdep_violation_requests_replay_without_deadlock(top, mem);
+  test_completion_queue_captures_non_hol_events(top, mem);
 
   std::cout << ANSI_RES_GRN << "--- [ALL BACKEND TESTS PASSED] ---" << ANSI_RES_RST << std::endl;
   delete top;

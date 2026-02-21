@@ -68,7 +68,8 @@ module tb_backend (
     output logic                               dbg_lsu_req_ready_o,
     output logic                               dbg_lsu_issue_fire_o,
     output logic [3:0]                         dbg_lsu_grp_lane_busy_o,
-    output logic                               dbg_mem_dep_replay_o
+    output logic                               dbg_mem_dep_replay_o,
+    output logic [7:0]                         dbg_completion_q_count_o
 );
 
   logic backend_flush_unused;
@@ -148,5 +149,6 @@ module tb_backend (
   assign dbg_lsu_issue_fire_o = dut.lsu_en & dut.lsu_req_ready;
   assign dbg_lsu_grp_lane_busy_o = {2'b0, dut.u_lsu_group.dbg_lane_busy};
   assign dbg_mem_dep_replay_o = dut.mem_dep_replay_valid;
+  assign dbg_completion_q_count_o = dut.completion_q_count;
 
 endmodule
