@@ -246,12 +246,24 @@ int main(int argc, char **argv) {
   int req_fire_cnt_while_blocked = 0;
   std::vector<uint32_t> req_pc_trace;
   req_pc_trace.reserve(16);
+  bool saw_prefetch_meta_before_flush = false;
+  uint32_t preflush_epoch_slot0 = 0;
 
   for (int i = 0; i < 120; ++i) {
     tick(top, mem);
     if (top->dbg_ifu_req_fire_o) {
       req_fire_cnt_while_blocked++;
       req_pc_trace.push_back(top->dbg_ifu_req_addr_o);
+    }
+    if (top->ibuffer_valid_o) {
+      if (!top->dbg_ibuf_meta_uniform_o) {
+        std::cerr << "[fail] ibuffer bundle metadata is not uniform before flush"
+                  << std::endl;
+        delete top;
+        return 1;
+      }
+      saw_prefetch_meta_before_flush = true;
+      preflush_epoch_slot0 = top->dbg_ibuf_fetch_epoch_slot0_o;
     }
   }
 
@@ -296,12 +308,22 @@ int main(int argc, char **argv) {
   bool got_first_rsp = false;
   uint32_t first_rsp_pc = 0;
   uint32_t first_rsp_instr0 = 0;
+  uint32_t first_rsp_ftq_id_slot0 = 0;
+  uint32_t first_rsp_epoch_slot0 = 0;
   for (int i = 0; i < 200; ++i) {
     tick(top, mem);
     if (top->ibuffer_valid_o) {
+      if (!top->dbg_ibuf_meta_uniform_o) {
+        std::cerr << "[fail] ibuffer bundle metadata is not uniform after flush"
+                  << std::endl;
+        delete top;
+        return 1;
+      }
       got_first_rsp = true;
       first_rsp_pc = top->ibuffer_pc_o;
       first_rsp_instr0 = get_instr(top, 0);
+      first_rsp_ftq_id_slot0 = top->dbg_ibuf_ftq_id_slot0_o;
+      first_rsp_epoch_slot0 = top->dbg_ibuf_fetch_epoch_slot0_o;
       break;
     }
   }
@@ -315,7 +337,9 @@ int main(int argc, char **argv) {
 
   std::cout << std::hex << std::showbase;
   std::cout << "[info] first_visible_rsp_pc=" << first_rsp_pc
-            << " first_instr0=" << first_rsp_instr0 << std::endl;
+            << " first_instr0=" << first_rsp_instr0
+            << " first_ftq_id_slot0=" << first_rsp_ftq_id_slot0
+            << " first_epoch_slot0=" << first_rsp_epoch_slot0 << std::endl;
   std::cout << std::dec << std::noshowbase;
 
   if (first_rsp_pc != kRedirectPc) {
@@ -326,6 +350,13 @@ int main(int argc, char **argv) {
 
   if (first_rsp_instr0 != 0x10000013u) {
     std::cerr << "[fail] unexpected instruction at redirect target" << std::endl;
+    delete top;
+    return 1;
+  }
+  if (saw_prefetch_meta_before_flush &&
+      first_rsp_epoch_slot0 == preflush_epoch_slot0) {
+    std::cerr << "[fail] fetch_epoch did not advance across flush (stale epoch visible)"
+              << std::endl;
     delete top;
     return 1;
   }

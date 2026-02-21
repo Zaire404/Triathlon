@@ -23,11 +23,37 @@ package config_pkg;
     int unsigned ILEN;
     // Branch predictor mode: 1 enables gshare, 0 uses PC-only index
     int unsigned BPU_USE_GSHARE;
+    // Branch predictor mode: 1 enables TAGE conditional predictor
+    int unsigned BPU_USE_TAGE;
     // Branch predictor mode: 1 enables tournament chooser
     int unsigned BPU_USE_TOURNAMENT;
     // Branch predictor index hash controls
     int unsigned BPU_BTB_HASH_ENABLE;
     int unsigned BPU_BHT_HASH_ENABLE;
+    // Branch predictor geometry controls
+    int unsigned BPU_BTB_ENTRIES;
+    int unsigned BPU_BHT_ENTRIES;
+    int unsigned BPU_RAS_DEPTH;
+    int unsigned BPU_GHR_BITS;
+    // Statistical Corrector controls
+    int unsigned BPU_USE_SC_L;
+    int unsigned BPU_SC_L_ENTRIES;
+    int unsigned BPU_SC_L_CONF_THRESH;
+    int unsigned BPU_SC_L_REQUIRE_DISAGREE;
+    int unsigned BPU_SC_L_REQUIRE_BOTH_WEAK;
+    int unsigned BPU_SC_L_BLOCK_ON_TAGE_HIT;
+    // Loop predictor controls
+    int unsigned BPU_USE_LOOP;
+    int unsigned BPU_LOOP_ENTRIES;
+    int unsigned BPU_LOOP_TAG_BITS;
+    int unsigned BPU_LOOP_CONF_THRESH;
+    // ITTAGE indirect target predictor controls
+    int unsigned BPU_USE_ITTAGE;
+    int unsigned BPU_ITTAGE_ENTRIES;
+    int unsigned BPU_ITTAGE_TAG_BITS;
+    // TAGE override policy controls
+    int unsigned BPU_TAGE_OVERRIDE_MIN_PROVIDER;
+    int unsigned BPU_TAGE_OVERRIDE_REQUIRE_LEGACY_WEAK;
 
     // Frontend micro-architecture toggles
     int unsigned ICACHE_HIT_PIPELINE_EN;
@@ -82,11 +108,37 @@ package config_pkg;
     int unsigned FETCH_WIDTH;
     // Branch predictor mode: 1 enables gshare, 0 uses PC-only index
     int unsigned BPU_USE_GSHARE;
+    // Branch predictor mode: 1 enables TAGE conditional predictor
+    int unsigned BPU_USE_TAGE;
     // Branch predictor mode: 1 enables tournament chooser
     int unsigned BPU_USE_TOURNAMENT;
     // Branch predictor index hash controls
     int unsigned BPU_BTB_HASH_ENABLE;
     int unsigned BPU_BHT_HASH_ENABLE;
+    // Branch predictor geometry controls
+    int unsigned BPU_BTB_ENTRIES;
+    int unsigned BPU_BHT_ENTRIES;
+    int unsigned BPU_RAS_DEPTH;
+    int unsigned BPU_GHR_BITS;
+    // Statistical Corrector controls
+    int unsigned BPU_USE_SC_L;
+    int unsigned BPU_SC_L_ENTRIES;
+    int unsigned BPU_SC_L_CONF_THRESH;
+    int unsigned BPU_SC_L_REQUIRE_DISAGREE;
+    int unsigned BPU_SC_L_REQUIRE_BOTH_WEAK;
+    int unsigned BPU_SC_L_BLOCK_ON_TAGE_HIT;
+    // Loop predictor controls
+    int unsigned BPU_USE_LOOP;
+    int unsigned BPU_LOOP_ENTRIES;
+    int unsigned BPU_LOOP_TAG_BITS;
+    int unsigned BPU_LOOP_CONF_THRESH;
+    // ITTAGE indirect target predictor controls
+    int unsigned BPU_USE_ITTAGE;
+    int unsigned BPU_ITTAGE_ENTRIES;
+    int unsigned BPU_ITTAGE_TAG_BITS;
+    // TAGE override policy controls
+    int unsigned BPU_TAGE_OVERRIDE_MIN_PROVIDER;
+    int unsigned BPU_TAGE_OVERRIDE_REQUIRE_LEGACY_WEAK;
 
     // Frontend micro-architecture toggles
     int unsigned ICACHE_HIT_PIPELINE_EN;

@@ -2,7 +2,7 @@ import config_pkg::*;
 import build_config_pkg::*;
 import global_config_pkg::*;
 
-module tb_bpu (
+module tb_bpu_phase5_red (
     // --- 输入端口  ---
     input logic clk_i,
     input logic rst_i,

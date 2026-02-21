@@ -15,9 +15,34 @@ package build_config_pkg;
     cfg.ILEN = user_cfg.ILEN;
     cfg.FETCH_WIDTH = user_cfg.INSTR_PER_FETCH * user_cfg.ILEN / 8;
     cfg.BPU_USE_GSHARE = user_cfg.BPU_USE_GSHARE;
+    cfg.BPU_USE_TAGE = user_cfg.BPU_USE_TAGE;
     cfg.BPU_USE_TOURNAMENT = user_cfg.BPU_USE_TOURNAMENT;
     cfg.BPU_BTB_HASH_ENABLE = user_cfg.BPU_BTB_HASH_ENABLE;
     cfg.BPU_BHT_HASH_ENABLE = user_cfg.BPU_BHT_HASH_ENABLE;
+    cfg.BPU_BTB_ENTRIES = (user_cfg.BPU_BTB_ENTRIES >= 16) ? user_cfg.BPU_BTB_ENTRIES : 128;
+    cfg.BPU_BHT_ENTRIES = (user_cfg.BPU_BHT_ENTRIES >= 32) ? user_cfg.BPU_BHT_ENTRIES : 512;
+    cfg.BPU_RAS_DEPTH = (user_cfg.BPU_RAS_DEPTH >= 4) ? user_cfg.BPU_RAS_DEPTH : 16;
+    cfg.BPU_GHR_BITS = (user_cfg.BPU_GHR_BITS >= 4) ? user_cfg.BPU_GHR_BITS : 8;
+    cfg.BPU_USE_SC_L = user_cfg.BPU_USE_SC_L;
+    cfg.BPU_SC_L_ENTRIES = (user_cfg.BPU_SC_L_ENTRIES >= 64) ? user_cfg.BPU_SC_L_ENTRIES : 512;
+    cfg.BPU_SC_L_CONF_THRESH = (user_cfg.BPU_SC_L_CONF_THRESH <= 7) ?
+        user_cfg.BPU_SC_L_CONF_THRESH : 3;
+    cfg.BPU_SC_L_REQUIRE_DISAGREE = (user_cfg.BPU_SC_L_REQUIRE_DISAGREE != 0) ? 1 : 0;
+    cfg.BPU_SC_L_REQUIRE_BOTH_WEAK = (user_cfg.BPU_SC_L_REQUIRE_BOTH_WEAK != 0) ? 1 : 0;
+    cfg.BPU_SC_L_BLOCK_ON_TAGE_HIT = (user_cfg.BPU_SC_L_BLOCK_ON_TAGE_HIT != 0) ? 1 : 0;
+    cfg.BPU_USE_LOOP = (user_cfg.BPU_USE_LOOP != 0) ? 1 : 0;
+    cfg.BPU_LOOP_ENTRIES = (user_cfg.BPU_LOOP_ENTRIES >= 16) ? user_cfg.BPU_LOOP_ENTRIES : 64;
+    cfg.BPU_LOOP_TAG_BITS = (user_cfg.BPU_LOOP_TAG_BITS >= 4) ? user_cfg.BPU_LOOP_TAG_BITS : 10;
+    cfg.BPU_LOOP_CONF_THRESH = (user_cfg.BPU_LOOP_CONF_THRESH <= 3) ?
+        user_cfg.BPU_LOOP_CONF_THRESH : 2;
+    cfg.BPU_USE_ITTAGE = (user_cfg.BPU_USE_ITTAGE != 0) ? 1 : 0;
+    cfg.BPU_ITTAGE_ENTRIES = (user_cfg.BPU_ITTAGE_ENTRIES >= 16) ?
+        user_cfg.BPU_ITTAGE_ENTRIES : 128;
+    cfg.BPU_ITTAGE_TAG_BITS = (user_cfg.BPU_ITTAGE_TAG_BITS >= 4) ?
+        user_cfg.BPU_ITTAGE_TAG_BITS : 10;
+    cfg.BPU_TAGE_OVERRIDE_MIN_PROVIDER = (user_cfg.BPU_TAGE_OVERRIDE_MIN_PROVIDER <= 3) ?
+        user_cfg.BPU_TAGE_OVERRIDE_MIN_PROVIDER : 3;
+    cfg.BPU_TAGE_OVERRIDE_REQUIRE_LEGACY_WEAK = user_cfg.BPU_TAGE_OVERRIDE_REQUIRE_LEGACY_WEAK;
     cfg.ICACHE_HIT_PIPELINE_EN = user_cfg.ICACHE_HIT_PIPELINE_EN;
     cfg.IFU_FETCHQ_BYPASS_EN = user_cfg.IFU_FETCHQ_BYPASS_EN;
     cfg.IFU_REQ_DEPTH = user_cfg.IFU_REQ_DEPTH;

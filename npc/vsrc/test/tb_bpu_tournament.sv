@@ -44,6 +44,7 @@ module tb_bpu_tournament (
       .BTB_HASH_ENABLE(1'b0),
       .BHT_HASH_ENABLE(1'b0),
       .USE_GSHARE(1'b1),
+      .USE_TAGE(1'b0),
       .GHR_BITS(1)
   ) i_BPU (
       .clk_i(clk_i),

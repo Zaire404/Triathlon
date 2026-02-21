@@ -36,6 +36,8 @@ module ifu #(
     output logic [Cfg.INSTR_PER_FETCH-1:0][Cfg.ILEN-1:0] ifu_ibuffer_rsp_data_o,
     output logic [Cfg.INSTR_PER_FETCH-1:0] ifu_ibuffer_rsp_slot_valid_o,
     output logic [Cfg.INSTR_PER_FETCH-1:0][Cfg.PLEN-1:0] ifu_ibuffer_rsp_pred_npc_o,
+    output logic [Cfg.INSTR_PER_FETCH-1:0][((Cfg.IFU_INF_DEPTH >= 2) ? $clog2(Cfg.IFU_INF_DEPTH) : 1)-1:0] ifu_ibuffer_rsp_ftq_id_o,
+    output logic [Cfg.INSTR_PER_FETCH-1:0][2:0] ifu_ibuffer_rsp_fetch_epoch_o,
 
     //--- 4.后端冲刷/重定向接口 ---
     input logic                flush_i,
@@ -45,6 +47,8 @@ module ifu #(
   localparam int unsigned INSTR_BYTES = Cfg.ILEN / 8;
   localparam int unsigned SLOT_IDX_W = (Cfg.INSTR_PER_FETCH > 1) ? $clog2(Cfg.INSTR_PER_FETCH) : 1;
   localparam int unsigned EPOCH_W = 3;
+  localparam int unsigned FTQ_DEPTH = (Cfg.IFU_INF_DEPTH >= 2) ? Cfg.IFU_INF_DEPTH : 2;
+  localparam int unsigned FTQ_ID_W = (FTQ_DEPTH > 1) ? $clog2(FTQ_DEPTH) : 1;
 
   // Pending request FIFO (BPU generated).
   localparam int unsigned REQ_DEPTH =
@@ -63,7 +67,9 @@ module ifu #(
       (Cfg.IFU_FQ_DEPTH >= 2) ? Cfg.IFU_FQ_DEPTH : ((Cfg.INSTR_PER_FETCH >= 2) ? Cfg.INSTR_PER_FETCH : 2);
   localparam int unsigned FQ_CNT_W = $clog2(FQ_DEPTH + 1);
   localparam int unsigned FQ_DATA_W = Cfg.PLEN + (Cfg.INSTR_PER_FETCH * Cfg.ILEN) +
-                                      Cfg.INSTR_PER_FETCH + (Cfg.INSTR_PER_FETCH * Cfg.PLEN);
+                                      Cfg.INSTR_PER_FETCH + (Cfg.INSTR_PER_FETCH * Cfg.PLEN) +
+                                      (Cfg.INSTR_PER_FETCH * FTQ_ID_W) +
+                                      (Cfg.INSTR_PER_FETCH * EPOCH_W);
 
   logic [Cfg.PLEN-1:0] pc_reg;
   logic [Cfg.PLEN-1:0] bpu_query_pc_w;
@@ -75,6 +81,7 @@ module ifu #(
   logic [REQ_DEPTH-1:0] req_pred_slot_valid_fifo_q;
   logic [REQ_DEPTH-1:0][SLOT_IDX_W-1:0] req_pred_slot_idx_fifo_q;
   logic [REQ_DEPTH-1:0][Cfg.PLEN-1:0] req_pred_target_fifo_q;
+  logic [REQ_DEPTH-1:0][FTQ_ID_W-1:0] req_ftq_id_fifo_q;
   logic [REQ_DEPTH-1:0][EPOCH_W-1:0] req_epoch_fifo_q;
   logic [REQ_PTR_W-1:0] req_head_q;
   logic [REQ_PTR_W-1:0] req_tail_q;
@@ -85,6 +92,7 @@ module ifu #(
   logic [INF_DEPTH-1:0] inf_pred_slot_valid_fifo_q;
   logic [INF_DEPTH-1:0][SLOT_IDX_W-1:0] inf_pred_slot_idx_fifo_q;
   logic [INF_DEPTH-1:0][Cfg.PLEN-1:0] inf_pred_target_fifo_q;
+  logic [INF_DEPTH-1:0][FTQ_ID_W-1:0] inf_ftq_id_fifo_q;
   logic [INF_DEPTH-1:0][EPOCH_W-1:0] inf_epoch_fifo_q;
   logic [INF_PTR_W-1:0] inf_head_q;
   logic [INF_PTR_W-1:0] inf_tail_q;
@@ -103,10 +111,13 @@ module ifu #(
   logic inf_head_pred_slot_valid_w;
   logic [SLOT_IDX_W-1:0] inf_head_pred_slot_idx_w;
   logic [Cfg.PLEN-1:0] inf_head_pred_target_w;
+  logic [FTQ_ID_W-1:0] inf_head_ftq_id_w;
   logic [EPOCH_W-1:0] inf_head_epoch_w;
 
   logic [Cfg.INSTR_PER_FETCH-1:0] rsp_slot_valid_w;
   logic [Cfg.INSTR_PER_FETCH-1:0][Cfg.PLEN-1:0] rsp_pred_npc_w;
+  logic [Cfg.INSTR_PER_FETCH-1:0][FTQ_ID_W-1:0] rsp_ftq_id_w;
+  logic [Cfg.INSTR_PER_FETCH-1:0][EPOCH_W-1:0] rsp_fetch_epoch_w;
 
   logic req_fifo_empty_w;
   logic req_fifo_full_w;
@@ -134,6 +145,12 @@ module ifu #(
 
   logic [REQ_CNT_W:0] req_outstanding_w;
   logic [FQ_CNT_W:0] storage_budget_w;
+  logic ftq_alloc_ready_w;
+  logic ftq_alloc_fire_w;
+  logic [FTQ_ID_W-1:0] ftq_alloc_id_w;
+  logic [Cfg.PLEN-1:0] ftq_alloc_pc_w;
+  logic [EPOCH_W-1:0] ftq_alloc_epoch_w;
+  logic [((FTQ_DEPTH > 1) ? $clog2(FTQ_DEPTH + 1) : 1)-1:0] ftq_count_w;
 
   function automatic [REQ_PTR_W-1:0] req_ptr_inc(input [REQ_PTR_W-1:0] ptr);
     if (ptr == REQ_PTR_W'(REQ_DEPTH - 1)) begin
@@ -160,6 +177,7 @@ module ifu #(
   assign inf_head_pred_slot_valid_w = inf_pred_slot_valid_fifo_q[inf_head_q];
   assign inf_head_pred_slot_idx_w = inf_pred_slot_idx_fifo_q[inf_head_q];
   assign inf_head_pred_target_w = inf_pred_target_fifo_q[inf_head_q];
+  assign inf_head_ftq_id_w = inf_ftq_id_fifo_q[inf_head_q];
   assign inf_head_epoch_w = inf_epoch_fifo_q[inf_head_q];
 
   always_comb begin
@@ -170,11 +188,14 @@ module ifu #(
 
   // BPU side: enqueue requests into pending FIFO when space is available.
   assign bpu_query_pc_w = flush_i ? redirect_pc_i : pc_reg;
-  assign can_accept_bpu_w = flush_i ? 1'b1 : (!req_fifo_full_w || req_issue_fire_w);
+  assign can_accept_bpu_w = (flush_i ? 1'b1 : (!req_fifo_full_w || req_issue_fire_w)) &&
+                            ftq_alloc_ready_w;
   assign ifu2bpu_pc_o = bpu_query_pc_w;
   assign ifu2bpu_handshake_o.valid = can_accept_bpu_w;
   assign ifu2bpu_handshake_o.ready = can_accept_bpu_w && bpu2ifu_handshake_i.valid;
   assign req_enq_fire_w = ifu2bpu_handshake_o.valid && ifu2bpu_handshake_o.ready;
+  assign ftq_alloc_pc_w = bpu_query_pc_w;
+  assign ftq_alloc_epoch_w = flush_i ? flush_next_epoch_w : fetch_epoch_q;
 
   // ICache side: issue oldest pending request.
   assign rsp_epoch_match_w = !inf_fifo_empty_w && (inf_head_epoch_w == fetch_epoch_q);
@@ -212,6 +233,8 @@ module ifu #(
     for (int i = 0; i < Cfg.INSTR_PER_FETCH; i++) begin
       rsp_slot_valid_w[i] = 1'b1;
       rsp_pred_npc_w[i] = inf_head_pc_w + Cfg.PLEN'(INSTR_BYTES * (i + 1));
+      rsp_ftq_id_w[i] = inf_head_ftq_id_w;
+      rsp_fetch_epoch_w[i] = inf_head_epoch_w;
       if (inf_head_pred_slot_valid_w) begin
         rsp_slot_valid_w[i] = (i <= int'(inf_head_pred_slot_idx_w));
         if (i > int'(inf_head_pred_slot_idx_w)) begin
@@ -223,10 +246,42 @@ module ifu #(
     end
   end
 
-  assign fq_enq_data_w = {inf_head_pc_w, icache2ifu_rsp_data_i, rsp_slot_valid_w, rsp_pred_npc_w};
+  assign fq_enq_data_w = {inf_head_pc_w, icache2ifu_rsp_data_i, rsp_slot_valid_w, rsp_pred_npc_w,
+                          rsp_ftq_id_w, rsp_fetch_epoch_w};
   assign {ifu_ibuffer_rsp_pc_o, ifu_ibuffer_rsp_data_o, ifu_ibuffer_rsp_slot_valid_o,
-          ifu_ibuffer_rsp_pred_npc_o} = fq_deq_data_w;
+          ifu_ibuffer_rsp_pred_npc_o, ifu_ibuffer_rsp_ftq_id_o,
+          ifu_ibuffer_rsp_fetch_epoch_o} = fq_deq_data_w;
   assign ifu_ibuffer_rsp_valid_o = fq_deq_valid_w;
+
+  ftq #(
+      .Cfg(Cfg),
+      .DEPTH(FTQ_DEPTH),
+      .EPOCH_W(EPOCH_W)
+  ) u_ftq (
+      .clk_i(clk),
+      .rst_ni(~rst),
+      .flush_i(flush_i),
+      .alloc_valid_i(req_enq_fire_w),
+      .alloc_ready_o(ftq_alloc_ready_w),
+      .alloc_fire_o(ftq_alloc_fire_w),
+      .alloc_id_o(ftq_alloc_id_w),
+      .alloc_pc_i(ftq_alloc_pc_w),
+      .alloc_pred_slot_valid_i(bpu2ifu_pred_slot_valid_i),
+      .alloc_pred_slot_idx_i(bpu2ifu_pred_slot_idx_i),
+      .alloc_pred_target_i(bpu2ifu_pred_target_i),
+      .alloc_epoch_i(ftq_alloc_epoch_w),
+      .free_valid_i(rsp_capture_w),
+      .free_id_i(inf_head_ftq_id_w),
+      .lookup_valid_i(1'b0),
+      .lookup_id_i('0),
+      .lookup_hit_o(),
+      .lookup_pc_o(),
+      .lookup_pred_slot_valid_o(),
+      .lookup_pred_slot_idx_o(),
+      .lookup_pred_target_o(),
+      .lookup_epoch_o(),
+      .count_o(ftq_count_w)
+  );
 
   bundle_fifo #(
       .DATA_W(FQ_DATA_W),
@@ -256,6 +311,7 @@ module ifu #(
       req_pred_slot_valid_fifo_q <= '0;
       req_pred_slot_idx_fifo_q <= '0;
       req_pred_target_fifo_q <= '0;
+      req_ftq_id_fifo_q <= '0;
       req_epoch_fifo_q <= '0;
       req_head_q <= '0;
       req_tail_q <= '0;
@@ -265,6 +321,7 @@ module ifu #(
       inf_pred_slot_valid_fifo_q <= '0;
       inf_pred_slot_idx_fifo_q <= '0;
       inf_pred_target_fifo_q <= '0;
+      inf_ftq_id_fifo_q <= '0;
       inf_epoch_fifo_q <= '0;
       inf_head_q <= '0;
       inf_tail_q <= '0;
@@ -283,6 +340,7 @@ module ifu #(
           req_pred_slot_valid_fifo_q['0] <= bpu2ifu_pred_slot_valid_i;
           req_pred_slot_idx_fifo_q['0] <= bpu2ifu_pred_slot_idx_i;
           req_pred_target_fifo_q['0] <= bpu2ifu_pred_target_i;
+          req_ftq_id_fifo_q['0] <= ftq_alloc_id_w;
           req_epoch_fifo_q['0] <= flush_next_epoch_w;
           req_tail_q <= REQ_PTR_W'(1);
           req_count_q <= REQ_CNT_W'(1);
@@ -302,6 +360,7 @@ module ifu #(
           req_pred_slot_valid_fifo_q[req_tail_q] <= bpu2ifu_pred_slot_valid_i;
           req_pred_slot_idx_fifo_q[req_tail_q] <= bpu2ifu_pred_slot_idx_i;
           req_pred_target_fifo_q[req_tail_q] <= bpu2ifu_pred_target_i;
+          req_ftq_id_fifo_q[req_tail_q] <= ftq_alloc_id_w;
           req_epoch_fifo_q[req_tail_q] <= fetch_epoch_q;
           req_tail_q <= req_ptr_inc(req_tail_q);
           pc_reg <= bpu2ifu_predicted_pc_i;
@@ -312,6 +371,7 @@ module ifu #(
           inf_pred_slot_valid_fifo_q[inf_tail_q] <= req_pred_slot_valid_fifo_q[req_head_q];
           inf_pred_slot_idx_fifo_q[inf_tail_q] <= req_pred_slot_idx_fifo_q[req_head_q];
           inf_pred_target_fifo_q[inf_tail_q] <= req_pred_target_fifo_q[req_head_q];
+          inf_ftq_id_fifo_q[inf_tail_q] <= req_ftq_id_fifo_q[req_head_q];
           inf_epoch_fifo_q[inf_tail_q] <= req_epoch_fifo_q[req_head_q];
           inf_tail_q <= inf_ptr_inc(inf_tail_q);
           req_head_q <= req_ptr_inc(req_head_q);

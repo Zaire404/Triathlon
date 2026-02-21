@@ -11,9 +11,29 @@ module tb_build_config (
     input int unsigned i_VLEN,
     input int unsigned i_ILEN,
     input int unsigned i_BPU_USE_GSHARE,
+    input int unsigned i_BPU_USE_TAGE,
     input int unsigned i_BPU_USE_TOURNAMENT,
     input int unsigned i_BPU_BTB_HASH_ENABLE,
     input int unsigned i_BPU_BHT_HASH_ENABLE,
+    input int unsigned i_BPU_BTB_ENTRIES,
+    input int unsigned i_BPU_BHT_ENTRIES,
+    input int unsigned i_BPU_RAS_DEPTH,
+    input int unsigned i_BPU_GHR_BITS,
+    input int unsigned i_BPU_USE_SC_L,
+    input int unsigned i_BPU_SC_L_ENTRIES,
+    input int unsigned i_BPU_SC_L_CONF_THRESH,
+    input int unsigned i_BPU_SC_L_REQUIRE_DISAGREE,
+    input int unsigned i_BPU_SC_L_REQUIRE_BOTH_WEAK,
+    input int unsigned i_BPU_SC_L_BLOCK_ON_TAGE_HIT,
+    input int unsigned i_BPU_USE_LOOP,
+    input int unsigned i_BPU_LOOP_ENTRIES,
+    input int unsigned i_BPU_LOOP_TAG_BITS,
+    input int unsigned i_BPU_LOOP_CONF_THRESH,
+    input int unsigned i_BPU_USE_ITTAGE,
+    input int unsigned i_BPU_ITTAGE_ENTRIES,
+    input int unsigned i_BPU_ITTAGE_TAG_BITS,
+    input int unsigned i_BPU_TAGE_OVERRIDE_MIN_PROVIDER,
+    input int unsigned i_BPU_TAGE_OVERRIDE_REQUIRE_LEGACY_WEAK,
     input int unsigned i_ICACHE_HIT_PIPELINE_EN,
     input int unsigned i_IFU_FETCHQ_BYPASS_EN,
     input int unsigned i_IFU_REQ_DEPTH,
@@ -34,9 +54,29 @@ module tb_build_config (
     output int unsigned o_GPLEN,
     output int unsigned o_INSTR_PER_FETCH,
     output int unsigned o_BPU_USE_GSHARE,
+    output int unsigned o_BPU_USE_TAGE,
     output int unsigned o_BPU_USE_TOURNAMENT,
     output int unsigned o_BPU_BTB_HASH_ENABLE,
     output int unsigned o_BPU_BHT_HASH_ENABLE,
+    output int unsigned o_BPU_BTB_ENTRIES,
+    output int unsigned o_BPU_BHT_ENTRIES,
+    output int unsigned o_BPU_RAS_DEPTH,
+    output int unsigned o_BPU_GHR_BITS,
+    output int unsigned o_BPU_USE_SC_L,
+    output int unsigned o_BPU_SC_L_ENTRIES,
+    output int unsigned o_BPU_SC_L_CONF_THRESH,
+    output int unsigned o_BPU_SC_L_REQUIRE_DISAGREE,
+    output int unsigned o_BPU_SC_L_REQUIRE_BOTH_WEAK,
+    output int unsigned o_BPU_SC_L_BLOCK_ON_TAGE_HIT,
+    output int unsigned o_BPU_USE_LOOP,
+    output int unsigned o_BPU_LOOP_ENTRIES,
+    output int unsigned o_BPU_LOOP_TAG_BITS,
+    output int unsigned o_BPU_LOOP_CONF_THRESH,
+    output int unsigned o_BPU_USE_ITTAGE,
+    output int unsigned o_BPU_ITTAGE_ENTRIES,
+    output int unsigned o_BPU_ITTAGE_TAG_BITS,
+    output int unsigned o_BPU_TAGE_OVERRIDE_MIN_PROVIDER,
+    output int unsigned o_BPU_TAGE_OVERRIDE_REQUIRE_LEGACY_WEAK,
     output int unsigned o_ICACHE_HIT_PIPELINE_EN,
     output int unsigned o_IFU_FETCHQ_BYPASS_EN,
     output int unsigned o_IFU_REQ_DEPTH,
@@ -65,9 +105,30 @@ module tb_build_config (
   assign user_cfg_in.VLEN              = i_VLEN;
   assign user_cfg_in.ILEN              = i_ILEN;
   assign user_cfg_in.BPU_USE_GSHARE    = i_BPU_USE_GSHARE;
+  assign user_cfg_in.BPU_USE_TAGE      = i_BPU_USE_TAGE;
   assign user_cfg_in.BPU_USE_TOURNAMENT = i_BPU_USE_TOURNAMENT;
   assign user_cfg_in.BPU_BTB_HASH_ENABLE = i_BPU_BTB_HASH_ENABLE;
   assign user_cfg_in.BPU_BHT_HASH_ENABLE = i_BPU_BHT_HASH_ENABLE;
+  assign user_cfg_in.BPU_BTB_ENTRIES = i_BPU_BTB_ENTRIES;
+  assign user_cfg_in.BPU_BHT_ENTRIES = i_BPU_BHT_ENTRIES;
+  assign user_cfg_in.BPU_RAS_DEPTH = i_BPU_RAS_DEPTH;
+  assign user_cfg_in.BPU_GHR_BITS = i_BPU_GHR_BITS;
+  assign user_cfg_in.BPU_USE_SC_L = i_BPU_USE_SC_L;
+  assign user_cfg_in.BPU_SC_L_ENTRIES = i_BPU_SC_L_ENTRIES;
+  assign user_cfg_in.BPU_SC_L_CONF_THRESH = i_BPU_SC_L_CONF_THRESH;
+  assign user_cfg_in.BPU_SC_L_REQUIRE_DISAGREE = i_BPU_SC_L_REQUIRE_DISAGREE;
+  assign user_cfg_in.BPU_SC_L_REQUIRE_BOTH_WEAK = i_BPU_SC_L_REQUIRE_BOTH_WEAK;
+  assign user_cfg_in.BPU_SC_L_BLOCK_ON_TAGE_HIT = i_BPU_SC_L_BLOCK_ON_TAGE_HIT;
+  assign user_cfg_in.BPU_USE_LOOP = i_BPU_USE_LOOP;
+  assign user_cfg_in.BPU_LOOP_ENTRIES = i_BPU_LOOP_ENTRIES;
+  assign user_cfg_in.BPU_LOOP_TAG_BITS = i_BPU_LOOP_TAG_BITS;
+  assign user_cfg_in.BPU_LOOP_CONF_THRESH = i_BPU_LOOP_CONF_THRESH;
+  assign user_cfg_in.BPU_USE_ITTAGE = i_BPU_USE_ITTAGE;
+  assign user_cfg_in.BPU_ITTAGE_ENTRIES = i_BPU_ITTAGE_ENTRIES;
+  assign user_cfg_in.BPU_ITTAGE_TAG_BITS = i_BPU_ITTAGE_TAG_BITS;
+  assign user_cfg_in.BPU_TAGE_OVERRIDE_MIN_PROVIDER = i_BPU_TAGE_OVERRIDE_MIN_PROVIDER;
+  assign user_cfg_in.BPU_TAGE_OVERRIDE_REQUIRE_LEGACY_WEAK =
+      i_BPU_TAGE_OVERRIDE_REQUIRE_LEGACY_WEAK;
   assign user_cfg_in.ICACHE_HIT_PIPELINE_EN = i_ICACHE_HIT_PIPELINE_EN;
   assign user_cfg_in.IFU_FETCHQ_BYPASS_EN = i_IFU_FETCHQ_BYPASS_EN;
   assign user_cfg_in.IFU_REQ_DEPTH = i_IFU_REQ_DEPTH;
@@ -97,9 +158,29 @@ module tb_build_config (
   assign o_GPLEN                  = cfg_out.GPLEN;
   assign o_INSTR_PER_FETCH        = cfg_out.INSTR_PER_FETCH;
   assign o_BPU_USE_GSHARE         = cfg_out.BPU_USE_GSHARE;
+  assign o_BPU_USE_TAGE           = cfg_out.BPU_USE_TAGE;
   assign o_BPU_USE_TOURNAMENT     = cfg_out.BPU_USE_TOURNAMENT;
   assign o_BPU_BTB_HASH_ENABLE    = cfg_out.BPU_BTB_HASH_ENABLE;
   assign o_BPU_BHT_HASH_ENABLE    = cfg_out.BPU_BHT_HASH_ENABLE;
+  assign o_BPU_BTB_ENTRIES        = cfg_out.BPU_BTB_ENTRIES;
+  assign o_BPU_BHT_ENTRIES        = cfg_out.BPU_BHT_ENTRIES;
+  assign o_BPU_RAS_DEPTH          = cfg_out.BPU_RAS_DEPTH;
+  assign o_BPU_GHR_BITS           = cfg_out.BPU_GHR_BITS;
+  assign o_BPU_USE_SC_L           = cfg_out.BPU_USE_SC_L;
+  assign o_BPU_SC_L_ENTRIES       = cfg_out.BPU_SC_L_ENTRIES;
+  assign o_BPU_SC_L_CONF_THRESH   = cfg_out.BPU_SC_L_CONF_THRESH;
+  assign o_BPU_SC_L_REQUIRE_DISAGREE = cfg_out.BPU_SC_L_REQUIRE_DISAGREE;
+  assign o_BPU_SC_L_REQUIRE_BOTH_WEAK = cfg_out.BPU_SC_L_REQUIRE_BOTH_WEAK;
+  assign o_BPU_SC_L_BLOCK_ON_TAGE_HIT = cfg_out.BPU_SC_L_BLOCK_ON_TAGE_HIT;
+  assign o_BPU_USE_LOOP = cfg_out.BPU_USE_LOOP;
+  assign o_BPU_LOOP_ENTRIES = cfg_out.BPU_LOOP_ENTRIES;
+  assign o_BPU_LOOP_TAG_BITS = cfg_out.BPU_LOOP_TAG_BITS;
+  assign o_BPU_LOOP_CONF_THRESH = cfg_out.BPU_LOOP_CONF_THRESH;
+  assign o_BPU_USE_ITTAGE = cfg_out.BPU_USE_ITTAGE;
+  assign o_BPU_ITTAGE_ENTRIES = cfg_out.BPU_ITTAGE_ENTRIES;
+  assign o_BPU_ITTAGE_TAG_BITS = cfg_out.BPU_ITTAGE_TAG_BITS;
+  assign o_BPU_TAGE_OVERRIDE_MIN_PROVIDER = cfg_out.BPU_TAGE_OVERRIDE_MIN_PROVIDER;
+  assign o_BPU_TAGE_OVERRIDE_REQUIRE_LEGACY_WEAK = cfg_out.BPU_TAGE_OVERRIDE_REQUIRE_LEGACY_WEAK;
   assign o_ICACHE_HIT_PIPELINE_EN = cfg_out.ICACHE_HIT_PIPELINE_EN;
   assign o_IFU_FETCHQ_BYPASS_EN   = cfg_out.IFU_FETCHQ_BYPASS_EN;
   assign o_IFU_REQ_DEPTH          = cfg_out.IFU_REQ_DEPTH;
