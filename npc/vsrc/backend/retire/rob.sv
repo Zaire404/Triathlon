@@ -11,7 +11,10 @@ module rob #(
     parameter int unsigned QUERY_WIDTH = DISPATCH_WIDTH * 2,
     // [新增] Store Buffer 参数
     parameter int unsigned SB_DEPTH = 16,
-    parameter int unsigned SB_IDX_WIDTH = $clog2(SB_DEPTH)
+    parameter int unsigned SB_IDX_WIDTH = $clog2(SB_DEPTH),
+    parameter int unsigned MAX_COMMIT_BR = 1,
+    parameter int unsigned MAX_COMMIT_ST = 1,
+    parameter int unsigned MAX_COMMIT_LD = 2
 ) (
     input logic clk_i,
     input logic rst_ni,
@@ -99,11 +102,6 @@ module rob #(
     output logic [$clog2(ROB_DEPTH)-1:0] rob_head_o
 );
   localparam int unsigned PTR_WIDTH = $clog2(ROB_DEPTH);
-
-  // 资源限制参数
-  localparam int unsigned MAX_COMMIT_BR = 1;
-  localparam int unsigned MAX_COMMIT_ST = 1;
-  localparam int unsigned MAX_COMMIT_LD = 2;
 
   typedef struct packed {
     logic complete;

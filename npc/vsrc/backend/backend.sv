@@ -53,8 +53,9 @@ module backend #(
   localparam int unsigned COMMIT_WIDTH = Cfg.NRET;
   localparam int unsigned ROB_DEPTH = (Cfg.ROB_DEPTH >= DISPATCH_WIDTH) ? Cfg.ROB_DEPTH : 64;
   localparam int unsigned ROB_IDX_WIDTH = $clog2(ROB_DEPTH);
-  localparam int unsigned SB_DEPTH = 16;
+  localparam int unsigned SB_DEPTH = (Cfg.SB_DEPTH >= 4) ? Cfg.SB_DEPTH : 16;
   localparam int unsigned SB_IDX_WIDTH = $clog2(SB_DEPTH);
+  localparam int unsigned IBUFFER_DEPTH = (Cfg.IBUFFER_DEPTH >= DISPATCH_WIDTH) ? Cfg.IBUFFER_DEPTH : 16;
   localparam int unsigned RS_DEPTH = Cfg.RS_DEPTH;
   localparam int unsigned WB_WIDTH = 7;
   localparam int unsigned NUM_FUS = 7;  // ALU0, ALU1, BRU, LSU, ALU2, ALU3, CSR
@@ -69,6 +70,9 @@ module backend #(
   localparam int unsigned FTQ_ID_W = decode_pkg::FTQ_ID_W;
   localparam int unsigned FETCH_EPOCH_W = decode_pkg::FETCH_EPOCH_W;
   localparam int unsigned COMMIT_SEL_W = (COMMIT_WIDTH > 1) ? $clog2(COMMIT_WIDTH) : 1;
+  localparam int unsigned ROB_MAX_COMMIT_BR = (Cfg.ROB_MAX_COMMIT_BR >= 1) ? Cfg.ROB_MAX_COMMIT_BR : 1;
+  localparam int unsigned ROB_MAX_COMMIT_ST = (Cfg.ROB_MAX_COMMIT_ST >= 1) ? Cfg.ROB_MAX_COMMIT_ST : 1;
+  localparam int unsigned ROB_MAX_COMMIT_LD = (Cfg.ROB_MAX_COMMIT_LD >= 1) ? Cfg.ROB_MAX_COMMIT_LD : 2;
   // A2.2: 开启 commit-time call/ret 更新，配合 BPU speculative RAS 降低 return miss。
   localparam bit ENABLE_COMMIT_RAS_UPDATE = (Cfg.ENABLE_COMMIT_RAS_UPDATE != 0);
 
@@ -83,6 +87,17 @@ module backend #(
       initial begin
         $fatal(1, "backend config error: LSU_GROUP_SIZE(%0d) must be >= 1",
                Cfg.LSU_GROUP_SIZE);
+      end
+    end
+    if (Cfg.SB_DEPTH < 4) begin : g_cfg_invalid_sb_depth
+      initial begin
+        $fatal(1, "backend config error: SB_DEPTH(%0d) must be >= 4", Cfg.SB_DEPTH);
+      end
+    end
+    if (Cfg.IBUFFER_DEPTH < DISPATCH_WIDTH) begin : g_cfg_invalid_ibuf_depth
+      initial begin
+        $fatal(1, "backend config error: IBUFFER_DEPTH(%0d) < INSTR_PER_FETCH(%0d)",
+               Cfg.IBUFFER_DEPTH, DISPATCH_WIDTH);
       end
     end
   endgenerate
@@ -103,7 +118,7 @@ module backend #(
 
   ibuffer #(
       .Cfg         (Cfg),
-      .IB_DEPTH    (16),
+      .IB_DEPTH    (IBUFFER_DEPTH),
       .DECODE_WIDTH(Cfg.INSTR_PER_FETCH)
   ) u_ibuffer (
       .clk_i (clk_i),
@@ -207,7 +222,10 @@ module backend #(
       .COMMIT_WIDTH(COMMIT_WIDTH),
       .WB_WIDTH(WB_WIDTH),
       .QUERY_WIDTH(DISPATCH_WIDTH * 2),
-      .SB_DEPTH(SB_DEPTH)
+      .SB_DEPTH(SB_DEPTH),
+      .MAX_COMMIT_BR(ROB_MAX_COMMIT_BR),
+      .MAX_COMMIT_ST(ROB_MAX_COMMIT_ST),
+      .MAX_COMMIT_LD(ROB_MAX_COMMIT_LD)
   ) u_rob (
       .clk_i (clk_i),
       .rst_ni(rst_ni),

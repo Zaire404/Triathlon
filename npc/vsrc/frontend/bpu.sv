@@ -24,7 +24,14 @@ module bpu #(
     parameter int unsigned ITTAGE_ENTRIES = 128,
     parameter int unsigned ITTAGE_TAG_BITS = 10,
     parameter int unsigned TAGE_OVERRIDE_MIN_PROVIDER = 0,
-    parameter bit TAGE_OVERRIDE_REQUIRE_LEGACY_WEAK = 1'b0
+    parameter bit TAGE_OVERRIDE_REQUIRE_LEGACY_WEAK = 1'b0,
+    parameter int unsigned TAGE_TAG_BITS = 8,
+    parameter int unsigned TAGE_HIST_LEN0 = 2,
+    parameter int unsigned TAGE_HIST_LEN1 = 4,
+    parameter int unsigned TAGE_HIST_LEN2 = 8,
+    parameter int unsigned TAGE_HIST_LEN3 = 16,
+    parameter int unsigned PATH_HIST_BITS = 16,
+    parameter int unsigned TRACK_DEPTH = 16
 ) (
     input logic clk_i,
     input logic rst_i,
@@ -59,8 +66,8 @@ module bpu #(
   localparam int unsigned BTB_TAG_W = Cfg.PLEN - BTB_IDX_W - INSTR_ADDR_LSB;
   localparam int unsigned RAS_CNT_W = (RAS_DEPTH > 0) ? $clog2(RAS_DEPTH + 1) : 1;
   localparam int unsigned GHR_W = (GHR_BITS > 0) ? GHR_BITS : 1;
-  localparam int unsigned PATH_HIST_W = 16;
-  localparam int unsigned TAGE_TRACK_DEPTH = 16;
+  localparam int unsigned PATH_HIST_W = (PATH_HIST_BITS > 0) ? PATH_HIST_BITS : 1;
+  localparam int unsigned TAGE_TRACK_DEPTH = (TRACK_DEPTH >= 2) ? TRACK_DEPTH : 2;
   localparam int unsigned TAGE_TRACK_PTR_W = (TAGE_TRACK_DEPTH > 1) ? $clog2(TAGE_TRACK_DEPTH) : 1;
   localparam int unsigned TAGE_TRACK_CNT_W = $clog2(TAGE_TRACK_DEPTH + 1);
   localparam logic [1:0] COND_PROVIDER_LEGACY = 2'd0;
@@ -284,11 +291,11 @@ module bpu #(
       .INSTR_PER_FETCH(Cfg.INSTR_PER_FETCH),
       .GHR_BITS(GHR_BITS),
       .TABLE_ENTRIES(Cfg.BPU_BHT_ENTRIES),
-      .TAG_BITS(8),
-      .HIST_LEN0(2),
-      .HIST_LEN1(4),
-      .HIST_LEN2(8),
-      .HIST_LEN3(16)
+      .TAG_BITS(TAGE_TAG_BITS),
+      .HIST_LEN0(TAGE_HIST_LEN0),
+      .HIST_LEN1(TAGE_HIST_LEN1),
+      .HIST_LEN2(TAGE_HIST_LEN2),
+      .HIST_LEN3(TAGE_HIST_LEN3)
   ) u_tage (
       .clk_i(clk_i),
       .rst_i(rst_i),
