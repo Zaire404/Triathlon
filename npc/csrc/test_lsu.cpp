@@ -51,6 +51,14 @@ static void set_defaults(Vtb_lsu *top) {
   top->ld_rsp_err_i = 0;
 
   top->wb_ready_i = 1;
+
+  top->lq_test_alloc_valid_i = 0;
+  top->lq_test_alloc_rob_tag_i = 0;
+  top->lq_test_pop_valid_i = 0;
+
+  top->sq_test_alloc_valid_i = 0;
+  top->sq_test_alloc_rob_tag_i = 0;
+  top->sq_test_pop_valid_i = 0;
 }
 
 static void expect(bool cond, const char *msg) {
@@ -596,6 +604,68 @@ static void test_group_supports_two_outstanding_with_rsp_id(Vtb_lsu *top) {
   tick(top);
 }
 
+static void test_lq_queue_occupancy_four_entries(Vtb_lsu *top) {
+  set_defaults(top);
+
+  for (uint32_t i = 0; i < 4; i++) {
+    top->lq_test_alloc_valid_i = 1;
+    top->lq_test_alloc_rob_tag_i = 0x20 + i;
+    eval_comb(top);
+    expect(top->lq_test_alloc_ready_o == 1, "LQ queue: alloc ready for 4-entry fill");
+    tick(top);
+  }
+
+  top->lq_test_alloc_valid_i = 0;
+  eval_comb(top);
+  expect(top->lq_test_count_o == 4, "LQ queue: occupancy reaches 4");
+  expect(top->lq_test_head_valid_o == 1, "LQ queue: head valid after fill");
+  expect(top->lq_test_head_rob_tag_o == 0x20, "LQ queue: oldest entry remains at head");
+
+  top->lq_test_pop_valid_i = 1;
+  for (uint32_t i = 0; i < 4; i++) {
+    eval_comb(top);
+    expect(top->lq_test_pop_ready_o == 1, "LQ queue: pop ready while non-empty");
+    expect(top->lq_test_head_rob_tag_o == (0x20 + i), "LQ queue: pop order is FIFO");
+    tick(top);
+  }
+  top->lq_test_pop_valid_i = 0;
+
+  eval_comb(top);
+  expect(top->lq_test_count_o == 0, "LQ queue: occupancy returns to zero");
+  expect(top->lq_test_head_valid_o == 0, "LQ queue: head invalid when empty");
+}
+
+static void test_sq_queue_ordered_dequeue_contract(Vtb_lsu *top) {
+  set_defaults(top);
+
+  for (uint32_t i = 0; i < 3; i++) {
+    top->sq_test_alloc_valid_i = 1;
+    top->sq_test_alloc_rob_tag_i = 0x30 + i;
+    eval_comb(top);
+    expect(top->sq_test_alloc_ready_o == 1, "SQ queue: alloc ready for ordered fill");
+    tick(top);
+  }
+
+  top->sq_test_alloc_valid_i = 0;
+  eval_comb(top);
+  expect(top->sq_test_count_o == 3, "SQ queue: occupancy reaches 3");
+  expect(top->sq_test_head_valid_o == 1, "SQ queue: head valid after fill");
+  expect(top->sq_test_head_rob_tag_o == 0x30, "SQ queue: oldest store at head");
+
+  top->sq_test_pop_valid_i = 1;
+  for (uint32_t i = 0; i < 3; i++) {
+    eval_comb(top);
+    expect(top->sq_test_pop_ready_o == 1, "SQ queue: pop ready while entries exist");
+    expect(top->sq_test_head_rob_tag_o == (0x30 + i), "SQ queue: ordered dequeue");
+    tick(top);
+  }
+  top->sq_test_pop_valid_i = 0;
+
+  eval_comb(top);
+  expect(top->sq_test_count_o == 0, "SQ queue: occupancy returns to zero");
+  expect(top->sq_test_head_valid_o == 0, "SQ queue: head invalid when empty");
+}
+
 int main(int argc, char **argv) {
   Verilated::commandArgs(argc, argv);
   Vtb_lsu *top = new Vtb_lsu;
@@ -615,6 +685,8 @@ int main(int argc, char **argv) {
   test_group_allows_new_req_when_older_lane_waits(top);
   test_group_allows_req_on_rsp_handoff_cycle(top);
   test_group_supports_two_outstanding_with_rsp_id(top);
+  test_lq_queue_occupancy_four_entries(top);
+  test_sq_queue_ordered_dequeue_contract(top);
 
   std::cout << ANSI_RES_GRN << "--- [ALL LSU TESTS PASSED] ---" << ANSI_RES_RST << std::endl;
 

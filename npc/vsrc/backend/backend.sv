@@ -73,6 +73,8 @@ module backend #(
   localparam int unsigned ROB_MAX_COMMIT_BR = (Cfg.ROB_MAX_COMMIT_BR >= 1) ? Cfg.ROB_MAX_COMMIT_BR : 1;
   localparam int unsigned ROB_MAX_COMMIT_ST = (Cfg.ROB_MAX_COMMIT_ST >= 1) ? Cfg.ROB_MAX_COMMIT_ST : 1;
   localparam int unsigned ROB_MAX_COMMIT_LD = (Cfg.ROB_MAX_COMMIT_LD >= 1) ? Cfg.ROB_MAX_COMMIT_LD : 2;
+  localparam int unsigned LSU_LQ_DEPTH = (Cfg.ROB_DEPTH >= 16) ? 16 : Cfg.ROB_DEPTH;
+  localparam int unsigned LSU_SQ_DEPTH = (Cfg.SB_DEPTH >= 16) ? 16 : Cfg.SB_DEPTH;
   // A2.2: 开启 commit-time call/ret 更新，配合 BPU speculative RAS 降低 return miss。
   localparam bit ENABLE_COMMIT_RAS_UPDATE = (Cfg.ENABLE_COMMIT_RAS_UPDATE != 0);
 
@@ -1368,11 +1370,19 @@ module backend #(
   logic [Cfg.XLEN-1:0] lsu_ld_rsp_data;
   logic lsu_ld_rsp_err;
   logic [LSU_LD_ID_WIDTH-1:0] lsu_ld_rsp_id;
+  logic [$clog2(LSU_LQ_DEPTH + 1)-1:0] lsu_lq_count_dbg;
+  logic lsu_lq_head_valid_dbg;
+  logic [ROB_IDX_WIDTH-1:0] lsu_lq_head_rob_tag_dbg;
+  logic [$clog2(LSU_SQ_DEPTH + 1)-1:0] lsu_sq_count_dbg;
+  logic lsu_sq_head_valid_dbg;
+  logic [ROB_IDX_WIDTH-1:0] lsu_sq_head_rob_tag_dbg;
 
   lsu_group #(
       .Cfg(Cfg),
       .ROB_IDX_WIDTH(ROB_IDX_WIDTH),
       .SB_DEPTH(SB_DEPTH),
+      .LQ_DEPTH(LSU_LQ_DEPTH),
+      .SQ_DEPTH(LSU_SQ_DEPTH),
       .N_LSU(LSU_GROUP_SIZE)
   ) u_lsu_group (
       .clk_i  (clk_i),
@@ -1418,7 +1428,14 @@ module backend #(
       .wb_ecause_o     (lsu_wb_ecause),
       .wb_is_mispred_o (lsu_wb_is_mispred),
       .wb_redirect_pc_o(lsu_wb_redirect_pc),
-      .wb_ready_i      (1'b1)
+      .wb_ready_i      (1'b1),
+
+      .dbg_lq_count_o(lsu_lq_count_dbg),
+      .dbg_lq_head_valid_o(lsu_lq_head_valid_dbg),
+      .dbg_lq_head_rob_tag_o(lsu_lq_head_rob_tag_dbg),
+      .dbg_sq_count_o(lsu_sq_count_dbg),
+      .dbg_sq_head_valid_o(lsu_sq_head_valid_dbg),
+      .dbg_sq_head_rob_tag_o(lsu_sq_head_rob_tag_dbg)
   );
 
   // CSR

@@ -7,6 +7,8 @@ module lsu_group #(
     parameter int unsigned      ROB_IDX_WIDTH = 6,
     parameter int unsigned      SB_DEPTH      = 16,
     parameter int unsigned      SB_IDX_WIDTH  = $clog2(SB_DEPTH),
+    parameter int unsigned      LQ_DEPTH      = 16,
+    parameter int unsigned      SQ_DEPTH      = 16,
     parameter int unsigned      N_LSU         = 1,
     parameter int unsigned      ECAUSE_WIDTH  = 5
 ) (
@@ -66,12 +68,23 @@ module lsu_group #(
     output logic [ECAUSE_WIDTH-1:0]  wb_ecause_o,
     output logic                     wb_is_mispred_o,
     output logic [     Cfg.PLEN-1:0] wb_redirect_pc_o,
-    input  logic                     wb_ready_i
+    input  logic                     wb_ready_i,
+
+    // =========================================================
+    // 5) Debug visibility for queue skeleton
+    // =========================================================
+    output logic [$clog2(LQ_DEPTH + 1)-1:0] dbg_lq_count_o,
+    output logic                            dbg_lq_head_valid_o,
+    output logic [       ROB_IDX_WIDTH-1:0] dbg_lq_head_rob_tag_o,
+    output logic [$clog2(SQ_DEPTH + 1)-1:0] dbg_sq_count_o,
+    output logic                            dbg_sq_head_valid_o,
+    output logic [       ROB_IDX_WIDTH-1:0] dbg_sq_head_rob_tag_o
 );
 
   localparam int unsigned LANE_SEL_WIDTH = (N_LSU <= 1) ? 1 : $clog2(N_LSU);
   localparam int unsigned LD_ID_WIDTH = (N_LSU <= 1) ? 1 : $clog2(N_LSU);
   localparam int unsigned DBG_SEL_WIDTH = (N_LSU <= 1) ? 1 : $clog2(N_LSU + 1);
+  localparam int unsigned SQ_BE_WIDTH = Cfg.XLEN / 8;
 
   // Keep these debug names for existing testbench hierarchical probes.
   logic                [               1:0]                    state_q;
@@ -123,6 +136,25 @@ module lsu_group #(
   logic                [         N_LSU-1:0]                    wb_grant;
   logic                [LANE_SEL_WIDTH-1:0]                    wb_lane_idx;
   logic                                                        wb_grant_valid;
+  logic                                                        wb_fire;
+  logic                                                        wb_fire_is_store;
+
+  logic                                                        lq_alloc_valid;
+  logic                                                        lq_alloc_ready;
+  logic                                                        lq_pop_valid;
+  logic                                                        lq_pop_ready;
+  logic                                                        lq_full;
+  logic                                                        lq_empty;
+
+  logic                                                        sq_alloc_valid;
+  logic                                                        sq_alloc_ready;
+  logic                                                        sq_pop_valid;
+  logic                                                        sq_pop_ready;
+  logic                                                        sq_full;
+  logic                                                        sq_empty;
+
+  logic                [         N_LSU-1:0]                    lane_has_store_q;
+  logic                [         N_LSU-1:0]                    lane_has_store_d;
 
   logic rsp_id_in_range;
   logic [LANE_SEL_WIDTH-1:0] rsp_lane_idx;
@@ -188,12 +220,17 @@ module lsu_group #(
   assign req_tag_q  = g_lanes[0].u_lane.req_tag_q;
   assign req_addr_q = g_lanes[0].u_lane.req_addr_q;
 
+  assign lq_alloc_valid = alloc_fire && uop_i.is_load;
+  assign sq_alloc_valid = alloc_fire && uop_i.is_store;
+
   always_comb begin
     req_ready_o = 1'b0;
     alloc_grant = '0;
     alloc_lane_idx = '0;
     for (int i = 0; i < N_LSU; i++) begin
-      if (!req_ready_o && lane_req_ready[i]) begin
+      if (!req_ready_o && lane_req_ready[i] &&
+          (!uop_i.is_load || lq_alloc_ready) &&
+          (!uop_i.is_store || sq_alloc_ready)) begin
         req_ready_o = 1'b1;
         alloc_grant[i] = 1'b1;
         alloc_lane_idx = LANE_SEL_WIDTH'(i);
@@ -308,6 +345,84 @@ module lsu_group #(
       lane_wb_ready[wb_lane_idx] = wb_ready_i;
     end
   end
+
+  assign wb_fire = wb_grant_valid && wb_ready_i;
+
+  always_comb begin
+    wb_fire_is_store = 1'b0;
+    if (wb_grant_valid) begin
+      wb_fire_is_store = lane_has_store_q[wb_lane_idx];
+    end
+  end
+
+  assign lq_pop_valid = wb_fire && !wb_fire_is_store;
+  assign sq_pop_valid = wb_fire && wb_fire_is_store;
+
+  always_comb begin
+    lane_has_store_d = lane_has_store_q;
+    if (wb_fire) begin
+      lane_has_store_d[wb_lane_idx] = 1'b0;
+    end
+    if (alloc_fire) begin
+      lane_has_store_d[alloc_lane_idx] = uop_i.is_store;
+    end
+  end
+
+  always_ff @(posedge clk_i or negedge rst_ni) begin
+    if (!rst_ni) begin
+      lane_has_store_q <= '0;
+    end else if (flush_i) begin
+      lane_has_store_q <= '0;
+    end else begin
+      lane_has_store_q <= lane_has_store_d;
+    end
+  end
+
+  lq #(
+      .ROB_IDX_WIDTH(ROB_IDX_WIDTH),
+      .DEPTH(LQ_DEPTH)
+  ) u_lq (
+      .clk_i,
+      .rst_ni,
+      .flush_i,
+      .alloc_valid_i(lq_alloc_valid),
+      .alloc_ready_o(lq_alloc_ready),
+      .alloc_rob_tag_i(rob_tag_i),
+      .pop_valid_i(lq_pop_valid),
+      .pop_ready_o(lq_pop_ready),
+      .head_valid_o(dbg_lq_head_valid_o),
+      .head_rob_tag_o(dbg_lq_head_rob_tag_o),
+      .count_o(dbg_lq_count_o),
+      .full_o(lq_full),
+      .empty_o(lq_empty)
+  );
+
+  sq #(
+      .ROB_IDX_WIDTH(ROB_IDX_WIDTH),
+      .ADDR_WIDTH(Cfg.PLEN),
+      .DATA_WIDTH(Cfg.XLEN),
+      .DEPTH(SQ_DEPTH)
+  ) u_sq (
+      .clk_i,
+      .rst_ni,
+      .flush_i,
+      .alloc_valid_i(sq_alloc_valid),
+      .alloc_ready_o(sq_alloc_ready),
+      .alloc_rob_tag_i(rob_tag_i),
+      .alloc_addr_i(sb_load_addr_o),
+      .alloc_data_i(rs2_data_i),
+      .alloc_be_i({SQ_BE_WIDTH{1'b1}}),
+      .pop_valid_i(sq_pop_valid),
+      .pop_ready_o(sq_pop_ready),
+      .head_valid_o(dbg_sq_head_valid_o),
+      .head_rob_tag_o(dbg_sq_head_rob_tag_o),
+      .head_addr_o(),
+      .head_data_o(),
+      .head_be_o(),
+      .count_o(dbg_sq_count_o),
+      .full_o(sq_full),
+      .empty_o(sq_empty)
+  );
 
   always_comb begin
     dbg_alloc_lane = alloc_fire ? DBG_SEL_WIDTH'(alloc_lane_idx + 1'b1) : '0;
