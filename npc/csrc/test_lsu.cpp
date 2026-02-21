@@ -698,6 +698,70 @@ static void test_sq_forwarding_lbu_with_byte_offset(Vtb_lsu *top) {
   tick(top);
 }
 
+static void test_sq_does_not_forward_from_younger_store(Vtb_lsu *top) {
+  set_defaults(top);
+
+  // Keep younger store resident in SQ while issuing an older load.
+  top->wb_ready_i = 0;
+
+  // Younger store (larger ROB tag) issues first.
+  top->req_valid_i = 1;
+  top->is_store_i = 1;
+  top->is_load_i = 0;
+  top->lsu_op_i = LSU_SW;
+  top->rs1_data_i = 0xB200;
+  top->imm_i = 0;
+  top->rs2_data_i = 0x55667788;
+  top->rob_tag_i = 0x25;
+  eval_comb(top);
+  expect(top->req_ready_o == 1, "SQ age: younger store accepted");
+  tick(top);
+
+  // Older load to same address must not forward from that younger store.
+  top->req_valid_i = 1;
+  top->is_store_i = 0;
+  top->is_load_i = 1;
+  top->lsu_op_i = LSU_LW;
+  top->rs1_data_i = 0xB200;
+  top->imm_i = 0;
+  top->rob_tag_i = 0x22;
+  eval_comb(top);
+  expect(top->req_ready_o == 1, "SQ age: older load accepted");
+  tick(top);
+
+  top->req_valid_i = 0;
+  eval_comb(top);
+  expect(top->ld_req_valid_o == 1, "SQ age: older load must go to dcache");
+  expect(top->ld_req_addr_o == 0xB200, "SQ age: dcache addr matches load");
+  expect(top->ld_req_id_o == 1, "SQ age: older load issued on lane1");
+
+  top->ld_req_ready_i = 1;
+  tick(top);
+  top->ld_req_ready_i = 0;
+
+  top->ld_rsp_valid_i = 1;
+  top->ld_rsp_id_i = 1;
+  top->ld_rsp_data_i = 0x11223344;
+  top->ld_rsp_err_i = 0;
+  eval_comb(top);
+  expect(top->ld_rsp_ready_o == 1, "SQ age: load response accepted");
+  tick(top);
+  top->ld_rsp_valid_i = 0;
+
+  // Release writeback: store may retire first, then load with dcache data.
+  top->wb_ready_i = 1;
+  eval_comb(top);
+  expect(top->wb_valid_o == 1, "SQ age: first writeback appears");
+  expect(top->wb_rob_idx_o == 0x25, "SQ age: younger store writes first");
+  tick(top);
+
+  eval_comb(top);
+  expect(top->wb_valid_o == 1, "SQ age: second writeback appears");
+  expect(top->wb_rob_idx_o == 0x22, "SQ age: older load writes second");
+  expect(top->wb_data_o == 0x11223344, "SQ age: load uses dcache data, not younger store");
+  tick(top);
+}
+
 static void test_lq_queue_occupancy_four_entries(Vtb_lsu *top) {
   set_defaults(top);
 
@@ -781,6 +845,7 @@ int main(int argc, char **argv) {
   test_group_supports_two_outstanding_with_rsp_id(top);
   test_sq_forwarding_store_to_younger_load_without_dcache_rsp(top);
   test_sq_forwarding_lbu_with_byte_offset(top);
+  test_sq_does_not_forward_from_younger_store(top);
   test_lq_queue_occupancy_four_entries(top);
   test_sq_queue_ordered_dequeue_contract(top);
 

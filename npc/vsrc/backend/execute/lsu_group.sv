@@ -25,6 +25,7 @@ module lsu_group #(
     input  logic             [     Cfg.XLEN-1:0] rs1_data_i,
     input  logic             [     Cfg.XLEN-1:0] rs2_data_i,
     input  logic             [ROB_IDX_WIDTH-1:0] rob_tag_i,
+    input  logic             [ROB_IDX_WIDTH-1:0] rob_head_i,
     input  logic             [ SB_IDX_WIDTH-1:0] sb_id_i,
 
     // =========================================================
@@ -553,6 +554,8 @@ module lsu_group #(
       .fwd_query_valid_i(sq_fwd_query_valid),
       .fwd_query_addr_i(sq_req_word_addr),
       .fwd_query_be_i(sq_load_be),
+      .fwd_query_rob_tag_i(rob_tag_i),
+      .rob_head_i(rob_head_i),
       .fwd_query_hit_o(sq_fwd_query_hit),
       .fwd_query_data_o(sq_fwd_query_data),
       .head_valid_o(dbg_sq_head_valid_o),

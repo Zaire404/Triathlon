@@ -1426,6 +1426,7 @@ module backend #(
       .rs1_data_i (lsu_v1),
       .rs2_data_i (lsu_v2),
       .rob_tag_i  (lsu_dst),
+      .rob_head_i (rob_head_ptr),
       .sb_id_i    (lsu_sb_id),
 
       .sb_ex_valid_o(sb_ex_valid),

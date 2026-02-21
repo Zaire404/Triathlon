@@ -19,11 +19,13 @@ module sq #(
     output logic pop_ready_o,
 
     // Combinational store-to-load forwarding query.
-    input  logic                    fwd_query_valid_i,
-    input  logic [ ADDR_WIDTH-1:0]  fwd_query_addr_i,
-    input  logic [DATA_WIDTH/8-1:0] fwd_query_be_i,
-    output logic                    fwd_query_hit_o,
-    output logic [ DATA_WIDTH-1:0]  fwd_query_data_o,
+    input  logic                     fwd_query_valid_i,
+    input  logic [  ADDR_WIDTH-1:0]  fwd_query_addr_i,
+    input  logic [DATA_WIDTH/8-1:0]  fwd_query_be_i,
+    input  logic [ROB_IDX_WIDTH-1:0] fwd_query_rob_tag_i,
+    input  logic [ROB_IDX_WIDTH-1:0] rob_head_i,
+    output logic                     fwd_query_hit_o,
+    output logic [ DATA_WIDTH-1:0]   fwd_query_data_o,
 
     output logic                     head_valid_o,
     output logic [ROB_IDX_WIDTH-1:0] head_rob_tag_o,
@@ -67,6 +69,15 @@ module sq #(
     end
   endfunction
 
+  function automatic logic [ROB_IDX_WIDTH-1:0] rob_age(input logic [ROB_IDX_WIDTH-1:0] idx,
+                                                       input logic [ROB_IDX_WIDTH-1:0] head);
+    logic [ROB_IDX_WIDTH-1:0] diff;
+    begin
+      diff = idx - head;
+      return diff;
+    end
+  endfunction
+
   assign empty_o = (count_q == CNT_W'(0));
   assign full_o = (count_q == CNT_W'(DEPTH));
   assign count_o = count_q;
@@ -85,16 +96,25 @@ module sq #(
   always_comb begin
     logic [BYTE_W-1:0] covered_be;
     logic [PTR_W-1:0] scan_idx;
+    logic [ROB_IDX_WIDTH-1:0] load_age;
+    logic [ROB_IDX_WIDTH-1:0] store_age;
+    logic older_than_load;
 
     covered_be = '0;
     fwd_query_hit_o = 1'b0;
     fwd_query_data_o = '0;
     scan_idx = ptr_dec(tail_q);
+    load_age = '0;
+    store_age = '0;
+    older_than_load = 1'b0;
 
     if (fwd_query_valid_i) begin
+      load_age = rob_age(fwd_query_rob_tag_i, rob_head_i);
       for (int n = 0; n < DEPTH; n++) begin
         if (n < int'(count_q)) begin
-          if (addr_q[scan_idx] == fwd_query_addr_i) begin
+          store_age = rob_age(rob_tag_q[scan_idx], rob_head_i);
+          older_than_load = (store_age < load_age);
+          if ((addr_q[scan_idx] == fwd_query_addr_i) && older_than_load) begin
             for (int b = 0; b < BYTE_W; b++) begin
               if (fwd_query_be_i[b] && be_q[scan_idx][b] && !covered_be[b]) begin
                 fwd_query_data_o[(8 * b)+:8] = data_q[scan_idx][(8 * b)+:8];

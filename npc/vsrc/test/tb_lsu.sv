@@ -111,6 +111,7 @@ module tb_lsu #(
       .rs1_data_i,
       .rs2_data_i,
       .rob_tag_i,
+      .rob_head_i('0),
       .sb_id_i,
 
       .sb_ex_valid_o,
@@ -193,6 +194,8 @@ module tb_lsu #(
       .fwd_query_valid_i(1'b0),
       .fwd_query_addr_i('0),
       .fwd_query_be_i('0),
+      .fwd_query_rob_tag_i('0),
+      .rob_head_i('0),
       .fwd_query_hit_o(),
       .fwd_query_data_o(),
       .head_valid_o(sq_test_head_valid_o),
