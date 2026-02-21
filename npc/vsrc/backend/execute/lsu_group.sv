@@ -85,6 +85,7 @@ module lsu_group #(
   localparam int unsigned LD_ID_WIDTH = (N_LSU <= 1) ? 1 : $clog2(N_LSU);
   localparam int unsigned DBG_SEL_WIDTH = (N_LSU <= 1) ? 1 : $clog2(N_LSU + 1);
   localparam int unsigned SQ_BE_WIDTH = Cfg.XLEN / 8;
+  localparam int unsigned SQ_BYTE_OFF_W = (SQ_BE_WIDTH <= 1) ? 1 : $clog2(SQ_BE_WIDTH);
 
   // Keep these debug names for existing testbench hierarchical probes.
   logic                [               1:0]                    state_q;
@@ -152,12 +153,136 @@ module lsu_group #(
   logic                                                        sq_pop_ready;
   logic                                                        sq_full;
   logic                                                        sq_empty;
+  logic                                                        sq_fwd_query_valid;
+  logic                                                        sq_fwd_query_hit;
+  logic                [     Cfg.XLEN-1:0]                    sq_fwd_query_data;
+  logic                [      Cfg.PLEN-1:0]                   sq_req_word_addr;
+  logic                [      Cfg.XLEN-1:0]                   sq_store_data_aligned;
+  logic                [     SQ_BE_WIDTH-1:0]                 sq_store_be;
+  logic                [     SQ_BE_WIDTH-1:0]                 sq_load_be;
+  logic                                                        sb_load_hit_mux;
+  logic                [     Cfg.XLEN-1:0]                    sb_load_data_mux;
+  logic                [      Cfg.XLEN-1:0]                   req_eff_addr_xlen;
+  logic                [      Cfg.PLEN-1:0]                   req_eff_addr;
 
   logic                [         N_LSU-1:0]                    lane_has_store_q;
   logic                [         N_LSU-1:0]                    lane_has_store_d;
 
   logic rsp_id_in_range;
   logic [LANE_SEL_WIDTH-1:0] rsp_lane_idx;
+
+  function automatic logic [SQ_BE_WIDTH-1:0] store_be_mask(input decode_pkg::lsu_op_e op,
+                                                            input logic [Cfg.PLEN-1:0] addr);
+    logic [SQ_BE_WIDTH-1:0] mask;
+    logic [SQ_BYTE_OFF_W-1:0] off;
+    begin
+      mask = '0;
+      off = addr[SQ_BYTE_OFF_W-1:0];
+      unique case (op)
+        decode_pkg::LSU_SB: begin
+          mask[off] = 1'b1;
+        end
+        decode_pkg::LSU_SH: begin
+          for (int i = 0; i < 2; i++) begin
+            if ((off + i) < SQ_BE_WIDTH) begin
+              mask[off+i] = 1'b1;
+            end
+          end
+        end
+        decode_pkg::LSU_SW: begin
+          for (int i = 0; i < 4; i++) begin
+            if ((off + i) < SQ_BE_WIDTH) begin
+              mask[off+i] = 1'b1;
+            end
+          end
+        end
+        decode_pkg::LSU_SD: begin
+          for (int i = 0; i < SQ_BE_WIDTH; i++) begin
+            mask[i] = 1'b1;
+          end
+        end
+        default: begin
+          mask = '0;
+        end
+      endcase
+      store_be_mask = mask;
+    end
+  endfunction
+
+  function automatic logic [SQ_BE_WIDTH-1:0] load_be_mask(input decode_pkg::lsu_op_e op,
+                                                           input logic [Cfg.PLEN-1:0] addr);
+    logic [SQ_BE_WIDTH-1:0] mask;
+    logic [SQ_BYTE_OFF_W-1:0] off;
+    begin
+      mask = '0;
+      off = addr[SQ_BYTE_OFF_W-1:0];
+      unique case (op)
+        decode_pkg::LSU_LB, decode_pkg::LSU_LBU: begin
+          mask[off] = 1'b1;
+        end
+        decode_pkg::LSU_LH, decode_pkg::LSU_LHU: begin
+          for (int i = 0; i < 2; i++) begin
+            if ((off + i) < SQ_BE_WIDTH) begin
+              mask[off+i] = 1'b1;
+            end
+          end
+        end
+        decode_pkg::LSU_LW, decode_pkg::LSU_LWU: begin
+          for (int i = 0; i < 4; i++) begin
+            if ((off + i) < SQ_BE_WIDTH) begin
+              mask[off+i] = 1'b1;
+            end
+          end
+        end
+        decode_pkg::LSU_LD: begin
+          for (int i = 0; i < SQ_BE_WIDTH; i++) begin
+            mask[i] = 1'b1;
+          end
+        end
+        default: begin
+          mask = '0;
+        end
+      endcase
+      load_be_mask = mask;
+    end
+  endfunction
+
+  function automatic logic [Cfg.XLEN-1:0] store_aligned_data(
+      input decode_pkg::lsu_op_e op,
+      input logic [Cfg.XLEN-1:0] data,
+      input logic [Cfg.PLEN-1:0] addr
+  );
+    logic [Cfg.XLEN-1:0] aligned;
+    logic [SQ_BYTE_OFF_W-1:0] off;
+    begin
+      aligned = '0;
+      off = addr[SQ_BYTE_OFF_W-1:0];
+      unique case (op)
+        decode_pkg::LSU_SB: begin
+          if (off < SQ_BE_WIDTH) begin
+            aligned[(8*off)+:8] = data[7:0];
+          end
+        end
+        decode_pkg::LSU_SH: begin
+          if ((off + 1) < SQ_BE_WIDTH) begin
+            aligned[(8*off)+:16] = data[15:0];
+          end
+        end
+        decode_pkg::LSU_SW: begin
+          if ((off + 3) < SQ_BE_WIDTH) begin
+            aligned[(8*off)+:32] = data[31:0];
+          end
+        end
+        decode_pkg::LSU_SD: begin
+          aligned = data;
+        end
+        default: begin
+          aligned = data;
+        end
+      endcase
+      store_aligned_data = aligned;
+    end
+  endfunction
 
   generate
     for (genvar gi = 0; gi < N_LSU; gi++) begin : g_lanes
@@ -189,8 +314,8 @@ module lsu_group #(
 
           .sb_load_addr_o(lane_sb_load_addr[gi]),
           .sb_load_rob_idx_o(lane_sb_load_rob_idx[gi]),
-          .sb_load_hit_i,
-          .sb_load_data_i,
+          .sb_load_hit_i(sb_load_hit_mux),
+          .sb_load_data_i(sb_load_data_mux),
 
           .ld_req_valid_o(lane_ld_req_valid[gi]),
           .ld_req_ready_i(lane_ld_req_ready[gi]),
@@ -219,6 +344,15 @@ module lsu_group #(
   assign state_q    = g_lanes[0].u_lane.state_q;
   assign req_tag_q  = g_lanes[0].u_lane.req_tag_q;
   assign req_addr_q = g_lanes[0].u_lane.req_addr_q;
+  assign req_eff_addr_xlen = rs1_data_i + uop_i.imm;
+  assign req_eff_addr = req_eff_addr_xlen[Cfg.PLEN-1:0];
+  assign sq_req_word_addr = {req_eff_addr[Cfg.PLEN-1:SQ_BYTE_OFF_W], {SQ_BYTE_OFF_W{1'b0}}};
+  assign sq_store_be = store_be_mask(uop_i.lsu_op, req_eff_addr);
+  assign sq_load_be = load_be_mask(uop_i.lsu_op, req_eff_addr);
+  assign sq_store_data_aligned = store_aligned_data(uop_i.lsu_op, rs2_data_i, req_eff_addr);
+  assign sq_fwd_query_valid = alloc_fire && uop_i.is_load;
+  assign sb_load_hit_mux = sb_load_hit_i || sq_fwd_query_hit;
+  assign sb_load_data_mux = sq_fwd_query_hit ? sq_fwd_query_data : sb_load_data_i;
 
   assign lq_alloc_valid = alloc_fire && uop_i.is_load;
   assign sq_alloc_valid = alloc_fire && uop_i.is_store;
@@ -409,11 +543,16 @@ module lsu_group #(
       .alloc_valid_i(sq_alloc_valid),
       .alloc_ready_o(sq_alloc_ready),
       .alloc_rob_tag_i(rob_tag_i),
-      .alloc_addr_i(sb_load_addr_o),
-      .alloc_data_i(rs2_data_i),
-      .alloc_be_i({SQ_BE_WIDTH{1'b1}}),
+      .alloc_addr_i(sq_req_word_addr),
+      .alloc_data_i(sq_store_data_aligned),
+      .alloc_be_i(sq_store_be),
       .pop_valid_i(sq_pop_valid),
       .pop_ready_o(sq_pop_ready),
+      .fwd_query_valid_i(sq_fwd_query_valid),
+      .fwd_query_addr_i(sq_req_word_addr),
+      .fwd_query_be_i(sq_load_be),
+      .fwd_query_hit_o(sq_fwd_query_hit),
+      .fwd_query_data_o(sq_fwd_query_data),
       .head_valid_o(dbg_sq_head_valid_o),
       .head_rob_tag_o(dbg_sq_head_rob_tag_o),
       .head_addr_o(),

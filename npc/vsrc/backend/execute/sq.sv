@@ -18,6 +18,13 @@ module sq #(
     input  logic pop_valid_i,
     output logic pop_ready_o,
 
+    // Combinational store-to-load forwarding query.
+    input  logic                    fwd_query_valid_i,
+    input  logic [ ADDR_WIDTH-1:0]  fwd_query_addr_i,
+    input  logic [DATA_WIDTH/8-1:0] fwd_query_be_i,
+    output logic                    fwd_query_hit_o,
+    output logic [ DATA_WIDTH-1:0]  fwd_query_data_o,
+
     output logic                     head_valid_o,
     output logic [ROB_IDX_WIDTH-1:0] head_rob_tag_o,
     output logic [   ADDR_WIDTH-1:0] head_addr_o,
@@ -31,6 +38,7 @@ module sq #(
 
   localparam int unsigned PTR_W = (DEPTH > 1) ? $clog2(DEPTH) : 1;
   localparam int unsigned CNT_W = $clog2(DEPTH + 1);
+  localparam int unsigned BYTE_W = DATA_WIDTH / 8;
 
   logic [DEPTH-1:0][ROB_IDX_WIDTH-1:0] rob_tag_q;
   logic [DEPTH-1:0][ADDR_WIDTH-1:0] addr_q;
@@ -51,6 +59,14 @@ module sq #(
     end
   endfunction
 
+  function automatic [PTR_W-1:0] ptr_dec(input [PTR_W-1:0] ptr);
+    if (ptr == '0) begin
+      ptr_dec = PTR_W'(DEPTH - 1);
+    end else begin
+      ptr_dec = ptr - PTR_W'(1);
+    end
+  endfunction
+
   assign empty_o = (count_q == CNT_W'(0));
   assign full_o = (count_q == CNT_W'(DEPTH));
   assign count_o = count_q;
@@ -65,6 +81,35 @@ module sq #(
 
   assign alloc_fire = alloc_valid_i && alloc_ready_o;
   assign pop_fire = pop_valid_i && pop_ready_o;
+
+  always_comb begin
+    logic [BYTE_W-1:0] covered_be;
+    logic [PTR_W-1:0] scan_idx;
+
+    covered_be = '0;
+    fwd_query_hit_o = 1'b0;
+    fwd_query_data_o = '0;
+    scan_idx = ptr_dec(tail_q);
+
+    if (fwd_query_valid_i) begin
+      for (int n = 0; n < DEPTH; n++) begin
+        if (n < int'(count_q)) begin
+          if (addr_q[scan_idx] == fwd_query_addr_i) begin
+            for (int b = 0; b < BYTE_W; b++) begin
+              if (fwd_query_be_i[b] && be_q[scan_idx][b] && !covered_be[b]) begin
+                fwd_query_data_o[(8 * b)+:8] = data_q[scan_idx][(8 * b)+:8];
+                covered_be[b] = 1'b1;
+              end
+            end
+          end
+          scan_idx = ptr_dec(scan_idx);
+        end
+      end
+
+      fwd_query_hit_o = ((covered_be & fwd_query_be_i) == fwd_query_be_i) &&
+                        (fwd_query_be_i != '0);
+    end
+  end
 
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (!rst_ni) begin

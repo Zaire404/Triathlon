@@ -604,6 +604,56 @@ static void test_group_supports_two_outstanding_with_rsp_id(Vtb_lsu *top) {
   tick(top);
 }
 
+static void test_sq_forwarding_store_to_younger_load_without_dcache_rsp(Vtb_lsu *top) {
+  set_defaults(top);
+
+  // 1) Hold writeback so the store stays resident while younger load issues.
+  top->wb_ready_i = 0;
+
+  // 2) Older store enters LSU/SQ.
+  top->req_valid_i = 1;
+  top->is_store_i = 1;
+  top->is_load_i = 0;
+  top->lsu_op_i = LSU_SW;
+  top->rs1_data_i = 0xB000;
+  top->imm_i = 0;
+  top->rs2_data_i = 0xDEADBEEF;
+  top->rob_tag_i = 0x22;
+  eval_comb(top);
+  expect(top->req_ready_o == 1, "SQ fwd: older store accepted");
+  tick(top); // lane0 store -> S_RESP (blocked by wb_ready=0)
+
+  // 3) Younger load to same address should forward from SQ path.
+  top->req_valid_i = 1;
+  top->is_store_i = 0;
+  top->is_load_i = 1;
+  top->lsu_op_i = LSU_LW;
+  top->rs1_data_i = 0xB000;
+  top->imm_i = 0;
+  top->rob_tag_i = 0x23;
+  eval_comb(top);
+  expect(top->req_ready_o == 1, "SQ fwd: younger load accepted");
+  expect(top->ld_req_valid_o == 0, "SQ fwd: load should bypass dcache request");
+  tick(top); // lane1 load should become S_RESP directly
+
+  top->req_valid_i = 0;
+  eval_comb(top);
+  expect(top->ld_req_valid_o == 0, "SQ fwd: still no dcache request");
+
+  // 4) Release writeback: store retires first, then load returns forwarded data.
+  top->wb_ready_i = 1;
+  eval_comb(top);
+  expect(top->wb_valid_o == 1, "SQ fwd: store writeback appears first");
+  expect(top->wb_rob_idx_o == 0x22, "SQ fwd: first wb tag is store");
+  tick(top);
+
+  eval_comb(top);
+  expect(top->wb_valid_o == 1, "SQ fwd: forwarded load writeback appears");
+  expect(top->wb_rob_idx_o == 0x23, "SQ fwd: second wb tag is load");
+  expect(top->wb_data_o == 0xDEADBEEF, "SQ fwd: load gets forwarded store data");
+  tick(top);
+}
+
 static void test_lq_queue_occupancy_four_entries(Vtb_lsu *top) {
   set_defaults(top);
 
@@ -685,6 +735,7 @@ int main(int argc, char **argv) {
   test_group_allows_new_req_when_older_lane_waits(top);
   test_group_allows_req_on_rsp_handoff_cycle(top);
   test_group_supports_two_outstanding_with_rsp_id(top);
+  test_sq_forwarding_store_to_younger_load_without_dcache_rsp(top);
   test_lq_queue_occupancy_four_entries(top);
   test_sq_queue_ordered_dequeue_contract(top);
 

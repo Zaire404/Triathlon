@@ -187,7 +187,8 @@ module dcache #(
   endfunction
 
   // ---------------------------------------------------------------------------
-  // Request selection (load has priority over store)
+  // Request selection (load has priority over store).
+  // Note: some younger loads may be satisfied by LSU SQ forwarding before reaching D$.
   // ---------------------------------------------------------------------------
   logic sel_is_load;
   logic sel_is_store;
