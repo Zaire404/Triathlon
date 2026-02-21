@@ -27,6 +27,8 @@ module rename #(
     output logic            [3:0]               rob_dispatch_is_jump_o,
     output logic            [3:0]               rob_dispatch_is_call_o,
     output logic            [3:0]               rob_dispatch_is_ret_o,
+    output logic            [3:0][decode_pkg::FTQ_ID_W-1:0] rob_dispatch_ftq_id_o,
+    output logic            [3:0][decode_pkg::FETCH_EPOCH_W-1:0] rob_dispatch_fetch_epoch_o,
 
     // [新增] 傳遞 Store 信息給 ROB
     output logic [3:0]                   rob_dispatch_is_store_o,
@@ -204,6 +206,8 @@ module rename #(
             (dec_uops_i[i].rd == 5'd0) &&
             ((dec_uops_i[i].rs1 == 5'd1) || (dec_uops_i[i].rs1 == 5'd5)) &&
             (dec_uops_i[i].imm == Cfg.XLEN'(0));
+        rob_dispatch_ftq_id_o[i] = dec_uops_i[i].ftq_id;
+        rob_dispatch_fetch_epoch_o[i] = dec_uops_i[i].fetch_epoch;
 
         // Store 信息傳遞
         rob_dispatch_is_store_o[i] = dec_uops_i[i].is_store;
@@ -241,6 +245,8 @@ module rename #(
         rob_dispatch_is_jump_o[i] = 1'b0;
         rob_dispatch_is_call_o[i] = 1'b0;
         rob_dispatch_is_ret_o[i] = 1'b0;
+        rob_dispatch_ftq_id_o[i] = '0;
+        rob_dispatch_fetch_epoch_o[i] = '0;
         rob_dispatch_is_store_o[i] = 1'b0;
         rob_dispatch_sb_id_o[i]    = '0;
 

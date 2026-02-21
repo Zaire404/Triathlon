@@ -15,6 +15,8 @@ module tb_backend (
     input  logic [           Cfg.PLEN-1:0]               frontend_ibuf_pc,
     input  logic [Cfg.INSTR_PER_FETCH-1:0]               frontend_ibuf_slot_valid,
     input  logic [Cfg.INSTR_PER_FETCH-1:0][Cfg.PLEN-1:0] frontend_ibuf_pred_npc,
+    input  logic [Cfg.INSTR_PER_FETCH-1:0][((Cfg.IFU_INF_DEPTH >= 2) ? $clog2(Cfg.IFU_INF_DEPTH) : 1)-1:0] frontend_ibuf_ftq_id,
+    input  logic [Cfg.INSTR_PER_FETCH-1:0][2:0] frontend_ibuf_fetch_epoch,
 
     // D-Cache miss/refill/writeback interface
     output logic                                  dcache_miss_req_valid_o,
@@ -53,6 +55,12 @@ module tb_backend (
     output logic                               rob_flush_o,
     output logic [Cfg.PLEN-1:0]                rob_flush_pc_o,
     output logic                               dbg_dec_ready_o,
+    output logic                               dbg_dec_valid_o,
+    output logic [((Cfg.IFU_INF_DEPTH >= 2) ? $clog2(Cfg.IFU_INF_DEPTH) : 1)-1:0] dbg_dec_uop0_ftq_id_o,
+    output logic [2:0]                         dbg_dec_uop0_fetch_epoch_o,
+    output logic [((Cfg.IFU_INF_DEPTH >= 2) ? $clog2(Cfg.IFU_INF_DEPTH) : 1)-1:0] dbg_bpu_update_ftq_id_o,
+    output logic [2:0]                         dbg_bpu_update_fetch_epoch_o,
+    output logic [((Cfg.NRET > 1) ? $clog2(Cfg.NRET) : 1)-1:0] dbg_bpu_update_sel_idx_o,
     output logic                               dbg_ren_src_from_pending_o,
     output logic [2:0]                         dbg_ren_src_count_o,
     output logic                               dbg_lsu_req_ready_o,
@@ -62,7 +70,6 @@ module tb_backend (
 
   logic backend_flush_unused;
   logic [Cfg.PLEN-1:0] backend_redirect_pc_unused;
-
   backend #(
       .Cfg(global_config_pkg::Cfg)
   ) dut (
@@ -75,6 +82,8 @@ module tb_backend (
       .frontend_ibuf_pc,
       .frontend_ibuf_slot_valid,
       .frontend_ibuf_pred_npc,
+      .frontend_ibuf_ftq_id(frontend_ibuf_ftq_id),
+      .frontend_ibuf_fetch_epoch(frontend_ibuf_fetch_epoch),
       .backend_flush_o(backend_flush_unused),
       .backend_redirect_pc_o(backend_redirect_pc_unused),
       .bpu_update_valid_o(bpu_update_valid_o),
@@ -115,6 +124,12 @@ module tb_backend (
   assign rob_flush_o    = dut.rob_flush;
   assign rob_flush_pc_o = dut.rob_flush_pc;
   assign dbg_dec_ready_o = dut.decode_backend_ready;
+  assign dbg_dec_valid_o = dut.dec_valid;
+  assign dbg_dec_uop0_ftq_id_o = dut.dec_uops[0].ftq_id;
+  assign dbg_dec_uop0_fetch_epoch_o = dut.dec_uops[0].fetch_epoch;
+  assign dbg_bpu_update_ftq_id_o = dut.bpu_update_ftq_id_dbg;
+  assign dbg_bpu_update_fetch_epoch_o = dut.bpu_update_fetch_epoch_dbg;
+  assign dbg_bpu_update_sel_idx_o = dut.bpu_update_sel_idx_dbg;
   assign dbg_ren_src_from_pending_o = dut.rename_src_from_pending;
   always_comb begin
     dbg_ren_src_count_o = '0;

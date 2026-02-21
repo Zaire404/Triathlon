@@ -28,6 +28,8 @@ module rob #(
     input logic            [DISPATCH_WIDTH-1:0]               dispatch_is_jump_i,
     input logic            [DISPATCH_WIDTH-1:0]               dispatch_is_call_i,
     input logic            [DISPATCH_WIDTH-1:0]               dispatch_is_ret_i,
+    input logic [DISPATCH_WIDTH-1:0][decode_pkg::FTQ_ID_W-1:0] dispatch_ftq_id_i,
+    input logic [DISPATCH_WIDTH-1:0][decode_pkg::FETCH_EPOCH_W-1:0] dispatch_fetch_epoch_i,
 
     // [新增] 接收 Store Buffer ID
     // 只有当指令是 Store 时，这个信号才有效；否则忽略
@@ -72,6 +74,8 @@ module rob #(
     output logic [COMMIT_WIDTH-1:0]                    commit_is_call_o,
     output logic [COMMIT_WIDTH-1:0]                    commit_is_ret_o,
     output logic [COMMIT_WIDTH-1:0][Cfg.PLEN-1:0]      commit_actual_npc_o,
+    output logic [COMMIT_WIDTH-1:0][decode_pkg::FTQ_ID_W-1:0] commit_ftq_id_o,
+    output logic [COMMIT_WIDTH-1:0][decode_pkg::FETCH_EPOCH_W-1:0] commit_fetch_epoch_o,
 
     // Flush Interface
     output logic flush_o,
@@ -116,6 +120,8 @@ module rob #(
     logic is_ret;
     logic [Cfg.XLEN-1:0] data;
     logic [Cfg.PLEN-1:0] pc;
+    logic [decode_pkg::FTQ_ID_W-1:0] ftq_id;
+    logic [decode_pkg::FETCH_EPOCH_W-1:0] fetch_epoch;
 
     // [新增] 存储该指令对应的 Store Buffer ID
     logic is_store;
@@ -172,6 +178,8 @@ module rob #(
     commit_is_call_o = '0;
     commit_is_ret_o = '0;
     commit_actual_npc_o = '0;
+    commit_ftq_id_o = '0;
+    commit_fetch_epoch_o = '0;
     commit_rob_index_o = '0;
 
     // --- 1. Resource Check ---
@@ -237,6 +245,8 @@ module rob #(
             commit_is_call_o[i] = rob_ram[idx].is_call;
             commit_is_ret_o[i] = rob_ram[idx].is_ret;
             commit_actual_npc_o[i] = rob_ram[idx].redirect_pc;
+            commit_ftq_id_o[i] = rob_ram[idx].ftq_id;
+            commit_fetch_epoch_o[i] = rob_ram[idx].fetch_epoch;
 
             stop_commit          = 1'b1;
             flush_o              = 1'b1;
@@ -264,6 +274,8 @@ module rob #(
             commit_is_call_o[i] = rob_ram[idx].is_call;
             commit_is_ret_o[i] = rob_ram[idx].is_ret;
             commit_actual_npc_o[i] = rob_ram[idx].redirect_pc;
+            commit_ftq_id_o[i] = rob_ram[idx].ftq_id;
+            commit_fetch_epoch_o[i] = rob_ram[idx].fetch_epoch;
           end
         end else begin
           stop_commit = 1'b1;
@@ -340,6 +352,8 @@ module rob #(
             rob_ram[w_idx].is_call     <= dispatch_is_call_i[i];
             rob_ram[w_idx].is_ret      <= dispatch_is_ret_i[i];
             rob_ram[w_idx].pc          <= dispatch_pc_i[i];
+            rob_ram[w_idx].ftq_id      <= dispatch_ftq_id_i[i];
+            rob_ram[w_idx].fetch_epoch <= dispatch_fetch_epoch_i[i];
 
             // [新增] 保存 SB ID
             rob_ram[w_idx].is_store    <= dispatch_is_store_i[i];

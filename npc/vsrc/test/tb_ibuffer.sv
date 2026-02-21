@@ -16,6 +16,8 @@ module tb_ibuffer #(
     input  logic [                    Cfg.PLEN-1:0] fe_pc_i,
     input  logic [Cfg.INSTR_PER_FETCH-1:0]          fe_slot_valid_i,
     input  logic [Cfg.INSTR_PER_FETCH*Cfg.PLEN-1:0] fe_pred_npc_i,
+    input  logic [Cfg.INSTR_PER_FETCH*((Cfg.IFU_INF_DEPTH >= 2) ? $clog2(Cfg.IFU_INF_DEPTH) : 1)-1:0] fe_ftq_id_i,
+    input  logic [Cfg.INSTR_PER_FETCH*3-1:0] fe_fetch_epoch_i,
 
     // --- Decode Interface (展平) ---
     output logic                                    ibuf_valid_o,
@@ -26,6 +28,8 @@ module tb_ibuffer #(
     output logic [Cfg.INSTR_PER_FETCH*Cfg.PLEN-1:0] ibuf_pcs_o,
     output logic [Cfg.INSTR_PER_FETCH-1:0]          ibuf_slot_valid_o,
     output logic [Cfg.INSTR_PER_FETCH*Cfg.PLEN-1:0] ibuf_pred_npc_o,
+    output logic [Cfg.INSTR_PER_FETCH*((Cfg.IFU_INF_DEPTH >= 2) ? $clog2(Cfg.IFU_INF_DEPTH) : 1)-1:0] ibuf_ftq_id_o,
+    output logic [Cfg.INSTR_PER_FETCH*3-1:0] ibuf_fetch_epoch_o,
 
     // --- Control ---
     input logic flush_i
@@ -46,6 +50,8 @@ module tb_ibuffer #(
       .fe_pc_i(fe_pc_i),
       .fe_slot_valid_i(fe_slot_valid_i),
       .fe_pred_npc_i(fe_pred_npc_i),
+      .fe_ftq_id_i(fe_ftq_id_i),
+      .fe_fetch_epoch_i(fe_fetch_epoch_i),
 
       .ibuf_valid_o(ibuf_valid_o),
       .ibuf_ready_i(ibuf_ready_i),
@@ -53,6 +59,8 @@ module tb_ibuffer #(
       .ibuf_pcs_o(ibuf_pcs_o),
       .ibuf_slot_valid_o(ibuf_slot_valid_o),
       .ibuf_pred_npc_o(ibuf_pred_npc_o),
+      .ibuf_ftq_id_o(ibuf_ftq_id_o),
+      .ibuf_fetch_epoch_o(ibuf_fetch_epoch_o),
 
       .flush_i(flush_i)
   );

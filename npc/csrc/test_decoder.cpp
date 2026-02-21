@@ -626,10 +626,14 @@ int main(int argc, char **argv) {
     // 1. 生成指令
     uint32_t inst = generate_random_inst();
     uint32_t pc = 0x80000000 + i * 4;
+    uint32_t ftq_id = static_cast<uint32_t>(i) & 0x7u;
+    uint32_t fetch_epoch = (static_cast<uint32_t>(i) >> 3) & 0x7u;
 
     // 2. 驱动 DUT
     top->inst_i = inst;
     top->pc_i = pc;
+    top->ftq_id_i = ftq_id;
+    top->fetch_epoch_i = fetch_epoch;
     top->eval(); // 纯组合逻辑
 
     // 3. 获取 Golden Reference
@@ -712,6 +716,19 @@ int main(int argc, char **argv) {
       if (top->check_pred_npc != (pc + 4)) {
         std::cout << "[ERROR] pred_npc mismatch! Ref=0x" << std::hex << (pc + 4)
                   << " DUT=0x" << top->check_pred_npc << std::endl;
+        mismatch = true;
+      }
+      if (static_cast<uint32_t>(top->check_ftq_id) != ftq_id) {
+        std::cout << "[ERROR] ftq_id mismatch! Ref=" << std::dec << ftq_id
+                  << " DUT=" << static_cast<uint32_t>(top->check_ftq_id)
+                  << std::endl;
+        mismatch = true;
+      }
+      if (static_cast<uint32_t>(top->check_fetch_epoch) != fetch_epoch) {
+        std::cout << "[ERROR] fetch_epoch mismatch! Ref=" << std::dec
+                  << fetch_epoch << " DUT="
+                  << static_cast<uint32_t>(top->check_fetch_epoch)
+                  << std::endl;
         mismatch = true;
       }
     }

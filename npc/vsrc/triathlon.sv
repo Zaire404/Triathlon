@@ -54,6 +54,8 @@ module triathlon #(
   logic [Cfg.PLEN-1:0] fe_ibuf_pc;
   logic [Cfg.INSTR_PER_FETCH-1:0] fe_ibuf_slot_valid;
   logic [Cfg.INSTR_PER_FETCH-1:0][Cfg.PLEN-1:0] fe_ibuf_pred_npc;
+  logic [Cfg.INSTR_PER_FETCH-1:0][((Cfg.IFU_INF_DEPTH >= 2) ? $clog2(Cfg.IFU_INF_DEPTH) : 1)-1:0] fe_ibuf_ftq_id;
+  logic [Cfg.INSTR_PER_FETCH-1:0][2:0] fe_ibuf_fetch_epoch;
 
   logic backend_flush;
   logic [Cfg.PLEN-1:0] backend_redirect_pc;
@@ -81,6 +83,8 @@ module triathlon #(
       .ibuffer_pc_o   (fe_ibuf_pc),
       .ibuffer_slot_valid_o(fe_ibuf_slot_valid),
       .ibuffer_pred_npc_o(fe_ibuf_pred_npc),
+      .ibuffer_ftq_id_o(fe_ibuf_ftq_id),
+      .ibuffer_fetch_epoch_o(fe_ibuf_fetch_epoch),
 
       .flush_i      (backend_flush),
       .redirect_pc_i(backend_redirect_pc),
@@ -125,6 +129,8 @@ module triathlon #(
       .frontend_ibuf_pc    (fe_ibuf_pc),
       .frontend_ibuf_slot_valid(fe_ibuf_slot_valid),
       .frontend_ibuf_pred_npc(fe_ibuf_pred_npc),
+      .frontend_ibuf_ftq_id(fe_ibuf_ftq_id),
+      .frontend_ibuf_fetch_epoch(fe_ibuf_fetch_epoch),
 
       .backend_flush_o      (backend_flush),
       .backend_redirect_pc_o(backend_redirect_pc),

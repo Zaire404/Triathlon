@@ -13,6 +13,8 @@ module backend #(
     input logic [Cfg.PLEN-1:0] frontend_ibuf_pc,
     input logic [Cfg.INSTR_PER_FETCH-1:0] frontend_ibuf_slot_valid,
     input logic [Cfg.INSTR_PER_FETCH-1:0][Cfg.PLEN-1:0] frontend_ibuf_pred_npc,
+    input logic [Cfg.INSTR_PER_FETCH-1:0][((Cfg.IFU_INF_DEPTH >= 2) ? $clog2(Cfg.IFU_INF_DEPTH) : 1)-1:0] frontend_ibuf_ftq_id,
+    input logic [Cfg.INSTR_PER_FETCH-1:0][2:0] frontend_ibuf_fetch_epoch,
     // Redirect/flush to frontend
     output logic backend_flush_o,
     output logic [Cfg.PLEN-1:0] backend_redirect_pc_o,
@@ -64,6 +66,9 @@ module backend #(
   localparam int unsigned RENAME_PENDING_DEPTH = (RENAME_PENDING_DEPTH_CFG >= DISPATCH_WIDTH) ?
       RENAME_PENDING_DEPTH_CFG : DISPATCH_WIDTH;
   localparam int unsigned RENAME_PENDING_CNT_W = $clog2(RENAME_PENDING_DEPTH + 1);
+  localparam int unsigned FTQ_ID_W = decode_pkg::FTQ_ID_W;
+  localparam int unsigned FETCH_EPOCH_W = decode_pkg::FETCH_EPOCH_W;
+  localparam int unsigned COMMIT_SEL_W = (COMMIT_WIDTH > 1) ? $clog2(COMMIT_WIDTH) : 1;
   // A2.2: 开启 commit-time call/ret 更新，配合 BPU speculative RAS 降低 return miss。
   localparam bit ENABLE_COMMIT_RAS_UPDATE = (Cfg.ENABLE_COMMIT_RAS_UPDATE != 0);
 
@@ -76,6 +81,8 @@ module backend #(
   logic [Cfg.INSTR_PER_FETCH-1:0][Cfg.PLEN-1:0] decode_ibuf_pcs;
   logic [Cfg.INSTR_PER_FETCH-1:0] decode_ibuf_slot_valid;
   logic [Cfg.INSTR_PER_FETCH-1:0][Cfg.PLEN-1:0] decode_ibuf_pred_npc;
+  logic [Cfg.INSTR_PER_FETCH-1:0][((Cfg.IFU_INF_DEPTH >= 2) ? $clog2(Cfg.IFU_INF_DEPTH) : 1)-1:0] decode_ibuf_ftq_id;
+  logic [Cfg.INSTR_PER_FETCH-1:0][2:0] decode_ibuf_fetch_epoch;
 
   logic backend_flush;
 
@@ -93,6 +100,8 @@ module backend #(
       .fe_pc_i        (frontend_ibuf_pc),
       .fe_slot_valid_i(frontend_ibuf_slot_valid),
       .fe_pred_npc_i  (frontend_ibuf_pred_npc),
+      .fe_ftq_id_i(frontend_ibuf_ftq_id),
+      .fe_fetch_epoch_i(frontend_ibuf_fetch_epoch),
 
       .ibuf_valid_o (decode_ibuf_valid),
       .ibuf_ready_i (decode_ibuf_ready),
@@ -100,6 +109,8 @@ module backend #(
       .ibuf_pcs_o   (decode_ibuf_pcs),
       .ibuf_slot_valid_o(decode_ibuf_slot_valid),
       .ibuf_pred_npc_o(decode_ibuf_pred_npc),
+      .ibuf_ftq_id_o(decode_ibuf_ftq_id),
+      .ibuf_fetch_epoch_o(decode_ibuf_fetch_epoch),
 
       .flush_i(backend_flush)
   );
@@ -125,6 +136,8 @@ module backend #(
       .ibuf_pcs_i       (decode_ibuf_pcs),
       .ibuf_slot_valid_i(decode_ibuf_slot_valid),
       .ibuf_pred_npc_i  (decode_ibuf_pred_npc),
+      .ibuf_ftq_id_i(decode_ibuf_ftq_id),
+      .ibuf_fetch_epoch_i(decode_ibuf_fetch_epoch),
 
       .dec2backend_valid_o(dec_valid),
       .backend2dec_ready_i(decode_backend_ready),
@@ -151,6 +164,8 @@ module backend #(
   logic [    COMMIT_WIDTH-1:0]                    commit_is_call;
   logic [    COMMIT_WIDTH-1:0]                    commit_is_ret;
   logic [    COMMIT_WIDTH-1:0][     Cfg.PLEN-1:0] commit_actual_npc;
+  logic [    COMMIT_WIDTH-1:0][    FTQ_ID_W-1:0]  commit_ftq_id;
+  logic [    COMMIT_WIDTH-1:0][FETCH_EPOCH_W-1:0] commit_fetch_epoch;
 
   logic                                           rob_flush;
   logic [        Cfg.PLEN-1:0]                    rob_flush_pc;
@@ -160,6 +175,9 @@ module backend #(
   logic                                           rob_flush_is_branch;
   logic                                           rob_flush_is_jump;
   logic [        Cfg.PLEN-1:0]                    rob_flush_src_pc;
+  logic [            FTQ_ID_W-1:0]                bpu_update_ftq_id_dbg;
+  logic [       FETCH_EPOCH_W-1:0]                bpu_update_fetch_epoch_dbg;
+  logic [         COMMIT_SEL_W-1:0]               bpu_update_sel_idx_dbg;
 
   // ROB operand query (late subscription fix)
   logic [DISPATCH_WIDTH*2-1:0][ROB_IDX_WIDTH-1:0] rob_query_idx;
@@ -188,6 +206,8 @@ module backend #(
       .dispatch_is_jump_i(rob_dispatch_is_jump),
       .dispatch_is_call_i(rob_dispatch_is_call),
       .dispatch_is_ret_i(rob_dispatch_is_ret),
+      .dispatch_ftq_id_i(rob_dispatch_ftq_id),
+      .dispatch_fetch_epoch_i(rob_dispatch_fetch_epoch),
       .dispatch_is_store_i(rob_dispatch_is_store),
       .dispatch_sb_id_i(rob_dispatch_sb_id),
 
@@ -215,6 +235,8 @@ module backend #(
       .commit_is_call_o   (commit_is_call),
       .commit_is_ret_o    (commit_is_ret),
       .commit_actual_npc_o(commit_actual_npc),
+      .commit_ftq_id_o(commit_ftq_id),
+      .commit_fetch_epoch_o(commit_fetch_epoch),
 
       .flush_o             (rob_flush),
       .flush_pc_o          (rob_flush_pc),
@@ -248,6 +270,9 @@ module backend #(
     bpu_update_target_o = '0;
     bpu_update_is_call_o = 1'b0;
     bpu_update_is_ret_o = 1'b0;
+    bpu_update_ftq_id_dbg = '0;
+    bpu_update_fetch_epoch_dbg = '0;
+    bpu_update_sel_idx_dbg = '0;
     fallthrough_pc = '0;
     sel_idx = -1;
     for (int i = 0; i < COMMIT_WIDTH; i++) begin
@@ -266,6 +291,9 @@ module backend #(
       bpu_update_target_o = commit_actual_npc[sel_idx];
       bpu_update_is_call_o = ENABLE_COMMIT_RAS_UPDATE ? commit_is_call[sel_idx] : 1'b0;
       bpu_update_is_ret_o = ENABLE_COMMIT_RAS_UPDATE ? commit_is_ret[sel_idx] : 1'b0;
+      bpu_update_ftq_id_dbg = commit_ftq_id[sel_idx];
+      bpu_update_fetch_epoch_dbg = commit_fetch_epoch[sel_idx];
+      bpu_update_sel_idx_dbg = COMMIT_SEL_W'(sel_idx);
     end
   end
 
@@ -372,6 +400,8 @@ module backend #(
   logic            [DISPATCH_WIDTH-1:0]                    rob_dispatch_is_jump;
   logic            [DISPATCH_WIDTH-1:0]                    rob_dispatch_is_call;
   logic            [DISPATCH_WIDTH-1:0]                    rob_dispatch_is_ret;
+  logic            [DISPATCH_WIDTH-1:0][    FTQ_ID_W-1:0]  rob_dispatch_ftq_id;
+  logic            [DISPATCH_WIDTH-1:0][FETCH_EPOCH_W-1:0] rob_dispatch_fetch_epoch;
   logic            [DISPATCH_WIDTH-1:0]                    rob_dispatch_is_store;
   logic            [DISPATCH_WIDTH-1:0][ SB_IDX_WIDTH-1:0] rob_dispatch_sb_id;
 
@@ -617,6 +647,8 @@ module backend #(
       .rob_dispatch_is_jump_o(rob_dispatch_is_jump),
       .rob_dispatch_is_call_o(rob_dispatch_is_call),
       .rob_dispatch_is_ret_o(rob_dispatch_is_ret),
+      .rob_dispatch_ftq_id_o(rob_dispatch_ftq_id),
+      .rob_dispatch_fetch_epoch_o(rob_dispatch_fetch_epoch),
       .rob_dispatch_is_store_o(rob_dispatch_is_store),
       .rob_dispatch_sb_id_o(rob_dispatch_sb_id),
 
