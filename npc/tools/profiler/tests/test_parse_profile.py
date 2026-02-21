@@ -852,6 +852,30 @@ class ParseProfileTest(unittest.TestCase):
         self.assertEqual(result["stall_other_detail"]["ren_no_fire"], 2)
         self.assertEqual(result["stall_other_detail"]["lsu_wait_wb"], 1)
 
+    def test_cycle_stallm5_phase1_lsu_rob_keys_are_canonicalized(self):
+        mod = load_parser_module()
+        with tempfile.TemporaryDirectory() as td:
+            log = Path(td) / "coremark.log"
+            log.write_text(
+                "\n".join(
+                    [
+                        "[stallm] mode=cycle stall_total_cycles=40 flush_recovery=1 icache_miss_wait=1 dcache_miss_wait=1 rob_backpressure=8 frontend_empty=8 decode_blocked=6 lsu_req_blocked=2 other=13",
+                        "[stallm5] mode=cycle other_total=13 rob_head_lsu_incomplete_wait_req_ready=5 rob_head_lsu_incomplete_wait_rsp_valid=4 rob_empty_refill_ren_fire=4",
+                        "IPC=0.500000 CPI=2.000000 cycles=100 commits=50",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            result = mod.parse_single_log(log)
+
+        detail = result["stall_other_detail"]
+        self.assertEqual(detail["rob_head_lsu_incomplete_wait_req_ready_nonbp"], 5)
+        self.assertEqual(detail["rob_head_lsu_incomplete_wait_rsp_valid_nonbp"], 4)
+        self.assertEqual(detail["rob_empty_refill_ren_fire"], 4)
+        self.assertNotIn("rob_head_lsu_incomplete_wait_req_ready", detail)
+        self.assertNotIn("rob_head_lsu_incomplete_wait_rsp_valid", detail)
+
     def test_sampled_stall_other_secondary_breakdown(self):
         mod = load_parser_module()
         with tempfile.TemporaryDirectory() as td:

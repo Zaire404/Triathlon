@@ -65,6 +65,14 @@ STALL_FRONTEND_EMPTY_DETAIL_KEYS = (
     "fe_req_ready_nofire",
     "fe_other",
 )
+STALL_OTHER_DETAIL_KEY_CANONICAL_MAP = {
+    "rob_head_lsu_incomplete_wait_req_ready": "rob_head_lsu_incomplete_wait_req_ready_nonbp",
+    "rob_head_lsu_incomplete_wait_rsp_valid": "rob_head_lsu_incomplete_wait_rsp_valid_nonbp",
+}
+
+
+def _canonicalize_stall_other_detail_key(key: str) -> str:
+    return STALL_OTHER_DETAIL_KEY_CANONICAL_MAP.get(key, key)
 
 
 def _safe_div(numer: float, denom: float) -> float:
@@ -1075,7 +1083,8 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
             for key, val in kv.items():
                 if key in ("mode", "other_total"):
                     continue
-                stall_other_detail_summary[key] = _parse_int(val, 0)
+                key = _canonicalize_stall_other_detail_key(key)
+                stall_other_detail_summary[key] += _parse_int(val, 0)
             if stall_other_total_summary == 0:
                 stall_other_total_summary = sum(stall_other_detail_summary.values())
             continue
