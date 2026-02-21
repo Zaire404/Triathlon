@@ -704,6 +704,10 @@ int main(int argc, char **argv) {
   uint64_t pred_cond_miss = 0;
   uint64_t pred_jump_total = 0;
   uint64_t pred_jump_miss = 0;
+  uint64_t pred_jump_direct_total = 0;
+  uint64_t pred_jump_direct_miss = 0;
+  uint64_t pred_jump_indirect_total = 0;
+  uint64_t pred_jump_indirect_miss = 0;
   uint64_t pred_ret_total = 0;
   uint64_t pred_ret_miss = 0;
   uint64_t pred_call_total = 0;
@@ -758,10 +762,22 @@ int main(int argc, char **argv) {
     uint32_t imm12 = (inst >> 20) & 0xFFFu;
     return (rd == 0u) && (rs1 == 1u || rs1 == 5u) && (imm12 == 0u);
   };
+  auto is_indirect_jump_inst = [&](uint32_t inst) -> bool {
+    uint32_t opcode = inst & 0x7Fu;
+    if (opcode != 0x67u) return false;
+    if (is_call_inst(inst) || is_ret_inst(inst)) return false;
+    return true;
+  };
   auto emit_pred_summary = [&]() {
     if (!(args.commit_trace || args.bru_trace)) return;
     uint64_t pred_cond_hit = (pred_cond_total >= pred_cond_miss) ? (pred_cond_total - pred_cond_miss) : 0;
     uint64_t pred_jump_hit = (pred_jump_total >= pred_jump_miss) ? (pred_jump_total - pred_jump_miss) : 0;
+    uint64_t pred_jump_direct_hit = (pred_jump_direct_total >= pred_jump_direct_miss)
+                                        ? (pred_jump_direct_total - pred_jump_direct_miss)
+                                        : 0;
+    uint64_t pred_jump_indirect_hit = (pred_jump_indirect_total >= pred_jump_indirect_miss)
+                                          ? (pred_jump_indirect_total - pred_jump_indirect_miss)
+                                          : 0;
     uint64_t pred_ret_hit = (pred_ret_total >= pred_ret_miss) ? (pred_ret_total - pred_ret_miss) : 0;
     uint64_t cond_update_total = static_cast<uint64_t>(top->dbg_bpu_cond_update_total_o);
     uint64_t cond_local_correct = static_cast<uint64_t>(top->dbg_bpu_cond_local_correct_o);
@@ -769,6 +785,45 @@ int main(int argc, char **argv) {
     uint64_t cond_selected_correct = static_cast<uint64_t>(top->dbg_bpu_cond_selected_correct_o);
     uint64_t cond_choose_local = static_cast<uint64_t>(top->dbg_bpu_cond_choose_local_o);
     uint64_t cond_choose_global = static_cast<uint64_t>(top->dbg_bpu_cond_choose_global_o);
+    uint64_t tage_lookup_total = static_cast<uint64_t>(top->dbg_bpu_tage_lookup_total_o);
+    uint64_t tage_hit_total = static_cast<uint64_t>(top->dbg_bpu_tage_hit_total_o);
+    uint64_t tage_override_total = static_cast<uint64_t>(top->dbg_bpu_tage_override_total_o);
+    uint64_t tage_override_correct = static_cast<uint64_t>(top->dbg_bpu_tage_override_correct_o);
+    uint64_t sc_lookup_total = static_cast<uint64_t>(top->dbg_bpu_sc_lookup_total_o);
+    uint64_t sc_confident_total = static_cast<uint64_t>(top->dbg_bpu_sc_confident_total_o);
+    uint64_t sc_override_total = static_cast<uint64_t>(top->dbg_bpu_sc_override_total_o);
+    uint64_t sc_override_correct = static_cast<uint64_t>(top->dbg_bpu_sc_override_correct_o);
+    uint64_t loop_lookup_total = static_cast<uint64_t>(top->dbg_bpu_loop_lookup_total_o);
+    uint64_t loop_hit_total = static_cast<uint64_t>(top->dbg_bpu_loop_hit_total_o);
+    uint64_t loop_confident_total = static_cast<uint64_t>(top->dbg_bpu_loop_confident_total_o);
+    uint64_t loop_override_total = static_cast<uint64_t>(top->dbg_bpu_loop_override_total_o);
+    uint64_t loop_override_correct = static_cast<uint64_t>(top->dbg_bpu_loop_override_correct_o);
+    uint64_t cond_provider_legacy_selected =
+        static_cast<uint64_t>(top->dbg_bpu_cond_provider_legacy_selected_o);
+    uint64_t cond_provider_tage_selected =
+        static_cast<uint64_t>(top->dbg_bpu_cond_provider_tage_selected_o);
+    uint64_t cond_provider_sc_selected =
+        static_cast<uint64_t>(top->dbg_bpu_cond_provider_sc_selected_o);
+    uint64_t cond_provider_loop_selected =
+        static_cast<uint64_t>(top->dbg_bpu_cond_provider_loop_selected_o);
+    uint64_t cond_provider_legacy_correct =
+        static_cast<uint64_t>(top->dbg_bpu_cond_provider_legacy_correct_o);
+    uint64_t cond_provider_tage_correct =
+        static_cast<uint64_t>(top->dbg_bpu_cond_provider_tage_correct_o);
+    uint64_t cond_provider_sc_correct =
+        static_cast<uint64_t>(top->dbg_bpu_cond_provider_sc_correct_o);
+    uint64_t cond_provider_loop_correct =
+        static_cast<uint64_t>(top->dbg_bpu_cond_provider_loop_correct_o);
+    uint64_t cond_selected_wrong_alt_legacy_correct =
+        static_cast<uint64_t>(top->dbg_bpu_cond_selected_wrong_alt_legacy_correct_o);
+    uint64_t cond_selected_wrong_alt_tage_correct =
+        static_cast<uint64_t>(top->dbg_bpu_cond_selected_wrong_alt_tage_correct_o);
+    uint64_t cond_selected_wrong_alt_sc_correct =
+        static_cast<uint64_t>(top->dbg_bpu_cond_selected_wrong_alt_sc_correct_o);
+    uint64_t cond_selected_wrong_alt_loop_correct =
+        static_cast<uint64_t>(top->dbg_bpu_cond_selected_wrong_alt_loop_correct_o);
+    uint64_t cond_selected_wrong_alt_any_correct =
+        static_cast<uint64_t>(top->dbg_bpu_cond_selected_wrong_alt_any_correct_o);
     std::ios::fmtflags f(std::cout.flags());
     std::cout << "[pred  ] cond_total=" << pred_cond_total
               << " cond_miss=" << pred_cond_miss
@@ -776,6 +831,12 @@ int main(int argc, char **argv) {
               << " jump_total=" << pred_jump_total
               << " jump_miss=" << pred_jump_miss
               << " jump_hit=" << pred_jump_hit
+              << " jump_direct_total=" << pred_jump_direct_total
+              << " jump_direct_miss=" << pred_jump_direct_miss
+              << " jump_direct_hit=" << pred_jump_direct_hit
+              << " jump_indirect_total=" << pred_jump_indirect_total
+              << " jump_indirect_miss=" << pred_jump_indirect_miss
+              << " jump_indirect_hit=" << pred_jump_indirect_hit
               << " ret_total=" << pred_ret_total
               << " ret_miss=" << pred_ret_miss
               << " ret_hit=" << pred_ret_hit
@@ -786,6 +847,32 @@ int main(int argc, char **argv) {
               << " cond_selected_correct=" << cond_selected_correct
               << " cond_choose_local=" << cond_choose_local
               << " cond_choose_global=" << cond_choose_global
+              << " tage_lookup_total=" << tage_lookup_total
+              << " tage_hit_total=" << tage_hit_total
+              << " tage_override_total=" << tage_override_total
+              << " tage_override_correct=" << tage_override_correct
+              << " sc_lookup_total=" << sc_lookup_total
+              << " sc_confident_total=" << sc_confident_total
+              << " sc_override_total=" << sc_override_total
+              << " sc_override_correct=" << sc_override_correct
+              << " loop_lookup_total=" << loop_lookup_total
+              << " loop_hit_total=" << loop_hit_total
+              << " loop_confident_total=" << loop_confident_total
+              << " loop_override_total=" << loop_override_total
+              << " loop_override_correct=" << loop_override_correct
+              << " cond_provider_legacy_selected=" << cond_provider_legacy_selected
+              << " cond_provider_tage_selected=" << cond_provider_tage_selected
+              << " cond_provider_sc_selected=" << cond_provider_sc_selected
+              << " cond_provider_loop_selected=" << cond_provider_loop_selected
+              << " cond_provider_legacy_correct=" << cond_provider_legacy_correct
+              << " cond_provider_tage_correct=" << cond_provider_tage_correct
+              << " cond_provider_sc_correct=" << cond_provider_sc_correct
+              << " cond_provider_loop_correct=" << cond_provider_loop_correct
+              << " cond_selected_wrong_alt_legacy_correct=" << cond_selected_wrong_alt_legacy_correct
+              << " cond_selected_wrong_alt_tage_correct=" << cond_selected_wrong_alt_tage_correct
+              << " cond_selected_wrong_alt_sc_correct=" << cond_selected_wrong_alt_sc_correct
+              << " cond_selected_wrong_alt_loop_correct=" << cond_selected_wrong_alt_loop_correct
+              << " cond_selected_wrong_alt_any_correct=" << cond_selected_wrong_alt_any_correct
               << "\n";
     std::cout << "[flushm] wrong_path_killed_uops=" << wrong_path_killed_uops
               << " redirect_distance_samples=" << redirect_distance_samples
@@ -1248,10 +1335,16 @@ int main(int argc, char **argv) {
             miss_type = "return";
             miss_subtype = "return";
             pred_ret_miss++;
+          } else if (is_indirect_jump_inst(src_inst)) {
+            miss_type = "jump";
+            miss_subtype = "jump_indirect";
+            pred_jump_miss++;
+            pred_jump_indirect_miss++;
           } else {
             miss_type = "jump";
-            miss_subtype = "jump";
+            miss_subtype = "jump_direct";
             pred_jump_miss++;
+            pred_jump_direct_miss++;
           }
         } else if (rob_is_branch) {
           miss_type = "cond_branch";
@@ -1375,6 +1468,11 @@ int main(int argc, char **argv) {
           pred_ret_total++;
         } else {
           pred_jump_total++;
+          if (is_indirect_jump_inst(inst)) {
+            pred_jump_indirect_total++;
+          } else {
+            pred_jump_direct_total++;
+          }
         }
       }
       if (is_call_inst(inst)) {

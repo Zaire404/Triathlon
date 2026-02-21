@@ -208,6 +208,32 @@ class ParseProfileTest(unittest.TestCase):
         self.assertAlmostEqual(result["predict"]["ret_miss_rate"], 2 / 3)
         self.assertEqual(result["predict"]["call_total"], 5)
 
+    def test_parse_predict_breakdown_includes_jump_direct_indirect_metrics(self):
+        mod = load_parser_module()
+        with tempfile.TemporaryDirectory() as td:
+            log = Path(td) / "coremark.log"
+            log.write_text(
+                "\n".join(
+                    [
+                        "[pred  ] cond_total=10 cond_miss=4 cond_hit=6 jump_total=8 jump_miss=3 jump_hit=5 jump_direct_total=5 jump_direct_miss=1 jump_direct_hit=4 jump_indirect_total=3 jump_indirect_miss=2 jump_indirect_hit=1 ret_total=2 ret_miss=1 ret_hit=1 call_total=5",
+                        "IPC=0.500000 CPI=2.000000 cycles=100 commits=50",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            result = mod.parse_single_log(log)
+
+        pred = result["predict"]
+        self.assertEqual(pred["jump_direct_total"], 5)
+        self.assertEqual(pred["jump_direct_miss"], 1)
+        self.assertEqual(pred["jump_direct_hit"], 4)
+        self.assertAlmostEqual(pred["jump_direct_miss_rate"], 0.2)
+        self.assertEqual(pred["jump_indirect_total"], 3)
+        self.assertEqual(pred["jump_indirect_miss"], 2)
+        self.assertEqual(pred["jump_indirect_hit"], 1)
+        self.assertAlmostEqual(pred["jump_indirect_miss_rate"], 2 / 3)
+
     def test_parse_predict_tournament_breakdown(self):
         mod = load_parser_module()
         with tempfile.TemporaryDirectory() as td:
@@ -235,6 +261,128 @@ class ParseProfileTest(unittest.TestCase):
         self.assertAlmostEqual(pred["cond_global_accuracy"], 0.70)
         self.assertAlmostEqual(pred["cond_selected_accuracy"], 0.82)
         self.assertAlmostEqual(pred["cond_choose_global_ratio"], 0.40)
+
+    def test_parse_predict_tage_breakdown(self):
+        mod = load_parser_module()
+        with tempfile.TemporaryDirectory() as td:
+            log = Path(td) / "coremark.log"
+            log.write_text(
+                "\n".join(
+                    [
+                        "[pred  ] cond_total=100 cond_miss=20 cond_hit=80 jump_total=6 jump_miss=1 jump_hit=5 ret_total=3 ret_miss=1 ret_hit=2 call_total=9 tage_lookup_total=90 tage_hit_total=30 tage_override_total=12 tage_override_correct=8",
+                        "IPC=0.500000 CPI=2.000000 cycles=100 commits=50",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            result = mod.parse_single_log(log)
+
+        pred = result["predict"]
+        self.assertEqual(pred["tage_lookup_total"], 90)
+        self.assertEqual(pred["tage_hit_total"], 30)
+        self.assertEqual(pred["tage_override_total"], 12)
+        self.assertEqual(pred["tage_override_correct"], 8)
+        self.assertAlmostEqual(pred["tage_hit_rate"], 1 / 3)
+        self.assertAlmostEqual(pred["tage_override_ratio"], 12 / 90)
+        self.assertAlmostEqual(pred["tage_override_accuracy"], 2 / 3)
+
+    def test_parse_predict_sc_l_breakdown(self):
+        mod = load_parser_module()
+        with tempfile.TemporaryDirectory() as td:
+            log = Path(td) / "coremark.log"
+            log.write_text(
+                "\n".join(
+                    [
+                        "[pred  ] cond_total=100 cond_miss=20 cond_hit=80 jump_total=6 jump_miss=1 jump_hit=5 ret_total=3 ret_miss=1 ret_hit=2 call_total=9 sc_lookup_total=80 sc_confident_total=20 sc_override_total=12 sc_override_correct=9",
+                        "IPC=0.500000 CPI=2.000000 cycles=100 commits=50",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            result = mod.parse_single_log(log)
+
+        pred = result["predict"]
+        self.assertEqual(pred["sc_lookup_total"], 80)
+        self.assertEqual(pred["sc_confident_total"], 20)
+        self.assertEqual(pred["sc_override_total"], 12)
+        self.assertEqual(pred["sc_override_correct"], 9)
+        self.assertAlmostEqual(pred["sc_confident_ratio"], 0.25)
+        self.assertAlmostEqual(pred["sc_override_ratio"], 12 / 80)
+        self.assertAlmostEqual(pred["sc_override_accuracy"], 0.75)
+
+    def test_parse_predict_loop_breakdown(self):
+        mod = load_parser_module()
+        with tempfile.TemporaryDirectory() as td:
+            log = Path(td) / "coremark.log"
+            log.write_text(
+                "\n".join(
+                    [
+                        "[pred  ] cond_total=100 cond_miss=20 cond_hit=80 jump_total=6 jump_miss=1 jump_hit=5 ret_total=3 ret_miss=1 ret_hit=2 call_total=9 loop_lookup_total=50 loop_hit_total=40 loop_confident_total=12 loop_override_total=10 loop_override_correct=7",
+                        "IPC=0.500000 CPI=2.000000 cycles=100 commits=50",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            result = mod.parse_single_log(log)
+
+        pred = result["predict"]
+        self.assertEqual(pred["loop_lookup_total"], 50)
+        self.assertEqual(pred["loop_hit_total"], 40)
+        self.assertEqual(pred["loop_confident_total"], 12)
+        self.assertEqual(pred["loop_override_total"], 10)
+        self.assertEqual(pred["loop_override_correct"], 7)
+        self.assertAlmostEqual(pred["loop_hit_rate"], 0.8)
+        self.assertAlmostEqual(pred["loop_confident_ratio"], 0.24)
+        self.assertAlmostEqual(pred["loop_override_ratio"], 0.2)
+        self.assertAlmostEqual(pred["loop_override_accuracy"], 0.7)
+
+    def test_parse_predict_provider_breakdown(self):
+        mod = load_parser_module()
+        with tempfile.TemporaryDirectory() as td:
+            log = Path(td) / "coremark.log"
+            log.write_text(
+                "\n".join(
+                    [
+                        "[pred  ] cond_total=100 cond_miss=20 cond_hit=80 "
+                        "cond_update_total=90 cond_selected_correct=72 "
+                        "cond_provider_legacy_selected=45 cond_provider_tage_selected=20 cond_provider_sc_selected=15 cond_provider_loop_selected=10 "
+                        "cond_provider_legacy_correct=33 cond_provider_tage_correct=18 cond_provider_sc_correct=12 cond_provider_loop_correct=9 "
+                        "cond_selected_wrong_alt_legacy_correct=6 cond_selected_wrong_alt_tage_correct=4 cond_selected_wrong_alt_sc_correct=3 cond_selected_wrong_alt_loop_correct=2 cond_selected_wrong_alt_any_correct=10 "
+                        "jump_total=0 jump_miss=0 ret_total=0 ret_miss=0 call_total=0",
+                        "IPC=0.500000 CPI=2.000000 cycles=100 commits=50",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            result = mod.parse_single_log(log)
+
+        pred = result["predict"]
+        self.assertEqual(pred["cond_provider_legacy_selected"], 45)
+        self.assertEqual(pred["cond_provider_tage_selected"], 20)
+        self.assertEqual(pred["cond_provider_sc_selected"], 15)
+        self.assertEqual(pred["cond_provider_loop_selected"], 10)
+        self.assertEqual(pred["cond_provider_total_selected"], 90)
+        self.assertEqual(pred["cond_provider_legacy_correct"], 33)
+        self.assertEqual(pred["cond_provider_tage_correct"], 18)
+        self.assertEqual(pred["cond_provider_sc_correct"], 12)
+        self.assertEqual(pred["cond_provider_loop_correct"], 9)
+        self.assertAlmostEqual(pred["cond_provider_legacy_accuracy"], 33 / 45)
+        self.assertAlmostEqual(pred["cond_provider_tage_accuracy"], 18 / 20)
+        self.assertAlmostEqual(pred["cond_provider_sc_accuracy"], 12 / 15)
+        self.assertAlmostEqual(pred["cond_provider_loop_accuracy"], 9 / 10)
+        self.assertAlmostEqual(pred["cond_provider_coverage"], 1.0)
+        self.assertAlmostEqual(pred["cond_provider_tage_share"], 20 / 90)
+        self.assertEqual(pred["cond_selected_wrong_total"], 18)
+        self.assertEqual(pred["cond_selected_wrong_alt_legacy_correct"], 6)
+        self.assertEqual(pred["cond_selected_wrong_alt_tage_correct"], 4)
+        self.assertEqual(pred["cond_selected_wrong_alt_sc_correct"], 3)
+        self.assertEqual(pred["cond_selected_wrong_alt_loop_correct"], 2)
+        self.assertEqual(pred["cond_selected_wrong_alt_any_correct"], 10)
+        self.assertAlmostEqual(pred["cond_selected_wrong_alt_any_ratio"], 10 / 18)
 
     def test_parse_flush_subtype_return_count(self):
         mod = load_parser_module()
@@ -906,6 +1054,11 @@ class ParseProfileTest(unittest.TestCase):
 
         self.assertIn("predict(cond local/global/selected acc)", report)
         self.assertIn("predict(cond chooser local/global)", report)
+        self.assertIn("predict(jump direct hit/miss)", report)
+        self.assertIn("predict(jump indirect hit/miss)", report)
+        self.assertIn("predict(loop lookup/hit/confident/override/correct)", report)
+        self.assertIn("predict(cond provider selected legacy/tage/sc/loop)", report)
+        self.assertIn("predict(cond wrong-selected alt-correct legacy/tage/sc/loop/any)", report)
 
     def test_commit_summary_without_commit_detail(self):
         mod = load_parser_module()

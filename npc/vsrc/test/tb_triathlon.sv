@@ -206,6 +206,32 @@ module tb_triathlon #(
     output logic [63:0]                        dbg_bpu_cond_selected_correct_o,
     output logic [63:0]                        dbg_bpu_cond_choose_local_o,
     output logic [63:0]                        dbg_bpu_cond_choose_global_o,
+    output logic [63:0]                        dbg_bpu_tage_lookup_total_o,
+    output logic [63:0]                        dbg_bpu_tage_hit_total_o,
+    output logic [63:0]                        dbg_bpu_tage_override_total_o,
+    output logic [63:0]                        dbg_bpu_tage_override_correct_o,
+    output logic [63:0]                        dbg_bpu_sc_lookup_total_o,
+    output logic [63:0]                        dbg_bpu_sc_confident_total_o,
+    output logic [63:0]                        dbg_bpu_sc_override_total_o,
+    output logic [63:0]                        dbg_bpu_sc_override_correct_o,
+    output logic [63:0]                        dbg_bpu_loop_lookup_total_o,
+    output logic [63:0]                        dbg_bpu_loop_hit_total_o,
+    output logic [63:0]                        dbg_bpu_loop_confident_total_o,
+    output logic [63:0]                        dbg_bpu_loop_override_total_o,
+    output logic [63:0]                        dbg_bpu_loop_override_correct_o,
+    output logic [63:0]                        dbg_bpu_cond_provider_legacy_selected_o,
+    output logic [63:0]                        dbg_bpu_cond_provider_tage_selected_o,
+    output logic [63:0]                        dbg_bpu_cond_provider_sc_selected_o,
+    output logic [63:0]                        dbg_bpu_cond_provider_loop_selected_o,
+    output logic [63:0]                        dbg_bpu_cond_provider_legacy_correct_o,
+    output logic [63:0]                        dbg_bpu_cond_provider_tage_correct_o,
+    output logic [63:0]                        dbg_bpu_cond_provider_sc_correct_o,
+    output logic [63:0]                        dbg_bpu_cond_provider_loop_correct_o,
+    output logic [63:0]                        dbg_bpu_cond_selected_wrong_alt_legacy_correct_o,
+    output logic [63:0]                        dbg_bpu_cond_selected_wrong_alt_tage_correct_o,
+    output logic [63:0]                        dbg_bpu_cond_selected_wrong_alt_sc_correct_o,
+    output logic [63:0]                        dbg_bpu_cond_selected_wrong_alt_loop_correct_o,
+    output logic [63:0]                        dbg_bpu_cond_selected_wrong_alt_any_correct_o,
     // Debug (BRU mispred info)
     output logic                               dbg_bru_mispred_o,
     output logic [Cfg.PLEN-1:0]                dbg_bru_pc_o,
@@ -499,6 +525,45 @@ module tb_triathlon #(
   assign dbg_bpu_cond_selected_correct_o = dut.u_frontend.i_bpu.dbg_cond_selected_correct_q;
   assign dbg_bpu_cond_choose_local_o = dut.u_frontend.i_bpu.dbg_cond_choose_local_q;
   assign dbg_bpu_cond_choose_global_o = dut.u_frontend.i_bpu.dbg_cond_choose_global_q;
+  assign dbg_bpu_tage_lookup_total_o = dut.u_frontend.i_bpu.dbg_tage_lookup_total_q;
+  assign dbg_bpu_tage_hit_total_o = dut.u_frontend.i_bpu.dbg_tage_hit_total_q;
+  assign dbg_bpu_tage_override_total_o = dut.u_frontend.i_bpu.dbg_tage_override_total_q;
+  assign dbg_bpu_tage_override_correct_o = dut.u_frontend.i_bpu.dbg_tage_override_correct_q;
+  assign dbg_bpu_sc_lookup_total_o = dut.u_frontend.i_bpu.dbg_sc_lookup_total_q;
+  assign dbg_bpu_sc_confident_total_o = dut.u_frontend.i_bpu.dbg_sc_confident_total_q;
+  assign dbg_bpu_sc_override_total_o = dut.u_frontend.i_bpu.dbg_sc_override_total_q;
+  assign dbg_bpu_sc_override_correct_o = dut.u_frontend.i_bpu.dbg_sc_override_correct_q;
+  assign dbg_bpu_loop_lookup_total_o = dut.u_frontend.i_bpu.dbg_loop_lookup_total_q;
+  assign dbg_bpu_loop_hit_total_o = dut.u_frontend.i_bpu.dbg_loop_hit_total_q;
+  assign dbg_bpu_loop_confident_total_o = dut.u_frontend.i_bpu.dbg_loop_confident_total_q;
+  assign dbg_bpu_loop_override_total_o = dut.u_frontend.i_bpu.dbg_loop_override_total_q;
+  assign dbg_bpu_loop_override_correct_o = dut.u_frontend.i_bpu.dbg_loop_override_correct_q;
+  assign dbg_bpu_cond_provider_legacy_selected_o =
+      dut.u_frontend.i_bpu.dbg_cond_provider_legacy_selected_q;
+  assign dbg_bpu_cond_provider_tage_selected_o =
+      dut.u_frontend.i_bpu.dbg_cond_provider_tage_selected_q;
+  assign dbg_bpu_cond_provider_sc_selected_o =
+      dut.u_frontend.i_bpu.dbg_cond_provider_sc_selected_q;
+  assign dbg_bpu_cond_provider_loop_selected_o =
+      dut.u_frontend.i_bpu.dbg_cond_provider_loop_selected_q;
+  assign dbg_bpu_cond_provider_legacy_correct_o =
+      dut.u_frontend.i_bpu.dbg_cond_provider_legacy_correct_q;
+  assign dbg_bpu_cond_provider_tage_correct_o =
+      dut.u_frontend.i_bpu.dbg_cond_provider_tage_correct_q;
+  assign dbg_bpu_cond_provider_sc_correct_o =
+      dut.u_frontend.i_bpu.dbg_cond_provider_sc_correct_q;
+  assign dbg_bpu_cond_provider_loop_correct_o =
+      dut.u_frontend.i_bpu.dbg_cond_provider_loop_correct_q;
+  assign dbg_bpu_cond_selected_wrong_alt_legacy_correct_o =
+      dut.u_frontend.i_bpu.dbg_cond_selected_wrong_alt_legacy_correct_q;
+  assign dbg_bpu_cond_selected_wrong_alt_tage_correct_o =
+      dut.u_frontend.i_bpu.dbg_cond_selected_wrong_alt_tage_correct_q;
+  assign dbg_bpu_cond_selected_wrong_alt_sc_correct_o =
+      dut.u_frontend.i_bpu.dbg_cond_selected_wrong_alt_sc_correct_q;
+  assign dbg_bpu_cond_selected_wrong_alt_loop_correct_o =
+      dut.u_frontend.i_bpu.dbg_cond_selected_wrong_alt_loop_correct_q;
+  assign dbg_bpu_cond_selected_wrong_alt_any_correct_o =
+      dut.u_frontend.i_bpu.dbg_cond_selected_wrong_alt_any_correct_q;
 
   // Debug: BRU info (from backend execute)
   assign dbg_bru_mispred_o  = dut.u_backend.bru_mispred;

@@ -24,7 +24,15 @@ KV_RE = re.compile(r"([a-zA-Z_][a-zA-Z0-9_]*)=([^\s]+)")
 
 FLUSH_REASON_ALLOWLIST = {"branch_mispredict", "exception", "rob_other", "external", "unknown"}
 FLUSH_SOURCE_ALLOWLIST = {"rob", "external", "unknown"}
-MISS_TYPE_ALLOWLIST = {"cond_branch", "jump", "return", "control_unknown", "none"}
+MISS_TYPE_ALLOWLIST = {
+    "cond_branch",
+    "jump",
+    "jump_direct",
+    "jump_indirect",
+    "return",
+    "control_unknown",
+    "none",
+}
 STALL_POST_FLUSH_WINDOW_CYCLES = 16
 STALL_CATEGORY_KEYS = (
     "flush_recovery",
@@ -126,6 +134,10 @@ def _normalize_miss_type(token: str | None) -> str:
     compact = _compact_alpha(raw)
     if compact.startswith("ret") or "return" in compact:
         return "return"
+    if "jumpindirect" in compact or "jalr" in compact or "indir" in compact:
+        return "jump_indirect"
+    if "jumpdirect" in compact:
+        return "jump_direct"
     if "jump" in compact or compact.startswith("jal"):
         return "jump"
     if "control" in compact:
@@ -532,6 +544,8 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
     mispredict_flush_count = 0
     mispredict_cond_count = 0
     mispredict_jump_count = 0
+    mispredict_jump_direct_count = 0
+    mispredict_jump_indirect_count = 0
     mispredict_ret_count = 0
     branch_penalty_cycles = 0
     wrong_path_kill_uops = 0
@@ -545,6 +559,10 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
     pred_cond_miss_line: int | None = None
     pred_jump_total_line: int | None = None
     pred_jump_miss_line: int | None = None
+    pred_jump_direct_total_line: int | None = None
+    pred_jump_direct_miss_line: int | None = None
+    pred_jump_indirect_total_line: int | None = None
+    pred_jump_indirect_miss_line: int | None = None
     pred_ret_total_line: int | None = None
     pred_ret_miss_line: int | None = None
     pred_call_total_line: int | None = None
@@ -554,6 +572,32 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
     pred_cond_selected_correct_line: int | None = None
     pred_cond_choose_local_line: int | None = None
     pred_cond_choose_global_line: int | None = None
+    pred_tage_lookup_total_line: int | None = None
+    pred_tage_hit_total_line: int | None = None
+    pred_tage_override_total_line: int | None = None
+    pred_tage_override_correct_line: int | None = None
+    pred_sc_lookup_total_line: int | None = None
+    pred_sc_confident_total_line: int | None = None
+    pred_sc_override_total_line: int | None = None
+    pred_sc_override_correct_line: int | None = None
+    pred_loop_lookup_total_line: int | None = None
+    pred_loop_hit_total_line: int | None = None
+    pred_loop_confident_total_line: int | None = None
+    pred_loop_override_total_line: int | None = None
+    pred_loop_override_correct_line: int | None = None
+    pred_cond_provider_legacy_selected_line: int | None = None
+    pred_cond_provider_tage_selected_line: int | None = None
+    pred_cond_provider_sc_selected_line: int | None = None
+    pred_cond_provider_loop_selected_line: int | None = None
+    pred_cond_provider_legacy_correct_line: int | None = None
+    pred_cond_provider_tage_correct_line: int | None = None
+    pred_cond_provider_sc_correct_line: int | None = None
+    pred_cond_provider_loop_correct_line: int | None = None
+    pred_cond_selected_wrong_alt_legacy_correct_line: int | None = None
+    pred_cond_selected_wrong_alt_tage_correct_line: int | None = None
+    pred_cond_selected_wrong_alt_sc_correct_line: int | None = None
+    pred_cond_selected_wrong_alt_loop_correct_line: int | None = None
+    pred_cond_selected_wrong_alt_any_correct_line: int | None = None
 
     commit_by_cycle: dict[int, int] = defaultdict(int)
     commit_seq: list[tuple[int, int, int, int]] = []
@@ -652,6 +696,12 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
                     mispredict_cond_count += 1
                 elif miss_type == "jump":
                     mispredict_jump_count += 1
+                elif miss_type == "jump_direct":
+                    mispredict_jump_count += 1
+                    mispredict_jump_direct_count += 1
+                elif miss_type == "jump_indirect":
+                    mispredict_jump_count += 1
+                    mispredict_jump_indirect_count += 1
                 elif miss_type == "return":
                     mispredict_ret_count += 1
             continue
@@ -682,6 +732,14 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
                 pred_jump_total_line = _parse_int(pred_kv.get("jump_total"), 0)
             if "jump_miss" in pred_kv:
                 pred_jump_miss_line = _parse_int(pred_kv.get("jump_miss"), 0)
+            if "jump_direct_total" in pred_kv:
+                pred_jump_direct_total_line = _parse_int(pred_kv.get("jump_direct_total"), 0)
+            if "jump_direct_miss" in pred_kv:
+                pred_jump_direct_miss_line = _parse_int(pred_kv.get("jump_direct_miss"), 0)
+            if "jump_indirect_total" in pred_kv:
+                pred_jump_indirect_total_line = _parse_int(pred_kv.get("jump_indirect_total"), 0)
+            if "jump_indirect_miss" in pred_kv:
+                pred_jump_indirect_miss_line = _parse_int(pred_kv.get("jump_indirect_miss"), 0)
             if "ret_total" in pred_kv:
                 pred_ret_total_line = _parse_int(pred_kv.get("ret_total"), 0)
             if "ret_miss" in pred_kv:
@@ -700,6 +758,72 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
                 pred_cond_choose_local_line = _parse_int(pred_kv.get("cond_choose_local"), 0)
             if "cond_choose_global" in pred_kv:
                 pred_cond_choose_global_line = _parse_int(pred_kv.get("cond_choose_global"), 0)
+            if "tage_lookup_total" in pred_kv:
+                pred_tage_lookup_total_line = _parse_int(pred_kv.get("tage_lookup_total"), 0)
+            if "tage_hit_total" in pred_kv:
+                pred_tage_hit_total_line = _parse_int(pred_kv.get("tage_hit_total"), 0)
+            if "tage_override_total" in pred_kv:
+                pred_tage_override_total_line = _parse_int(pred_kv.get("tage_override_total"), 0)
+            if "tage_override_correct" in pred_kv:
+                pred_tage_override_correct_line = _parse_int(pred_kv.get("tage_override_correct"), 0)
+            if "sc_lookup_total" in pred_kv:
+                pred_sc_lookup_total_line = _parse_int(pred_kv.get("sc_lookup_total"), 0)
+            if "sc_confident_total" in pred_kv:
+                pred_sc_confident_total_line = _parse_int(pred_kv.get("sc_confident_total"), 0)
+            if "sc_override_total" in pred_kv:
+                pred_sc_override_total_line = _parse_int(pred_kv.get("sc_override_total"), 0)
+            if "sc_override_correct" in pred_kv:
+                pred_sc_override_correct_line = _parse_int(pred_kv.get("sc_override_correct"), 0)
+            if "loop_lookup_total" in pred_kv:
+                pred_loop_lookup_total_line = _parse_int(pred_kv.get("loop_lookup_total"), 0)
+            if "loop_hit_total" in pred_kv:
+                pred_loop_hit_total_line = _parse_int(pred_kv.get("loop_hit_total"), 0)
+            if "loop_confident_total" in pred_kv:
+                pred_loop_confident_total_line = _parse_int(pred_kv.get("loop_confident_total"), 0)
+            if "loop_override_total" in pred_kv:
+                pred_loop_override_total_line = _parse_int(pred_kv.get("loop_override_total"), 0)
+            if "loop_override_correct" in pred_kv:
+                pred_loop_override_correct_line = _parse_int(pred_kv.get("loop_override_correct"), 0)
+            if "cond_provider_legacy_selected" in pred_kv:
+                pred_cond_provider_legacy_selected_line = _parse_int(
+                    pred_kv.get("cond_provider_legacy_selected"), 0
+                )
+            if "cond_provider_tage_selected" in pred_kv:
+                pred_cond_provider_tage_selected_line = _parse_int(pred_kv.get("cond_provider_tage_selected"), 0)
+            if "cond_provider_sc_selected" in pred_kv:
+                pred_cond_provider_sc_selected_line = _parse_int(pred_kv.get("cond_provider_sc_selected"), 0)
+            if "cond_provider_loop_selected" in pred_kv:
+                pred_cond_provider_loop_selected_line = _parse_int(pred_kv.get("cond_provider_loop_selected"), 0)
+            if "cond_provider_legacy_correct" in pred_kv:
+                pred_cond_provider_legacy_correct_line = _parse_int(
+                    pred_kv.get("cond_provider_legacy_correct"), 0
+                )
+            if "cond_provider_tage_correct" in pred_kv:
+                pred_cond_provider_tage_correct_line = _parse_int(pred_kv.get("cond_provider_tage_correct"), 0)
+            if "cond_provider_sc_correct" in pred_kv:
+                pred_cond_provider_sc_correct_line = _parse_int(pred_kv.get("cond_provider_sc_correct"), 0)
+            if "cond_provider_loop_correct" in pred_kv:
+                pred_cond_provider_loop_correct_line = _parse_int(pred_kv.get("cond_provider_loop_correct"), 0)
+            if "cond_selected_wrong_alt_legacy_correct" in pred_kv:
+                pred_cond_selected_wrong_alt_legacy_correct_line = _parse_int(
+                    pred_kv.get("cond_selected_wrong_alt_legacy_correct"), 0
+                )
+            if "cond_selected_wrong_alt_tage_correct" in pred_kv:
+                pred_cond_selected_wrong_alt_tage_correct_line = _parse_int(
+                    pred_kv.get("cond_selected_wrong_alt_tage_correct"), 0
+                )
+            if "cond_selected_wrong_alt_sc_correct" in pred_kv:
+                pred_cond_selected_wrong_alt_sc_correct_line = _parse_int(
+                    pred_kv.get("cond_selected_wrong_alt_sc_correct"), 0
+                )
+            if "cond_selected_wrong_alt_loop_correct" in pred_kv:
+                pred_cond_selected_wrong_alt_loop_correct_line = _parse_int(
+                    pred_kv.get("cond_selected_wrong_alt_loop_correct"), 0
+                )
+            if "cond_selected_wrong_alt_any_correct" in pred_kv:
+                pred_cond_selected_wrong_alt_any_correct_line = _parse_int(
+                    pred_kv.get("cond_selected_wrong_alt_any_correct"), 0
+                )
             continue
 
         commitm_pos = raw.find("[commitm]")
@@ -864,11 +988,15 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
     control = _control_flow_metrics(commit_seq)
 
     cond_total = int(control.get("branch_count", 0))
-    jump_total = int(control.get("jal_count", 0)) + int(control.get("jalr_count", 0))
+    jump_direct_total = int(control.get("jal_count", 0))
+    jump_indirect_total = max(0, int(control.get("jalr_count", 0)) - int(control.get("ret_count", 0)))
+    jump_total = jump_direct_total + jump_indirect_total
     ret_total = int(control.get("ret_count", 0))
     call_total = int(control.get("call_count", 0))
     cond_miss = mispredict_cond_count
     jump_miss = mispredict_jump_count
+    jump_direct_miss = mispredict_jump_direct_count
+    jump_indirect_miss = mispredict_jump_indirect_count
     ret_miss = mispredict_ret_count
     if pred_cond_total_line is not None:
         cond_total = pred_cond_total_line
@@ -878,6 +1006,14 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
         jump_total = pred_jump_total_line
     if pred_jump_miss_line is not None:
         jump_miss = pred_jump_miss_line
+    if pred_jump_direct_total_line is not None:
+        jump_direct_total = pred_jump_direct_total_line
+    if pred_jump_direct_miss_line is not None:
+        jump_direct_miss = pred_jump_direct_miss_line
+    if pred_jump_indirect_total_line is not None:
+        jump_indirect_total = pred_jump_indirect_total_line
+    if pred_jump_indirect_miss_line is not None:
+        jump_indirect_miss = pred_jump_indirect_miss_line
     if pred_ret_total_line is not None:
         ret_total = pred_ret_total_line
     if pred_ret_miss_line is not None:
@@ -902,8 +1038,109 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
         cond_choose_local = pred_cond_choose_local_line
     if pred_cond_choose_global_line is not None:
         cond_choose_global = pred_cond_choose_global_line
+    tage_lookup_total = 0
+    tage_hit_total = 0
+    tage_override_total = 0
+    tage_override_correct = 0
+    sc_lookup_total = 0
+    sc_confident_total = 0
+    sc_override_total = 0
+    sc_override_correct = 0
+    loop_lookup_total = 0
+    loop_hit_total = 0
+    loop_confident_total = 0
+    loop_override_total = 0
+    loop_override_correct = 0
+    cond_provider_legacy_selected = 0
+    cond_provider_tage_selected = 0
+    cond_provider_sc_selected = 0
+    cond_provider_loop_selected = 0
+    cond_provider_legacy_correct = 0
+    cond_provider_tage_correct = 0
+    cond_provider_sc_correct = 0
+    cond_provider_loop_correct = 0
+    cond_selected_wrong_alt_legacy_correct = 0
+    cond_selected_wrong_alt_tage_correct = 0
+    cond_selected_wrong_alt_sc_correct = 0
+    cond_selected_wrong_alt_loop_correct = 0
+    cond_selected_wrong_alt_any_correct = 0
+    if pred_tage_lookup_total_line is not None:
+        tage_lookup_total = pred_tage_lookup_total_line
+    if pred_tage_hit_total_line is not None:
+        tage_hit_total = pred_tage_hit_total_line
+    if pred_tage_override_total_line is not None:
+        tage_override_total = pred_tage_override_total_line
+    if pred_tage_override_correct_line is not None:
+        tage_override_correct = pred_tage_override_correct_line
+    if pred_sc_lookup_total_line is not None:
+        sc_lookup_total = pred_sc_lookup_total_line
+    if pred_sc_confident_total_line is not None:
+        sc_confident_total = pred_sc_confident_total_line
+    if pred_sc_override_total_line is not None:
+        sc_override_total = pred_sc_override_total_line
+    if pred_sc_override_correct_line is not None:
+        sc_override_correct = pred_sc_override_correct_line
+    if pred_loop_lookup_total_line is not None:
+        loop_lookup_total = pred_loop_lookup_total_line
+    if pred_loop_hit_total_line is not None:
+        loop_hit_total = pred_loop_hit_total_line
+    if pred_loop_confident_total_line is not None:
+        loop_confident_total = pred_loop_confident_total_line
+    if pred_loop_override_total_line is not None:
+        loop_override_total = pred_loop_override_total_line
+    if pred_loop_override_correct_line is not None:
+        loop_override_correct = pred_loop_override_correct_line
+    if pred_cond_provider_legacy_selected_line is not None:
+        cond_provider_legacy_selected = pred_cond_provider_legacy_selected_line
+    if pred_cond_provider_tage_selected_line is not None:
+        cond_provider_tage_selected = pred_cond_provider_tage_selected_line
+    if pred_cond_provider_sc_selected_line is not None:
+        cond_provider_sc_selected = pred_cond_provider_sc_selected_line
+    if pred_cond_provider_loop_selected_line is not None:
+        cond_provider_loop_selected = pred_cond_provider_loop_selected_line
+    if pred_cond_provider_legacy_correct_line is not None:
+        cond_provider_legacy_correct = pred_cond_provider_legacy_correct_line
+    if pred_cond_provider_tage_correct_line is not None:
+        cond_provider_tage_correct = pred_cond_provider_tage_correct_line
+    if pred_cond_provider_sc_correct_line is not None:
+        cond_provider_sc_correct = pred_cond_provider_sc_correct_line
+    if pred_cond_provider_loop_correct_line is not None:
+        cond_provider_loop_correct = pred_cond_provider_loop_correct_line
+    if pred_cond_selected_wrong_alt_legacy_correct_line is not None:
+        cond_selected_wrong_alt_legacy_correct = pred_cond_selected_wrong_alt_legacy_correct_line
+    if pred_cond_selected_wrong_alt_tage_correct_line is not None:
+        cond_selected_wrong_alt_tage_correct = pred_cond_selected_wrong_alt_tage_correct_line
+    if pred_cond_selected_wrong_alt_sc_correct_line is not None:
+        cond_selected_wrong_alt_sc_correct = pred_cond_selected_wrong_alt_sc_correct_line
+    if pred_cond_selected_wrong_alt_loop_correct_line is not None:
+        cond_selected_wrong_alt_loop_correct = pred_cond_selected_wrong_alt_loop_correct_line
+    if pred_cond_selected_wrong_alt_any_correct_line is not None:
+        cond_selected_wrong_alt_any_correct = pred_cond_selected_wrong_alt_any_correct_line
     chooser_total = cond_choose_local + cond_choose_global
+    cond_provider_total_selected = (
+        cond_provider_legacy_selected
+        + cond_provider_tage_selected
+        + cond_provider_sc_selected
+        + cond_provider_loop_selected
+    )
+    cond_provider_total_correct = (
+        cond_provider_legacy_correct
+        + cond_provider_tage_correct
+        + cond_provider_sc_correct
+        + cond_provider_loop_correct
+    )
+    cond_selected_wrong_total = max(0, cond_provider_total_selected - cond_provider_total_correct)
     cond_hit = max(0, cond_total - cond_miss)
+    jump_direct_hit = max(0, jump_direct_total - jump_direct_miss)
+    jump_indirect_hit = max(0, jump_indirect_total - jump_indirect_miss)
+    if pred_jump_total_line is None and (
+        pred_jump_direct_total_line is not None or pred_jump_indirect_total_line is not None
+    ):
+        jump_total = jump_direct_total + jump_indirect_total
+    if pred_jump_miss_line is None and (
+        pred_jump_direct_miss_line is not None or pred_jump_indirect_miss_line is not None
+    ):
+        jump_miss = jump_direct_miss + jump_indirect_miss
     jump_hit = max(0, jump_total - jump_miss)
     ret_hit = max(0, ret_total - ret_miss)
     predict = {
@@ -911,6 +1148,14 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
         "cond_miss": cond_miss,
         "cond_hit": cond_hit,
         "cond_miss_rate": _safe_div(cond_miss, cond_total),
+        "jump_direct_total": jump_direct_total,
+        "jump_direct_miss": jump_direct_miss,
+        "jump_direct_hit": jump_direct_hit,
+        "jump_direct_miss_rate": _safe_div(jump_direct_miss, jump_direct_total),
+        "jump_indirect_total": jump_indirect_total,
+        "jump_indirect_miss": jump_indirect_miss,
+        "jump_indirect_hit": jump_indirect_hit,
+        "jump_indirect_miss_rate": _safe_div(jump_indirect_miss, jump_indirect_total),
         "jump_total": jump_total,
         "jump_miss": jump_miss,
         "jump_hit": jump_hit,
@@ -930,6 +1175,65 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
         "cond_global_accuracy": _safe_div(cond_global_correct, cond_update_total),
         "cond_selected_accuracy": _safe_div(cond_selected_correct, cond_update_total),
         "cond_choose_global_ratio": _safe_div(cond_choose_global, chooser_total),
+        "tage_lookup_total": tage_lookup_total,
+        "tage_hit_total": tage_hit_total,
+        "tage_override_total": tage_override_total,
+        "tage_override_correct": tage_override_correct,
+        "tage_hit_rate": _safe_div(tage_hit_total, tage_lookup_total),
+        "tage_override_ratio": _safe_div(tage_override_total, tage_lookup_total),
+        "tage_override_accuracy": _safe_div(tage_override_correct, tage_override_total),
+        "sc_lookup_total": sc_lookup_total,
+        "sc_confident_total": sc_confident_total,
+        "sc_override_total": sc_override_total,
+        "sc_override_correct": sc_override_correct,
+        "sc_confident_ratio": _safe_div(sc_confident_total, sc_lookup_total),
+        "sc_override_ratio": _safe_div(sc_override_total, sc_lookup_total),
+        "sc_override_accuracy": _safe_div(sc_override_correct, sc_override_total),
+        "loop_lookup_total": loop_lookup_total,
+        "loop_hit_total": loop_hit_total,
+        "loop_confident_total": loop_confident_total,
+        "loop_override_total": loop_override_total,
+        "loop_override_correct": loop_override_correct,
+        "loop_hit_rate": _safe_div(loop_hit_total, loop_lookup_total),
+        "loop_confident_ratio": _safe_div(loop_confident_total, loop_lookup_total),
+        "loop_override_ratio": _safe_div(loop_override_total, loop_lookup_total),
+        "loop_override_accuracy": _safe_div(loop_override_correct, loop_override_total),
+        "cond_provider_legacy_selected": cond_provider_legacy_selected,
+        "cond_provider_tage_selected": cond_provider_tage_selected,
+        "cond_provider_sc_selected": cond_provider_sc_selected,
+        "cond_provider_loop_selected": cond_provider_loop_selected,
+        "cond_provider_total_selected": cond_provider_total_selected,
+        "cond_provider_legacy_correct": cond_provider_legacy_correct,
+        "cond_provider_tage_correct": cond_provider_tage_correct,
+        "cond_provider_sc_correct": cond_provider_sc_correct,
+        "cond_provider_loop_correct": cond_provider_loop_correct,
+        "cond_provider_total_correct": cond_provider_total_correct,
+        "cond_provider_legacy_accuracy": _safe_div(cond_provider_legacy_correct, cond_provider_legacy_selected),
+        "cond_provider_tage_accuracy": _safe_div(cond_provider_tage_correct, cond_provider_tage_selected),
+        "cond_provider_sc_accuracy": _safe_div(cond_provider_sc_correct, cond_provider_sc_selected),
+        "cond_provider_loop_accuracy": _safe_div(cond_provider_loop_correct, cond_provider_loop_selected),
+        "cond_provider_coverage": _safe_div(cond_provider_total_selected, cond_update_total),
+        "cond_provider_legacy_share": _safe_div(cond_provider_legacy_selected, cond_provider_total_selected),
+        "cond_provider_tage_share": _safe_div(cond_provider_tage_selected, cond_provider_total_selected),
+        "cond_provider_sc_share": _safe_div(cond_provider_sc_selected, cond_provider_total_selected),
+        "cond_provider_loop_share": _safe_div(cond_provider_loop_selected, cond_provider_total_selected),
+        "cond_selected_wrong_total": cond_selected_wrong_total,
+        "cond_selected_wrong_alt_legacy_correct": cond_selected_wrong_alt_legacy_correct,
+        "cond_selected_wrong_alt_tage_correct": cond_selected_wrong_alt_tage_correct,
+        "cond_selected_wrong_alt_sc_correct": cond_selected_wrong_alt_sc_correct,
+        "cond_selected_wrong_alt_loop_correct": cond_selected_wrong_alt_loop_correct,
+        "cond_selected_wrong_alt_any_correct": cond_selected_wrong_alt_any_correct,
+        "cond_selected_wrong_alt_legacy_ratio": _safe_div(
+            cond_selected_wrong_alt_legacy_correct, cond_selected_wrong_total
+        ),
+        "cond_selected_wrong_alt_tage_ratio": _safe_div(
+            cond_selected_wrong_alt_tage_correct, cond_selected_wrong_total
+        ),
+        "cond_selected_wrong_alt_sc_ratio": _safe_div(cond_selected_wrong_alt_sc_correct, cond_selected_wrong_total),
+        "cond_selected_wrong_alt_loop_ratio": _safe_div(
+            cond_selected_wrong_alt_loop_correct, cond_selected_wrong_total
+        ),
+        "cond_selected_wrong_alt_any_ratio": _safe_div(cond_selected_wrong_alt_any_correct, cond_selected_wrong_total),
     }
 
     # Fallback path for timeout/sample logs without final IPC line.
@@ -1068,9 +1372,13 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
         "mispredict_flush_count": mispredict_flush_count,
         "mispredict_cond_count": mispredict_cond_count,
         "mispredict_jump_count": mispredict_jump_count,
+        "mispredict_jump_direct_count": mispredict_jump_direct_count,
+        "mispredict_jump_indirect_count": mispredict_jump_indirect_count,
         "mispredict_ret_count": mispredict_ret_count,
         "mispredict_breakdown": {
             "cond_branch": mispredict_cond_count,
+            "jump_direct": mispredict_jump_direct_count,
+            "jump_indirect": mispredict_jump_indirect_count,
             "jump": mispredict_jump_count,
             "return": mispredict_ret_count,
         },
@@ -1189,11 +1497,20 @@ def _bench_markdown(name: str, data: dict[str, Any]) -> str:
         f"- control_ratio: `{control.get('control_ratio', 0) * 100.0:.2f}%`",
         f"- est_misp_per_kinst(static NT proxy): `{control.get('est_misp_per_kinst', 0):.3f}`",
         f"- predict(cond hit/miss): `{predict.get('cond_hit', 0)}` / `{predict.get('cond_miss', 0)}` (miss_rate `{predict.get('cond_miss_rate', 0) * 100.0:.2f}%`)",
+        f"- predict(jump direct hit/miss): `{predict.get('jump_direct_hit', 0)}` / `{predict.get('jump_direct_miss', 0)}` (miss_rate `{predict.get('jump_direct_miss_rate', 0) * 100.0:.2f}%`)",
+        f"- predict(jump indirect hit/miss): `{predict.get('jump_indirect_hit', 0)}` / `{predict.get('jump_indirect_miss', 0)}` (miss_rate `{predict.get('jump_indirect_miss_rate', 0) * 100.0:.2f}%`)",
         f"- predict(jump hit/miss): `{predict.get('jump_hit', 0)}` / `{predict.get('jump_miss', 0)}` (miss_rate `{predict.get('jump_miss_rate', 0) * 100.0:.2f}%`)",
         f"- predict(ret hit/miss): `{predict.get('ret_hit', 0)}` / `{predict.get('ret_miss', 0)}` (miss_rate `{predict.get('ret_miss_rate', 0) * 100.0:.2f}%`)",
         f"- predict(call total): `{predict.get('call_total', 0)}`",
         f"- predict(cond local/global/selected acc): `{predict.get('cond_local_accuracy', 0) * 100.0:.2f}%` / `{predict.get('cond_global_accuracy', 0) * 100.0:.2f}%` / `{predict.get('cond_selected_accuracy', 0) * 100.0:.2f}%`",
         f"- predict(cond chooser local/global): `{predict.get('cond_choose_local', 0)}` / `{predict.get('cond_choose_global', 0)}` (global_ratio `{predict.get('cond_choose_global_ratio', 0) * 100.0:.2f}%`)",
+        f"- predict(tage lookup/hit): `{predict.get('tage_lookup_total', 0)}` / `{predict.get('tage_hit_total', 0)}` (hit_rate `{predict.get('tage_hit_rate', 0) * 100.0:.2f}%`)",
+        f"- predict(tage override/correct): `{predict.get('tage_override_total', 0)}` / `{predict.get('tage_override_correct', 0)}` (override_ratio `{predict.get('tage_override_ratio', 0) * 100.0:.2f}%`, override_accuracy `{predict.get('tage_override_accuracy', 0) * 100.0:.2f}%`)",
+        f"- predict(sc_l lookup/confident/override/correct): `{predict.get('sc_lookup_total', 0)}` / `{predict.get('sc_confident_total', 0)}` / `{predict.get('sc_override_total', 0)}` / `{predict.get('sc_override_correct', 0)}` (confident_ratio `{predict.get('sc_confident_ratio', 0) * 100.0:.2f}%`, override_ratio `{predict.get('sc_override_ratio', 0) * 100.0:.2f}%`, override_accuracy `{predict.get('sc_override_accuracy', 0) * 100.0:.2f}%`)",
+        f"- predict(loop lookup/hit/confident/override/correct): `{predict.get('loop_lookup_total', 0)}` / `{predict.get('loop_hit_total', 0)}` / `{predict.get('loop_confident_total', 0)}` / `{predict.get('loop_override_total', 0)}` / `{predict.get('loop_override_correct', 0)}` (hit_rate `{predict.get('loop_hit_rate', 0) * 100.0:.2f}%`, confident_ratio `{predict.get('loop_confident_ratio', 0) * 100.0:.2f}%`, override_ratio `{predict.get('loop_override_ratio', 0) * 100.0:.2f}%`, override_accuracy `{predict.get('loop_override_accuracy', 0) * 100.0:.2f}%`)",
+        f"- predict(cond provider selected legacy/tage/sc/loop): `{predict.get('cond_provider_legacy_selected', 0)}` / `{predict.get('cond_provider_tage_selected', 0)}` / `{predict.get('cond_provider_sc_selected', 0)}` / `{predict.get('cond_provider_loop_selected', 0)}` (coverage `{predict.get('cond_provider_coverage', 0) * 100.0:.2f}%` of cond_update, share `{predict.get('cond_provider_legacy_share', 0) * 100.0:.2f}%` / `{predict.get('cond_provider_tage_share', 0) * 100.0:.2f}%` / `{predict.get('cond_provider_sc_share', 0) * 100.0:.2f}%` / `{predict.get('cond_provider_loop_share', 0) * 100.0:.2f}%`)",
+        f"- predict(cond provider acc legacy/tage/sc/loop): `{predict.get('cond_provider_legacy_accuracy', 0) * 100.0:.2f}%` / `{predict.get('cond_provider_tage_accuracy', 0) * 100.0:.2f}%` / `{predict.get('cond_provider_sc_accuracy', 0) * 100.0:.2f}%` / `{predict.get('cond_provider_loop_accuracy', 0) * 100.0:.2f}%`",
+        f"- predict(cond wrong-selected alt-correct legacy/tage/sc/loop/any): `{predict.get('cond_selected_wrong_alt_legacy_correct', 0)}` / `{predict.get('cond_selected_wrong_alt_tage_correct', 0)}` / `{predict.get('cond_selected_wrong_alt_sc_correct', 0)}` / `{predict.get('cond_selected_wrong_alt_loop_correct', 0)}` / `{predict.get('cond_selected_wrong_alt_any_correct', 0)}` (wrong_total `{predict.get('cond_selected_wrong_total', 0)}`, any_ratio `{predict.get('cond_selected_wrong_alt_any_ratio', 0) * 100.0:.2f}%`)",
         "",
         "Data Quality:",
         f"- commit_source: `{commit_metrics_source}` (detail={has_commit_detail}, summary={has_commit_summary})",
