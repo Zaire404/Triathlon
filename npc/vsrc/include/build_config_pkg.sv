@@ -54,6 +54,22 @@ package build_config_pkg;
         (user_cfg.INSTR_PER_FETCH * 4);
     cfg.ROB_DEPTH = (user_cfg.ROB_DEPTH >= user_cfg.INSTR_PER_FETCH) ? user_cfg.ROB_DEPTH : 64;
     cfg.LSU_GROUP_SIZE = (user_cfg.LSU_GROUP_SIZE >= 1) ? user_cfg.LSU_GROUP_SIZE : 1;
+    cfg.SB_DEPTH = (user_cfg.SB_DEPTH >= 4) ? user_cfg.SB_DEPTH : 16;
+    cfg.IBUFFER_DEPTH = (user_cfg.IBUFFER_DEPTH >= user_cfg.INSTR_PER_FETCH) ?
+        user_cfg.IBUFFER_DEPTH : 16;
+    cfg.ROB_MAX_COMMIT_BR = (user_cfg.ROB_MAX_COMMIT_BR >= 1) ? user_cfg.ROB_MAX_COMMIT_BR : 1;
+    cfg.ROB_MAX_COMMIT_ST = (user_cfg.ROB_MAX_COMMIT_ST >= 1) ? user_cfg.ROB_MAX_COMMIT_ST : 1;
+    cfg.ROB_MAX_COMMIT_LD = (user_cfg.ROB_MAX_COMMIT_LD >= 1) ? user_cfg.ROB_MAX_COMMIT_LD : 2;
+    cfg.BPU_TAGE_TAG_BITS = (user_cfg.BPU_TAGE_TAG_BITS >= 4) ? user_cfg.BPU_TAGE_TAG_BITS : 8;
+    cfg.BPU_TAGE_HIST_LEN0 = (user_cfg.BPU_TAGE_HIST_LEN0 >= 1) ? user_cfg.BPU_TAGE_HIST_LEN0 : 2;
+    cfg.BPU_TAGE_HIST_LEN1 = (user_cfg.BPU_TAGE_HIST_LEN1 >= cfg.BPU_TAGE_HIST_LEN0) ?
+        user_cfg.BPU_TAGE_HIST_LEN1 : 4;
+    cfg.BPU_TAGE_HIST_LEN2 = (user_cfg.BPU_TAGE_HIST_LEN2 >= cfg.BPU_TAGE_HIST_LEN1) ?
+        user_cfg.BPU_TAGE_HIST_LEN2 : 8;
+    cfg.BPU_TAGE_HIST_LEN3 = (user_cfg.BPU_TAGE_HIST_LEN3 >= cfg.BPU_TAGE_HIST_LEN2) ?
+        user_cfg.BPU_TAGE_HIST_LEN3 : 16;
+    cfg.BPU_PATH_HIST_BITS = (user_cfg.BPU_PATH_HIST_BITS >= 4) ? user_cfg.BPU_PATH_HIST_BITS : 16;
+    cfg.BPU_TRACK_DEPTH = (user_cfg.BPU_TRACK_DEPTH >= 2) ? user_cfg.BPU_TRACK_DEPTH : 16;
 
     // ICache 配置
     cfg.ICACHE_BYTE_SIZE = user_cfg.ICACHE_BYTE_SIZE;

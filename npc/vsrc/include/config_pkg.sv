@@ -68,6 +68,20 @@ package config_pkg;
     int unsigned RENAME_PENDING_DEPTH;
     int unsigned ROB_DEPTH;
     int unsigned LSU_GROUP_SIZE;
+    int unsigned SB_DEPTH;
+    int unsigned IBUFFER_DEPTH;
+    int unsigned ROB_MAX_COMMIT_BR;
+    int unsigned ROB_MAX_COMMIT_ST;
+    int unsigned ROB_MAX_COMMIT_LD;
+
+    // BPU internal geometry controls
+    int unsigned BPU_TAGE_TAG_BITS;
+    int unsigned BPU_TAGE_HIST_LEN0;
+    int unsigned BPU_TAGE_HIST_LEN1;
+    int unsigned BPU_TAGE_HIST_LEN2;
+    int unsigned BPU_TAGE_HIST_LEN3;
+    int unsigned BPU_PATH_HIST_BITS;
+    int unsigned BPU_TRACK_DEPTH;
 
     // ICache configuration
     // Instruction cache size (in bytes)
@@ -155,6 +169,20 @@ package config_pkg;
     int unsigned RENAME_PENDING_DEPTH;
     int unsigned ROB_DEPTH;
     int unsigned LSU_GROUP_SIZE;
+    int unsigned SB_DEPTH;
+    int unsigned IBUFFER_DEPTH;
+    int unsigned ROB_MAX_COMMIT_BR;
+    int unsigned ROB_MAX_COMMIT_ST;
+    int unsigned ROB_MAX_COMMIT_LD;
+
+    // BPU internal geometry controls
+    int unsigned BPU_TAGE_TAG_BITS;
+    int unsigned BPU_TAGE_HIST_LEN0;
+    int unsigned BPU_TAGE_HIST_LEN1;
+    int unsigned BPU_TAGE_HIST_LEN2;
+    int unsigned BPU_TAGE_HIST_LEN3;
+    int unsigned BPU_PATH_HIST_BITS;
+    int unsigned BPU_TRACK_DEPTH;
 
     // ICache configuration
     int unsigned ICACHE_BYTE_SIZE;
