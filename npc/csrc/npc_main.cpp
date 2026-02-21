@@ -728,6 +728,7 @@ int main(int argc, char **argv) {
   std::array<uint64_t, 19> stall_frontend_empty_hist = {};
   std::unordered_map<std::string, uint64_t> stall_decode_blocked_detail_hist;
   std::unordered_map<std::string, uint64_t> stall_rob_backpressure_detail_hist;
+  std::unordered_map<std::string, uint64_t> stall_other_detail_hist;
   uint64_t ifu_fq_enq = 0;
   uint64_t ifu_fq_deq = 0;
   uint64_t ifu_fq_bypass = 0;
@@ -1104,6 +1105,83 @@ int main(int argc, char **argv) {
     return "rob_head_complete_but_not_ready";
   };
 
+  auto classify_other_detail_cycle = [&]() -> const char * {
+    uint32_t rob_count = static_cast<uint32_t>(top->dbg_rob_count_o);
+    bool ren_ready = top->dbg_ren_ready_o;
+    bool ren_fire = top->dbg_ren_fire_o;
+    uint32_t sm = static_cast<uint32_t>(top->dbg_lsu_state_o);
+    uint32_t fu = static_cast<uint32_t>(top->dbg_rob_head_fu_o);
+    bool rob_head_complete = top->dbg_rob_head_complete_o;
+    bool rob_head_is_store = top->dbg_rob_head_is_store_o;
+    bool q2_incomplete = top->dbg_rob_q2_valid_o && !top->dbg_rob_q2_complete_o;
+
+    if (rob_count == 0u) {
+      if (!ren_ready) return "rob_empty_refill_ren_not_ready";
+      if (ren_fire) return "rob_empty_refill_ren_fire";
+      if (top->dbg_ifu_req_inflight_o) return "rob_empty_refill_wait_frontend_rsp";
+      if (top->dbg_ifu_rsp_valid_o && top->dbg_ifu_rsp_capture_o) return "rob_empty_refill_rsp_capture";
+      return "rob_empty_refill_other";
+    }
+
+    if (sm == 3u) {
+      if (fu == 3u && !rob_head_complete) return "lsu_wait_wb_head_lsu_incomplete";
+      if (fu == 3u && rob_head_complete) return "lsu_wait_wb_head_lsu_complete";
+      if (q2_incomplete) return "lsu_wait_wb_q2_incomplete";
+      return "lsu_wait_wb_other";
+    }
+
+    if (rob_head_is_store) {
+      if (!top->dbg_sb_head_valid_o) return "rob_head_store_wait_sb_head_nonbp";
+      if (!top->dbg_sb_head_committed_o) return "rob_head_store_wait_commit_nonbp";
+      if (!top->dbg_sb_head_addr_valid_o) return "rob_head_store_wait_addr_nonbp";
+      if (!top->dbg_sb_head_data_valid_o) return "rob_head_store_wait_data_nonbp";
+      if (top->dbg_sb_dcache_req_valid_o && !top->dbg_sb_dcache_req_ready_o) return "rob_head_store_wait_dcache_nonbp";
+      if (!top->dbg_sb_dcache_req_valid_o) return "rob_head_store_wait_issue_nonbp";
+      return "rob_head_store_wait_other_nonbp";
+    }
+
+    if (!rob_head_complete) {
+      if (fu == 1u) return "rob_head_alu_incomplete_nonbp";
+      if (fu == 2u) return "rob_head_branch_incomplete_nonbp";
+      if (fu == 3u) {
+        bool ld_valid = top->dbg_lsu_ld_req_valid_o;
+        bool ld_ready = top->dbg_lsu_ld_req_ready_o;
+        bool rsp_valid = top->dbg_lsu_ld_rsp_valid_o;
+        bool rsp_ready = top->dbg_lsu_ld_rsp_ready_o;
+        if (sm == 0u) return "rob_head_lsu_incomplete_sm_idle_nonbp";
+        if (sm == 1u) {
+          if (ld_valid && !ld_ready) return "rob_head_lsu_incomplete_wait_req_ready_nonbp";
+          if (!ld_valid && !ld_ready) return "rob_head_lsu_incomplete_wait_owner_or_alloc_nonbp";
+          if (!top->dbg_lsu_ld_fire_o) return "rob_head_lsu_incomplete_req_fire_gap_nonbp";
+          return "rob_head_lsu_incomplete_sm_req_unknown_nonbp";
+        }
+        if (sm == 2u) {
+          if (!rsp_valid) return "rob_head_lsu_incomplete_wait_rsp_valid_nonbp";
+          if (rsp_valid && !rsp_ready) return "rob_head_lsu_incomplete_wait_rsp_ready_nonbp";
+          if (!top->dbg_lsu_rsp_fire_o) return "rob_head_lsu_incomplete_rsp_fire_gap_nonbp";
+          return "rob_head_lsu_incomplete_sm_rsp_unknown_nonbp";
+        }
+        return "rob_head_lsu_incomplete_sm_other_nonbp";
+      }
+      if (fu == 4u || fu == 5u) return "rob_head_mdu_incomplete_nonbp";
+      if (fu == 6u) return "rob_head_csr_incomplete_nonbp";
+      return "rob_head_unknown_incomplete_nonbp";
+    }
+
+    if (q2_incomplete) return "rob_q2_not_complete_nonstall";
+    if (!ren_ready) return "ren_not_ready";
+    if (!ren_fire) return "ren_no_fire";
+
+    if (sm == 1u && top->dbg_lsu_ld_req_valid_o && top->dbg_lsu_ld_req_ready_o && !top->dbg_lsu_ld_fire_o) {
+      return "lsu_req_fire_gap";
+    }
+    if (sm == 2u && top->dbg_lsu_ld_rsp_valid_o && top->dbg_lsu_ld_rsp_ready_o && !top->dbg_lsu_rsp_fire_o) {
+      return "lsu_rsp_fire_gap";
+    }
+
+    return "other";
+  };
+
   auto emit_ranked_summary = [&](const char *tag,
                                  const char *value_key,
                                  const std::unordered_map<uint32_t, uint64_t> &hist) {
@@ -1236,6 +1314,7 @@ int main(int argc, char **argv) {
                         stall_decode_blocked_detail_hist);
     emit_detail_summary("stallm4", "rob_backpressure_total", stall_cycle_hist[kStallROBBackpressure],
                         stall_rob_backpressure_detail_hist);
+    emit_detail_summary("stallm5", "other_total", stall_cycle_hist[kStallOther], stall_other_detail_hist);
     emit_ranked_summary("hotpcm", "pc", commit_pc_hist);
     emit_ranked_summary("hotinstm", "inst", commit_inst_hist);
   };
@@ -1560,6 +1639,8 @@ int main(int argc, char **argv) {
         stall_decode_blocked_detail_hist[classify_decode_blocked_detail_cycle()]++;
       } else if (stall_kind == kStallROBBackpressure) {
         stall_rob_backpressure_detail_hist[classify_rob_backpressure_detail_cycle()]++;
+      } else if (stall_kind == kStallOther) {
+        stall_other_detail_hist[classify_other_detail_cycle()]++;
       }
       if (args.stall_trace && args.stall_threshold > 0 &&
           (no_commit_cycles == args.stall_threshold ||

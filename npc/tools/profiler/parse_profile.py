@@ -455,6 +455,141 @@ def _classify_rob_backpressure_detail(line: str) -> str:
     return "rob_head_complete_but_not_ready"
 
 
+def _classify_other_detail(line: str) -> str:
+    m_ren = re.search(r"ren\(pend/src/sel/fire/rdy\)=(\d)/(\d+)/(\d+)/(\d)/(\d)", line)
+    ren_fire: int | None = None
+    ren_ready: int | None = None
+    if m_ren:
+        ren_fire = int(m_ren.group(4))
+        ren_ready = int(m_ren.group(5))
+
+    m_rob_cnt = re.search(r"\srob_cnt=(\d+)", line)
+    if m_rob_cnt and int(m_rob_cnt.group(1)) == 0:
+        m_ifu_req = re.search(r"ifu_req\(v/r/fire/inflight\)=(\d)/(\d)/(\d)/(\d)", line)
+        m_ifu_rsp = re.search(r"ifu_rsp\(v/cap\)=(\d)/(\d)", line)
+        if ren_ready == 0:
+            return "rob_empty_refill_ren_not_ready"
+        if ren_fire == 1:
+            return "rob_empty_refill_ren_fire"
+        if m_ifu_req and int(m_ifu_req.group(4)) == 1:
+            return "rob_empty_refill_wait_frontend_rsp"
+        if m_ifu_rsp and int(m_ifu_rsp.group(1)) == 1 and int(m_ifu_rsp.group(2)) == 1:
+            return "rob_empty_refill_rsp_capture"
+        return "rob_empty_refill_other"
+
+    m_sm = re.search(r"\slsu_sm=(\d+)", line)
+    m_head = re.search(r"rob_head\(fu/comp/is_store/pc\)=0x([0-9a-fA-F]+)/(\d)/(\d)/0x[0-9a-fA-F]+", line)
+    m_q2 = re.search(r"rob_q2\(v/idx/fu/comp/st/pc\)=(\d)/0x[0-9a-fA-F]+/0x[0-9a-fA-F]+/(\d)/\d/0x[0-9a-fA-F]+", line)
+    q2_incomplete = m_q2 is not None and int(m_q2.group(1)) == 1 and int(m_q2.group(2)) == 0
+
+    if m_sm and int(m_sm.group(1)) == 3:
+        if m_head:
+            fu = int(m_head.group(1), 16)
+            complete = int(m_head.group(2))
+            if fu == 3 and complete == 0:
+                return "lsu_wait_wb_head_lsu_incomplete"
+            if fu == 3 and complete == 1:
+                return "lsu_wait_wb_head_lsu_complete"
+            if q2_incomplete:
+                return "lsu_wait_wb_q2_incomplete"
+            return "lsu_wait_wb_other"
+        return "lsu_wait_wb"
+
+    if m_head:
+        fu = int(m_head.group(1), 16)
+        complete = int(m_head.group(2))
+        is_store = int(m_head.group(3))
+        if is_store == 1:
+            m_sb_head = re.search(r"sb_head\(v/c/a/d/addr\)=(\d)/(\d)/(\d)/(\d)/0x[0-9a-fA-F]+", line)
+            if m_sb_head:
+                if int(m_sb_head.group(1)) == 0:
+                    return "rob_head_store_wait_sb_head_nonbp"
+                if int(m_sb_head.group(2)) == 0:
+                    return "rob_head_store_wait_commit_nonbp"
+                if int(m_sb_head.group(3)) == 0:
+                    return "rob_head_store_wait_addr_nonbp"
+                if int(m_sb_head.group(4)) == 0:
+                    return "rob_head_store_wait_data_nonbp"
+            m_sb_dcache = re.search(r"sb_dcache\(v/r/addr\)=\s*(\d)/(\d)/0x[0-9a-fA-F]+", line)
+            if m_sb_dcache:
+                sb_valid = int(m_sb_dcache.group(1))
+                sb_ready = int(m_sb_dcache.group(2))
+                if sb_valid == 1 and sb_ready == 0:
+                    return "rob_head_store_wait_dcache_nonbp"
+                if sb_valid == 0:
+                    return "rob_head_store_wait_issue_nonbp"
+            return "rob_head_store_wait_other_nonbp"
+
+        if complete == 0:
+            if fu == 1:
+                return "rob_head_alu_incomplete_nonbp"
+            if fu == 2:
+                return "rob_head_branch_incomplete_nonbp"
+            if fu == 3:
+                if not m_sm:
+                    return "rob_head_lsu_incomplete_no_sm_nonbp"
+                sm = int(m_sm.group(1))
+                m_ld = re.search(r"lsu_ld\(v/r/addr\)=(\d)/(\d)/0x[0-9a-fA-F]+", line)
+                m_rsp = re.search(r"lsu_rsp\(v/r\)=(\d)/(\d)", line)
+                m_ld_fire = re.search(r"\slsu_ld_fire=(\d)", line)
+                m_rsp_fire = re.search(r"\slsu_rsp_fire=(\d)", line)
+                if sm == 0:
+                    return "rob_head_lsu_incomplete_sm_idle_nonbp"
+                if sm == 1:
+                    if m_ld:
+                        ld_valid = int(m_ld.group(1))
+                        ld_ready = int(m_ld.group(2))
+                        if ld_valid == 1 and ld_ready == 0:
+                            return "rob_head_lsu_incomplete_wait_req_ready_nonbp"
+                        if ld_valid == 0 and ld_ready == 0:
+                            return "rob_head_lsu_incomplete_wait_owner_or_alloc_nonbp"
+                    if m_ld_fire and int(m_ld_fire.group(1)) == 0:
+                        return "rob_head_lsu_incomplete_req_fire_gap_nonbp"
+                    return "rob_head_lsu_incomplete_sm_req_unknown_nonbp"
+                if sm == 2:
+                    if m_rsp:
+                        rsp_valid = int(m_rsp.group(1))
+                        rsp_ready = int(m_rsp.group(2))
+                        if rsp_valid == 0:
+                            return "rob_head_lsu_incomplete_wait_rsp_valid_nonbp"
+                        if rsp_valid == 1 and rsp_ready == 0:
+                            return "rob_head_lsu_incomplete_wait_rsp_ready_nonbp"
+                    if m_rsp_fire and int(m_rsp_fire.group(1)) == 0:
+                        return "rob_head_lsu_incomplete_rsp_fire_gap_nonbp"
+                    return "rob_head_lsu_incomplete_sm_rsp_unknown_nonbp"
+                return "rob_head_lsu_incomplete_sm_other_nonbp"
+            if fu == 4 or fu == 5:
+                return "rob_head_mdu_incomplete_nonbp"
+            if fu == 6:
+                return "rob_head_csr_incomplete_nonbp"
+            return "rob_head_unknown_incomplete_nonbp"
+
+    if q2_incomplete:
+        return "rob_q2_not_complete_nonstall"
+
+    if ren_ready == 0:
+        return "ren_not_ready"
+    if ren_fire == 0:
+        return "ren_no_fire"
+
+    if m_sm:
+        sm = int(m_sm.group(1))
+        if sm == 1:
+            m_ld = re.search(r"lsu_ld\(v/r/addr\)=(\d)/(\d)/0x[0-9a-fA-F]+", line)
+            m_ld_fire = re.search(r"\slsu_ld_fire=(\d)", line)
+            if m_ld and m_ld_fire:
+                if int(m_ld.group(1)) == 1 and int(m_ld.group(2)) == 1 and int(m_ld_fire.group(1)) == 0:
+                    return "lsu_req_fire_gap"
+        if sm == 2:
+            m_rsp = re.search(r"lsu_rsp\(v/r\)=(\d)/(\d)", line)
+            m_rsp_fire = re.search(r"\slsu_rsp_fire=(\d)", line)
+            if m_rsp and m_rsp_fire:
+                if int(m_rsp.group(1)) == 1 and int(m_rsp.group(2)) == 1 and int(m_rsp_fire.group(1)) == 0:
+                    return "lsu_rsp_fire_gap"
+
+    return "other"
+
+
 def _commit_histogram(cycles: int, commit_by_cycle: dict[int, int]) -> dict[int, int]:
     hist = Counter(commit_by_cycle.values())
     if cycles > 0:
@@ -609,6 +744,8 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
     stall_decode_blocked_detail: Counter[str] = Counter()
     stall_rob_backpressure_total = 0
     stall_rob_backpressure_detail: Counter[str] = Counter()
+    stall_other_total = 0
+    stall_other_detail: Counter[str] = Counter()
     last_flush_cycle: int | None = None
     last_branch_flush_cycle: int | None = None
     hotspot_pc: Counter[int] = Counter()
@@ -629,6 +766,9 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
     has_stall_rob_backpressure_summary = False
     stall_rob_backpressure_total_summary = 0
     stall_rob_backpressure_detail_summary: Counter[str] = Counter()
+    has_stall_other_summary = False
+    stall_other_total_summary = 0
+    stall_other_detail_summary: Counter[str] = Counter()
     has_ifu_fq_summary = False
     ifu_fq_summary: dict[str, int] = {}
     ifu_fq_occ_hist_summary: dict[int, int] = {}
@@ -927,6 +1067,19 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
                 stall_rob_backpressure_total_summary = sum(stall_rob_backpressure_detail_summary.values())
             continue
 
+        stallm5_pos = raw.find("[stallm5]")
+        if stallm5_pos >= 0:
+            kv = _parse_kv_pairs(raw[stallm5_pos:])
+            has_stall_other_summary = True
+            stall_other_total_summary = _parse_int(kv.get("other_total"), 0)
+            for key, val in kv.items():
+                if key in ("mode", "other_total"):
+                    continue
+                stall_other_detail_summary[key] = _parse_int(val, 0)
+            if stall_other_total_summary == 0:
+                stall_other_total_summary = sum(stall_other_detail_summary.values())
+            continue
+
         ifum_pos = raw.find("[ifum]")
         if ifum_pos >= 0:
             kv = _parse_kv_pairs(raw[ifum_pos:])
@@ -983,6 +1136,9 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
             elif stall_kind == "rob_backpressure":
                 stall_rob_backpressure_total += 1
                 stall_rob_backpressure_detail[_classify_rob_backpressure_detail(raw)] += 1
+            elif stall_kind == "other":
+                stall_other_total += 1
+                stall_other_detail[_classify_other_detail(raw)] += 1
 
     commit_width_hist = _commit_histogram(cycles, commit_by_cycle)
     control = _control_flow_metrics(commit_seq)
@@ -1294,6 +1450,7 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
     if stall_mode == "cycle":
         cycle_decode_blocked_total = int(stall_category.get("decode_blocked", 0))
         cycle_rob_backpressure_total = int(stall_category.get("rob_backpressure", 0))
+        cycle_other_total = int(stall_category.get("other", 0))
 
         if has_stall_decode_blocked_summary:
             stall_decode_blocked_total = stall_decode_blocked_total_summary
@@ -1306,6 +1463,12 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
             stall_rob_backpressure_detail = Counter(stall_rob_backpressure_detail_summary)
         elif cycle_rob_backpressure_total > 0:
             stall_rob_backpressure_total = cycle_rob_backpressure_total
+
+        if has_stall_other_summary:
+            stall_other_total = stall_other_total_summary
+            stall_other_detail = Counter(stall_other_detail_summary)
+        elif cycle_other_total > 0:
+            stall_other_total = cycle_other_total
 
     quality_warnings: list[str] = []
     if not has_commit_detail and not has_commit_summary:
@@ -1321,6 +1484,8 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
             quality_warnings.append("decode_blocked secondary split from sampled [stall] only (missing [stallm3])")
         if int(stall_category.get("rob_backpressure", 0)) > 0 and not has_stall_rob_backpressure_summary:
             quality_warnings.append("rob_backpressure secondary split from sampled [stall] only (missing [stallm4])")
+        if int(stall_category.get("other", 0)) > 0 and not has_stall_other_summary:
+            quality_warnings.append("other secondary split from sampled [stall] only (missing [stallm5])")
 
     host_time_ms = host_time_us / 1000.0
     benchmark_time_source = "unknown"
@@ -1406,6 +1571,8 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
         "stall_decode_blocked_detail": dict(stall_decode_blocked_detail),
         "stall_rob_backpressure_total": stall_rob_backpressure_total,
         "stall_rob_backpressure_detail": dict(stall_rob_backpressure_detail),
+        "stall_other_total": stall_other_total,
+        "stall_other_detail": dict(stall_other_detail),
         "stall_frontend_empty_total": stall_frontend_empty_total,
         "stall_frontend_empty_detail": dict(stall_frontend_empty_detail_summary),
         "ifu_fq": ifu_fq,
@@ -1468,6 +1635,8 @@ def _bench_markdown(name: str, data: dict[str, Any]) -> str:
     decode_blocked_detail = data.get("stall_decode_blocked_detail", {})
     rob_backpressure_total = data.get("stall_rob_backpressure_total", 0)
     rob_backpressure_detail = data.get("stall_rob_backpressure_detail", {})
+    other_total = data.get("stall_other_total", 0)
+    other_detail = data.get("stall_other_detail", {})
     frontend_empty_total = data.get("stall_frontend_empty_total", 0)
     frontend_empty_detail = data.get("stall_frontend_empty_detail", {})
     ifu_fq = data.get("ifu_fq", {})
@@ -1610,6 +1779,17 @@ def _bench_markdown(name: str, data: dict[str, Any]) -> str:
             lines.append("- detail_breakdown:")
             for key, val in sorted(rob_backpressure_detail.items(), key=lambda x: x[1], reverse=True):
                 lines.append(f"  - {key}: `{val}` ({_fmt_pct(val, rob_backpressure_total)})")
+
+    lines.append("")
+    lines.append("Other Breakdown:")
+    if other_total == 0:
+        lines.append("- (no other stall samples)")
+    else:
+        if other_detail:
+            for key, val in sorted(other_detail.items(), key=lambda x: x[1], reverse=True):
+                lines.append(f"- {key}: `{val}` ({_fmt_pct(val, other_total)})")
+        else:
+            lines.append("- (no other detail breakdown)")
 
     lines.append("")
     lines.append("Flush Reasons:")

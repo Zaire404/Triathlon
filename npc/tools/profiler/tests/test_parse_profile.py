@@ -827,6 +827,103 @@ class ParseProfileTest(unittest.TestCase):
         self.assertEqual(result["stall_rob_backpressure_detail"]["rob_lsu_wait_ld_rsp_valid"], 12)
         self.assertEqual(result["stall_rob_backpressure_detail"]["rob_store_wait_dcache"], 8)
 
+    def test_cycle_stallm5_other_secondary_breakdown_takes_priority(self):
+        mod = load_parser_module()
+        with tempfile.TemporaryDirectory() as td:
+            log = Path(td) / "coremark.log"
+            log.write_text(
+                "\n".join(
+                    [
+                        "[stall ] cycle=40 no_commit=20 dec(v/r)=1/1 rob_ready=1 ren(pend/src/sel/fire/rdy)=0/0/0/0/0",
+                        "[stall ] cycle=41 no_commit=20 dec(v/r)=1/1 rob_ready=1 ren(pend/src/sel/fire/rdy)=0/0/0/0/1",
+                        "[stallm] mode=cycle stall_total_cycles=60 flush_recovery=5 icache_miss_wait=7 dcache_miss_wait=3 rob_backpressure=20 frontend_empty=11 decode_blocked=9 lsu_req_blocked=1 other=4",
+                        "[stallm5] mode=cycle other_total=4 ren_not_ready=1 ren_no_fire=2 lsu_wait_wb=1",
+                        "IPC=0.500000 CPI=2.000000 cycles=100 commits=50",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            result = mod.parse_single_log(log)
+
+        self.assertEqual(result["stall_mode"], "cycle")
+        self.assertEqual(result["stall_other_total"], 4)
+        self.assertEqual(result["stall_other_detail"]["ren_not_ready"], 1)
+        self.assertEqual(result["stall_other_detail"]["ren_no_fire"], 2)
+        self.assertEqual(result["stall_other_detail"]["lsu_wait_wb"], 1)
+
+    def test_sampled_stall_other_secondary_breakdown(self):
+        mod = load_parser_module()
+        with tempfile.TemporaryDirectory() as td:
+            log = Path(td) / "coremark.log"
+            log.write_text(
+                "\n".join(
+                    [
+                        "[stall ] cycle=10 no_commit=20 dec(v/r)=1/1 rob_ready=1 ren(pend/src/sel/fire/rdy)=0/0/0/0/0",
+                        "[stall ] cycle=20 no_commit=20 dec(v/r)=1/1 rob_ready=1 ren(pend/src/sel/fire/rdy)=0/0/0/0/1",
+                        "[stall ] cycle=30 no_commit=20 dec(v/r)=1/1 rob_ready=1 lsu_sm=3",
+                        "IPC=0.500000 CPI=2.000000 cycles=100 commits=50",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            result = mod.parse_single_log(log)
+
+        self.assertEqual(result["stall_mode"], "sampled")
+        self.assertEqual(result["stall_other_total"], 3)
+        self.assertEqual(result["stall_other_detail"]["ren_not_ready"], 1)
+        self.assertEqual(result["stall_other_detail"]["ren_no_fire"], 1)
+        self.assertEqual(result["stall_other_detail"]["lsu_wait_wb"], 1)
+
+    def test_sampled_stall_other_rob_empty_refill_split(self):
+        mod = load_parser_module()
+        with tempfile.TemporaryDirectory() as td:
+            log = Path(td) / "coremark.log"
+            log.write_text(
+                "\n".join(
+                    [
+                        "[stall ] cycle=10 no_commit=20 dec(v/r)=1/1 rob_ready=1 rob_cnt=0 ren(pend/src/sel/fire/rdy)=0/0/0/1/1 ifu_req(v/r/fire/inflight)=0/1/0/0",
+                        "[stall ] cycle=20 no_commit=20 dec(v/r)=1/1 rob_ready=1 rob_cnt=0 ren(pend/src/sel/fire/rdy)=0/0/0/0/0 ifu_req(v/r/fire/inflight)=0/1/0/0",
+                        "[stall ] cycle=30 no_commit=20 dec(v/r)=1/1 rob_ready=1 rob_cnt=0 ren(pend/src/sel/fire/rdy)=0/0/0/0/1 ifu_req(v/r/fire/inflight)=1/1/0/1",
+                        "IPC=0.500000 CPI=2.000000 cycles=100 commits=50",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            result = mod.parse_single_log(log)
+
+        self.assertEqual(result["stall_other_total"], 3)
+        detail = result["stall_other_detail"]
+        self.assertEqual(detail["rob_empty_refill_ren_fire"], 1)
+        self.assertEqual(detail["rob_empty_refill_ren_not_ready"], 1)
+        self.assertEqual(detail["rob_empty_refill_wait_frontend_rsp"], 1)
+
+    def test_sampled_stall_other_rob_head_and_lsu_wb_split(self):
+        mod = load_parser_module()
+        with tempfile.TemporaryDirectory() as td:
+            log = Path(td) / "coremark.log"
+            log.write_text(
+                "\n".join(
+                    [
+                        "[stall ] cycle=10 no_commit=20 dec(v/r)=1/1 rob_ready=1 rob_cnt=5 rob_head(fu/comp/is_store/pc)=0x2/0/0/0x80000010",
+                        "[stall ] cycle=20 no_commit=20 dec(v/r)=1/1 rob_ready=1 rob_cnt=5 rob_head(fu/comp/is_store/pc)=0x3/0/0/0x80000014 lsu_sm=2 lsu_rsp(v/r)=0/1",
+                        "[stall ] cycle=30 no_commit=20 dec(v/r)=1/1 rob_ready=1 rob_cnt=5 rob_head(fu/comp/is_store/pc)=0x3/0/0/0x80000018 lsu_sm=3",
+                        "IPC=0.500000 CPI=2.000000 cycles=100 commits=50",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            result = mod.parse_single_log(log)
+
+        self.assertEqual(result["stall_other_total"], 3)
+        detail = result["stall_other_detail"]
+        self.assertEqual(detail["rob_head_branch_incomplete_nonbp"], 1)
+        self.assertEqual(detail["rob_head_lsu_incomplete_wait_rsp_valid_nonbp"], 1)
+        self.assertEqual(detail["lsu_wait_wb_head_lsu_incomplete"], 1)
+
     def test_parse_ifum_fetch_queue_summary(self):
         mod = load_parser_module()
         with tempfile.TemporaryDirectory() as td:
@@ -991,6 +1088,62 @@ class ParseProfileTest(unittest.TestCase):
         self.assertIn("enq/deq/bypass", report)
         self.assertIn("occupancy(avg/max)", report)
         self.assertIn("occ=3", report)
+
+    def test_report_includes_other_breakdown(self):
+        mod = load_parser_module()
+        with tempfile.TemporaryDirectory() as td:
+            tdir = Path(td)
+            template = Path(__file__).resolve().parents[1] / "report_template.md"
+            summary = {
+                "coremark": {
+                    "log_path": str(tdir / "coremark.log"),
+                    "ipc": 0.5,
+                    "cpi": 2.0,
+                    "cycles": 100,
+                    "commits": 50,
+                    "flush_per_kinst": 0.0,
+                    "bru_per_kinst": 0.0,
+                    "mispredict_flush_count": 0,
+                    "branch_penalty_cycles": 0,
+                    "wrong_path_kill_uops": 0,
+                    "redirect_distance_avg": 0.0,
+                    "redirect_distance_max": 0,
+                    "commit_width_hist": {0: 50, 1: 50, 2: 0, 3: 0, 4: 0},
+                    "stall_category": {"other": 3},
+                    "stall_total": 3,
+                    "stall_other_total": 3,
+                    "stall_other_detail": {"ren_not_ready": 2, "lsu_wait_wb": 1},
+                    "control": {"control_ratio": 0.0, "est_misp_per_kinst": 0.0},
+                    "predict": {
+                        "cond_hit": 0,
+                        "cond_miss": 0,
+                        "cond_miss_rate": 0.0,
+                        "jump_hit": 0,
+                        "jump_miss": 0,
+                        "jump_miss_rate": 0.0,
+                        "ret_hit": 0,
+                        "ret_miss": 0,
+                        "ret_miss_rate": 0.0,
+                        "call_total": 0,
+                    },
+                    "top_pc": [],
+                    "top_inst": [],
+                    "flush_reason_histogram": {},
+                    "flush_source_histogram": {},
+                    "has_commit_detail": False,
+                    "has_commit_summary": False,
+                    "stall_mode": "cycle",
+                    "quality_warnings": [],
+                    "commit_metrics_source": "none",
+                    "stall_metrics_source": "cycle",
+                }
+            }
+
+            report = mod.build_markdown_report(summary, template)
+
+        self.assertIn("Other Breakdown:", report)
+        self.assertIn("ren_not_ready", report)
+        self.assertIn("lsu_wait_wb", report)
 
     def test_report_includes_predict_tournament_breakdown(self):
         mod = load_parser_module()
