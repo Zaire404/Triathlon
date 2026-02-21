@@ -75,7 +75,8 @@ module dcache #(
 
   // Tag meta bits: {dirty, valid}
   localparam int unsigned META_WIDTH = 2;
-  localparam int unsigned MSHR_ENTRIES = (N_MSHR < 1) ? 1 : N_MSHR;
+  localparam int unsigned MSHR_ENTRIES = (N_MSHR >= 1) ? N_MSHR :
+      ((Cfg.DC_MSHR_DEPTH >= 1) ? Cfg.DC_MSHR_DEPTH : 1);
   localparam int unsigned MSHR_IDX_WIDTH = (MSHR_ENTRIES <= 1) ? 1 : $clog2(MSHR_ENTRIES);
 
   // ---------------------------------------------------------------------------

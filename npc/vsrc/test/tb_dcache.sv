@@ -1,9 +1,11 @@
 // vsrc/test/tb_dcache.sv
 import config_pkg::*;
 import decode_pkg::*;
+import global_config_pkg::*;
 
 module tb_dcache #(
-    parameter int unsigned TB_N_MSHR = 2,
+    parameter int unsigned TB_N_MSHR = (global_config_pkg::Cfg.DCACHE_MSHR_SIZE >= 1) ?
+        global_config_pkg::Cfg.DCACHE_MSHR_SIZE : 1,
     parameter int unsigned TB_LD_ID_WIDTH = 1
 ) (
     input logic clk_i,

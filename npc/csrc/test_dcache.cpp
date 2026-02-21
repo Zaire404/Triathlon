@@ -822,6 +822,53 @@ int main(int argc, char **argv) {
     assert(false);
   }
 
+  // ============================================================
+  // Test 14: Deep miss-under-miss capacity (12+ outstanding misses)
+  // ============================================================
+  std::cout << "[TEST] Case 14: 12+ outstanding misses before refill" << std::endl;
+
+  reset(top, tfp);
+  top->miss_req_ready_i = 1;
+  top->refill_valid_i = 0;
+  top->wb_req_ready_i = 1;
+  top->ld_rsp_ready_i = 1;
+  top->st_req_valid_i = 0;
+  top->ld_req_valid_i = 0;
+
+  constexpr int kTargetMisses = 12;
+  int issued_load_misses = 0;
+  int fired_miss_reqs = 0;
+  int cycles = 0;
+
+  while ((issued_load_misses < kTargetMisses || fired_miss_reqs < kTargetMisses) &&
+         cycles < 2000) {
+    top->eval();
+    if (top->miss_req_valid_o && top->miss_req_ready_i) {
+      fired_miss_reqs++;
+    }
+
+    if (issued_load_misses < kTargetMisses && top->ld_req_ready_o) {
+      top->ld_req_valid_i = 1;
+      top->ld_req_addr_i = 0x81000000 + static_cast<uint32_t>(issued_load_misses * 0x1000);
+      top->ld_req_op_i = OP_LW;
+      top->ld_req_id_i = static_cast<uint32_t>(issued_load_misses & 0x1);
+      tick(top, tfp);
+      top->ld_req_valid_i = 0;
+      issued_load_misses++;
+    } else {
+      tick(top, tfp);
+    }
+    cycles++;
+  }
+
+  if (issued_load_misses < kTargetMisses || fired_miss_reqs < kTargetMisses) {
+    std::cout << "[FAIL] Case 14: outstanding miss depth too shallow. issued="
+              << issued_load_misses << " miss_fire=" << fired_miss_reqs << std::endl;
+    assert(false);
+  }
+  std::cout << "[PASS] Case 14: dcache accepts >=12 outstanding misses."
+            << std::endl;
+
   // Cleanup
   for (int i = 0; i < 20; i++)
     tick(top, tfp);

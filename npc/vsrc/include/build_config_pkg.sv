@@ -49,7 +49,10 @@ package build_config_pkg;
     cfg.IFU_INF_DEPTH = user_cfg.IFU_INF_DEPTH;
     cfg.IFU_FQ_DEPTH = user_cfg.IFU_FQ_DEPTH;
     cfg.ENABLE_COMMIT_RAS_UPDATE = user_cfg.ENABLE_COMMIT_RAS_UPDATE;
-    cfg.DCACHE_MSHR_SIZE = user_cfg.DCACHE_MSHR_SIZE;
+    cfg.DC_BANKS = (user_cfg.DC_BANKS >= 1) ? user_cfg.DC_BANKS : 4;
+    cfg.DC_MSHR_DEPTH = (user_cfg.DC_MSHR_DEPTH >= 1) ? user_cfg.DC_MSHR_DEPTH :
+        ((user_cfg.DCACHE_MSHR_SIZE >= 1) ? user_cfg.DCACHE_MSHR_SIZE : 8);
+    cfg.DCACHE_MSHR_SIZE = cfg.DC_MSHR_DEPTH;
     cfg.RENAME_PENDING_DEPTH = (user_cfg.RENAME_PENDING_DEPTH > 0) ? user_cfg.RENAME_PENDING_DEPTH :
         (user_cfg.INSTR_PER_FETCH * 4);
     cfg.ROB_DEPTH = (user_cfg.ROB_DEPTH >= user_cfg.INSTR_PER_FETCH) ? user_cfg.ROB_DEPTH : 64;
@@ -95,7 +98,7 @@ package build_config_pkg;
         user_cfg.DCACHE_BYTE_SIZE * 8 / user_cfg.DCACHE_SET_ASSOC / user_cfg.DCACHE_LINE_WIDTH);
     cfg.DCACHE_OFFSET_WIDTH = $clog2(user_cfg.DCACHE_LINE_WIDTH / 8);
     cfg.DCACHE_TAG_WIDTH = cfg.PLEN - cfg.DCACHE_INDEX_WIDTH - cfg.DCACHE_OFFSET_WIDTH;
-    cfg.DCACHE_NUM_BANKS = 4;  // 固定为4个Bank（后续可参数化）
+    cfg.DCACHE_NUM_BANKS = cfg.DC_BANKS;
     cfg.DCACHE_BANK_SEL_WIDTH = $clog2(cfg.DCACHE_NUM_BANKS);
     cfg.DCACHE_NUM_SETS = (user_cfg.DCACHE_BYTE_SIZE * 8) / user_cfg.DCACHE_SET_ASSOC / user_cfg.DCACHE_LINE_WIDTH;
 

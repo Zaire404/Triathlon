@@ -64,6 +64,8 @@ package config_pkg;
 
     // Backend micro-architecture toggles
     int unsigned ENABLE_COMMIT_RAS_UPDATE;
+    int unsigned DC_BANKS;
+    int unsigned DC_MSHR_DEPTH;
     int unsigned DCACHE_MSHR_SIZE;
     int unsigned RENAME_PENDING_DEPTH;
     int unsigned ROB_DEPTH;
@@ -165,6 +167,8 @@ package config_pkg;
 
     // Backend micro-architecture toggles
     int unsigned ENABLE_COMMIT_RAS_UPDATE;
+    int unsigned DC_BANKS;
+    int unsigned DC_MSHR_DEPTH;
     int unsigned DCACHE_MSHR_SIZE;
     int unsigned RENAME_PENDING_DEPTH;
     int unsigned ROB_DEPTH;
