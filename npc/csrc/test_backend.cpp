@@ -1058,6 +1058,31 @@ static void test_pending_replay_buffer_depth_scales_for_single_slot_groups(Vtb_b
          "Replay depth scale: pending buffer absorbs >=10 single-slot groups while replay active");
 }
 
+static void test_memdep_violation_requests_replay_without_deadlock(Vtb_backend *top, MemModel &mem) {
+  std::array<uint32_t, 32> rf{};
+  std::vector<uint32_t> commits;
+
+  reset(top, mem);
+
+  send_group(top, mem, rf, commits, 0x14000,
+             {insn_addi(1, 0, 0x100), insn_addi(2, 0, 0x55), insn_nop(), insn_nop()});
+  send_group(top, mem, rf, commits, 0x14010,
+             {insn_sw(2, 1, 0), insn_lw(3, 1, 0), insn_addi(4, 0, 1), insn_nop()});
+
+  bool replay_seen = run_until(top, mem, rf, commits, [&]() {
+    return top->dbg_mem_dep_replay_o != 0;
+  }, 300);
+  expect(replay_seen, "Mem-dep replay: violation request observed");
+
+  bool committed_after_replay = run_until(top, mem, rf, commits, [&]() {
+    for (int i = 0; i < NRET; i++) {
+      if (((top->commit_valid_o >> i) & 0x1) != 0) return true;
+    }
+    return false;
+  }, 300);
+  expect(committed_after_replay, "Mem-dep replay: backend still commits after replay request");
+}
+
 int main(int argc, char **argv) {
   Verilated::commandArgs(argc, argv);
   Vtb_backend *top = new Vtb_backend;
@@ -1078,6 +1103,7 @@ int main(int argc, char **argv) {
   test_pending_replay_allows_decoder_progress(top, mem);
   test_pending_replay_buffer_can_absorb_multiple_single_slot_groups(top, mem);
   test_pending_replay_buffer_depth_scales_for_single_slot_groups(top, mem);
+  test_memdep_violation_requests_replay_without_deadlock(top, mem);
 
   std::cout << ANSI_RES_GRN << "--- [ALL BACKEND TESTS PASSED] ---" << ANSI_RES_RST << std::endl;
   delete top;

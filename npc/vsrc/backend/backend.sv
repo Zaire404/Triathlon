@@ -75,6 +75,7 @@ module backend #(
   localparam int unsigned ROB_MAX_COMMIT_LD = (Cfg.ROB_MAX_COMMIT_LD >= 1) ? Cfg.ROB_MAX_COMMIT_LD : 2;
   localparam int unsigned LSU_LQ_DEPTH = (Cfg.ROB_DEPTH >= 16) ? 16 : Cfg.ROB_DEPTH;
   localparam int unsigned LSU_SQ_DEPTH = (Cfg.SB_DEPTH >= 16) ? 16 : Cfg.SB_DEPTH;
+  localparam int unsigned MEM_DEP_STORE_DEPTH = 8;
   // A2.2: 开启 commit-time call/ret 更新，配合 BPU speculative RAS 降低 return miss。
   localparam bit ENABLE_COMMIT_RAS_UPDATE = (Cfg.ENABLE_COMMIT_RAS_UPDATE != 0);
 
@@ -1376,6 +1377,34 @@ module backend #(
   logic [$clog2(LSU_SQ_DEPTH + 1)-1:0] lsu_sq_count_dbg;
   logic lsu_sq_head_valid_dbg;
   logic [ROB_IDX_WIDTH-1:0] lsu_sq_head_rob_tag_dbg;
+  logic mem_dep_req_fire;
+  logic [Cfg.XLEN-1:0] mem_dep_req_addr_xlen;
+  logic [Cfg.PLEN-1:0] mem_dep_req_addr;
+  logic mem_dep_replay_valid;
+  logic [ROB_IDX_WIDTH-1:0] mem_dep_replay_rob_idx;
+  logic mem_dep_bypass_allow;
+
+  assign mem_dep_req_fire = lsu_en && lsu_req_ready;
+  assign mem_dep_req_addr_xlen = lsu_v1 + lsu_uop.imm;
+  assign mem_dep_req_addr = mem_dep_req_addr_xlen[Cfg.PLEN-1:0];
+
+  mem_dep_predictor #(
+      .ROB_IDX_WIDTH(ROB_IDX_WIDTH),
+      .ADDR_WIDTH(Cfg.PLEN),
+      .STORE_DEPTH(MEM_DEP_STORE_DEPTH)
+  ) u_mem_dep_predictor (
+      .clk_i,
+      .rst_ni,
+      .flush_i(backend_flush),
+      .req_fire_i(mem_dep_req_fire),
+      .req_is_load_i(lsu_uop.is_load),
+      .req_is_store_i(lsu_uop.is_store),
+      .req_addr_i(mem_dep_req_addr),
+      .req_rob_idx_i(lsu_dst),
+      .bypass_allow_o(mem_dep_bypass_allow),
+      .replay_valid_o(mem_dep_replay_valid),
+      .replay_rob_idx_o(mem_dep_replay_rob_idx)
+  );
 
   lsu_group #(
       .Cfg(Cfg),
