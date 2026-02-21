@@ -52,6 +52,8 @@ package build_config_pkg;
     cfg.DCACHE_MSHR_SIZE = user_cfg.DCACHE_MSHR_SIZE;
     cfg.RENAME_PENDING_DEPTH = (user_cfg.RENAME_PENDING_DEPTH > 0) ? user_cfg.RENAME_PENDING_DEPTH :
         (user_cfg.INSTR_PER_FETCH * 4);
+    cfg.ROB_DEPTH = (user_cfg.ROB_DEPTH >= user_cfg.INSTR_PER_FETCH) ? user_cfg.ROB_DEPTH : 64;
+    cfg.LSU_GROUP_SIZE = (user_cfg.LSU_GROUP_SIZE >= 1) ? user_cfg.LSU_GROUP_SIZE : 1;
 
     // ICache 配置
     cfg.ICACHE_BYTE_SIZE = user_cfg.ICACHE_BYTE_SIZE;

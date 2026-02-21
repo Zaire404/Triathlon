@@ -172,6 +172,9 @@ module issue #(
 
   reservation_station #(
       .Cfg(Cfg),
+      .RS_DEPTH(RS_DEPTH),
+      .DATA_W(DATA_W),
+      .TAG_W(TAG_W),
       .CDB_W(CDB_W)
   ) u_rs (
       .clk(clk),

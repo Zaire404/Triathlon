@@ -51,14 +51,14 @@ module backend #(
 
   localparam int unsigned DISPATCH_WIDTH = Cfg.INSTR_PER_FETCH;
   localparam int unsigned COMMIT_WIDTH = Cfg.NRET;
-  localparam int unsigned ROB_DEPTH = 64;
+  localparam int unsigned ROB_DEPTH = (Cfg.ROB_DEPTH >= DISPATCH_WIDTH) ? Cfg.ROB_DEPTH : 64;
   localparam int unsigned ROB_IDX_WIDTH = $clog2(ROB_DEPTH);
   localparam int unsigned SB_DEPTH = 16;
   localparam int unsigned SB_IDX_WIDTH = $clog2(SB_DEPTH);
   localparam int unsigned RS_DEPTH = Cfg.RS_DEPTH;
   localparam int unsigned WB_WIDTH = 7;
   localparam int unsigned NUM_FUS = 7;  // ALU0, ALU1, BRU, LSU, ALU2, ALU3, CSR
-  localparam int unsigned LSU_GROUP_SIZE = 2;
+  localparam int unsigned LSU_GROUP_SIZE = (Cfg.LSU_GROUP_SIZE >= 1) ? Cfg.LSU_GROUP_SIZE : 1;
   localparam int unsigned LSU_LD_ID_WIDTH = (LSU_GROUP_SIZE <= 1) ? 1 : $clog2(LSU_GROUP_SIZE);
   localparam int unsigned DCACHE_MSHR_SIZE = (Cfg.DCACHE_MSHR_SIZE >= 1) ? Cfg.DCACHE_MSHR_SIZE : 1;
   localparam int unsigned RENAME_PENDING_DEPTH_CFG = (Cfg.RENAME_PENDING_DEPTH > 0) ? Cfg.RENAME_PENDING_DEPTH :
@@ -71,6 +71,21 @@ module backend #(
   localparam int unsigned COMMIT_SEL_W = (COMMIT_WIDTH > 1) ? $clog2(COMMIT_WIDTH) : 1;
   // A2.2: 开启 commit-time call/ret 更新，配合 BPU speculative RAS 降低 return miss。
   localparam bit ENABLE_COMMIT_RAS_UPDATE = (Cfg.ENABLE_COMMIT_RAS_UPDATE != 0);
+
+  generate
+    if (Cfg.ROB_DEPTH < DISPATCH_WIDTH) begin : g_cfg_invalid_rob_depth
+      initial begin
+        $fatal(1, "backend config error: ROB_DEPTH(%0d) < INSTR_PER_FETCH(%0d)",
+               Cfg.ROB_DEPTH, DISPATCH_WIDTH);
+      end
+    end
+    if (Cfg.LSU_GROUP_SIZE < 1) begin : g_cfg_invalid_lsu_group_size
+      initial begin
+        $fatal(1, "backend config error: LSU_GROUP_SIZE(%0d) must be >= 1",
+               Cfg.LSU_GROUP_SIZE);
+      end
+    end
+  endgenerate
 
   // =========================================================
   // IBuffer

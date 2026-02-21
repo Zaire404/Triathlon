@@ -66,6 +66,8 @@ package config_pkg;
     int unsigned ENABLE_COMMIT_RAS_UPDATE;
     int unsigned DCACHE_MSHR_SIZE;
     int unsigned RENAME_PENDING_DEPTH;
+    int unsigned ROB_DEPTH;
+    int unsigned LSU_GROUP_SIZE;
 
     // ICache configuration
     // Instruction cache size (in bytes)
@@ -151,6 +153,8 @@ package config_pkg;
     int unsigned ENABLE_COMMIT_RAS_UPDATE;
     int unsigned DCACHE_MSHR_SIZE;
     int unsigned RENAME_PENDING_DEPTH;
+    int unsigned ROB_DEPTH;
+    int unsigned LSU_GROUP_SIZE;
 
     // ICache configuration
     int unsigned ICACHE_BYTE_SIZE;
