@@ -1625,15 +1625,23 @@ module backend #(
       .enq_ecause_i(wb_raw_ecause),
       .enq_is_mispred_i(wb_raw_is_mispred),
       .enq_redirect_pc_i(wb_raw_redirect_pc),
-      .deq_valid_o(wb_valid),
-      .deq_data_o(wb_data),
-      .deq_rob_idx_o(wb_rob_idx),
-      .deq_exception_o(wb_exception),
-      .deq_ecause_o(wb_ecause),
-      .deq_is_mispred_o(wb_is_mispred),
-      .deq_redirect_pc_o(wb_redirect_pc),
+      .deq_valid_o(),
+      .deq_data_o(),
+      .deq_rob_idx_o(),
+      .deq_exception_o(),
+      .deq_ecause_o(),
+      .deq_is_mispred_o(),
+      .deq_redirect_pc_o(),
       .count_o(completion_q_count)
   );
+
+  assign wb_valid = wb_raw_valid;
+  assign wb_data = wb_raw_data;
+  assign wb_rob_idx = wb_raw_rob_idx;
+  assign wb_exception = wb_raw_exception;
+  assign wb_ecause = wb_raw_ecause;
+  assign wb_is_mispred = wb_raw_is_mispred;
+  assign wb_redirect_pc = wb_raw_redirect_pc;
 
   always_comb begin
     for (int i = 0; i < WB_WIDTH; i++) begin
