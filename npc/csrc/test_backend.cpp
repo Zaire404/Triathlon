@@ -16,8 +16,8 @@ static const int INSTR_PER_FETCH = 4;
 static const int NRET = 4;
 static const int XLEN = 32;
 static const uint32_t LINE_BYTES = 32; // DCACHE_LINE_WIDTH=256b -> 32B
-static const int FTQ_ID_BITS = 3;
-static const int FETCH_EPOCH_BITS = 3;
+static const int DEFAULT_FTQ_ID_BITS = 3;
+static const int DEFAULT_FETCH_EPOCH_BITS = 3;
 
 // -----------------------------------------------------------------------------
 // Instruction encoders (RV32I)
@@ -180,18 +180,23 @@ static void tick(Vtb_backend *top, MemModel &mem) {
   mem.observe(top);
 }
 
-static uint16_t pack_meta_all_lanes(uint32_t value, int lane_bits) {
-  uint16_t packed = 0;
+static uint32_t pack_meta_all_lanes(uint32_t value, int lane_bits) {
+  uint32_t packed = 0;
   uint32_t mask = (1u << lane_bits) - 1u;
   for (int i = 0; i < INSTR_PER_FETCH; i++) {
-    packed |= static_cast<uint16_t>((value & mask) << (i * lane_bits));
+    packed |= static_cast<uint32_t>((value & mask) << (i * lane_bits));
   }
   return packed;
 }
 
 static void set_frontend_meta(Vtb_backend *top, uint32_t ftq_id, uint32_t fetch_epoch) {
-  top->frontend_ibuf_ftq_id = pack_meta_all_lanes(ftq_id, FTQ_ID_BITS);
-  top->frontend_ibuf_fetch_epoch = pack_meta_all_lanes(fetch_epoch, FETCH_EPOCH_BITS);
+  int ftq_id_bits = top->dbg_cfg_ftq_id_bits_o ? static_cast<int>(top->dbg_cfg_ftq_id_bits_o)
+                                                : DEFAULT_FTQ_ID_BITS;
+  int fetch_epoch_bits = top->dbg_cfg_fetch_epoch_bits_o ?
+                             static_cast<int>(top->dbg_cfg_fetch_epoch_bits_o) :
+                             DEFAULT_FETCH_EPOCH_BITS;
+  top->frontend_ibuf_ftq_id = pack_meta_all_lanes(ftq_id, ftq_id_bits);
+  top->frontend_ibuf_fetch_epoch = pack_meta_all_lanes(fetch_epoch, fetch_epoch_bits);
 }
 
 static bool tick_sample_frontend_ready(Vtb_backend *top, MemModel &mem) {
