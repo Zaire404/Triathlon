@@ -162,6 +162,7 @@ module lsu_group #(
   logic                [     SQ_BE_WIDTH-1:0]                 sq_load_be;
   logic                                                        sb_load_hit_mux;
   logic                [     Cfg.XLEN-1:0]                    sb_load_data_mux;
+  logic                [     Cfg.XLEN-1:0]                    sq_fwd_data_rshift;
   logic                [      Cfg.XLEN-1:0]                   req_eff_addr_xlen;
   logic                [      Cfg.PLEN-1:0]                   req_eff_addr;
 
@@ -351,8 +352,9 @@ module lsu_group #(
   assign sq_load_be = load_be_mask(uop_i.lsu_op, req_eff_addr);
   assign sq_store_data_aligned = store_aligned_data(uop_i.lsu_op, rs2_data_i, req_eff_addr);
   assign sq_fwd_query_valid = alloc_fire && uop_i.is_load;
+  assign sq_fwd_data_rshift = sq_fwd_query_data >> (8 * req_eff_addr[SQ_BYTE_OFF_W-1:0]);
   assign sb_load_hit_mux = sb_load_hit_i || sq_fwd_query_hit;
-  assign sb_load_data_mux = sq_fwd_query_hit ? sq_fwd_query_data : sb_load_data_i;
+  assign sb_load_data_mux = sq_fwd_query_hit ? sq_fwd_data_rshift : sb_load_data_i;
 
   assign lq_alloc_valid = alloc_fire && uop_i.is_load;
   assign sq_alloc_valid = alloc_fire && uop_i.is_store;

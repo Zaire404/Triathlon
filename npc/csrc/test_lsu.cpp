@@ -654,6 +654,50 @@ static void test_sq_forwarding_store_to_younger_load_without_dcache_rsp(Vtb_lsu 
   tick(top);
 }
 
+static void test_sq_forwarding_lbu_with_byte_offset(Vtb_lsu *top) {
+  set_defaults(top);
+
+  // Keep older store resident so younger load must forward from SQ.
+  top->wb_ready_i = 0;
+
+  top->req_valid_i = 1;
+  top->is_store_i = 1;
+  top->is_load_i = 0;
+  top->lsu_op_i = LSU_SW;
+  top->rs1_data_i = 0xB100;
+  top->imm_i = 0;
+  top->rs2_data_i = 0x00005500;  // byte@+1 = 0x55, byte@+0 = 0x00
+  top->rob_tag_i = 0x24;
+  eval_comb(top);
+  expect(top->req_ready_o == 1, "SQ fwd LBU+1: older store accepted");
+  tick(top);
+
+  top->req_valid_i = 1;
+  top->is_store_i = 0;
+  top->is_load_i = 1;
+  top->lsu_op_i = LSU_LBU;
+  top->rs1_data_i = 0xB100;
+  top->imm_i = 1;
+  top->rob_tag_i = 0x25;
+  eval_comb(top);
+  expect(top->req_ready_o == 1, "SQ fwd LBU+1: younger load accepted");
+  expect(top->ld_req_valid_o == 0, "SQ fwd LBU+1: load bypasses dcache");
+  tick(top);
+
+  top->req_valid_i = 0;
+  top->wb_ready_i = 1;
+  eval_comb(top);
+  expect(top->wb_valid_o == 1, "SQ fwd LBU+1: store writeback first");
+  expect(top->wb_rob_idx_o == 0x24, "SQ fwd LBU+1: first wb tag is store");
+  tick(top);
+
+  eval_comb(top);
+  expect(top->wb_valid_o == 1, "SQ fwd LBU+1: forwarded load writeback appears");
+  expect(top->wb_rob_idx_o == 0x25, "SQ fwd LBU+1: second wb tag is load");
+  expect(top->wb_data_o == 0x00000055, "SQ fwd LBU+1: load gets forwarded byte at +1");
+  tick(top);
+}
+
 static void test_lq_queue_occupancy_four_entries(Vtb_lsu *top) {
   set_defaults(top);
 
@@ -736,6 +780,7 @@ int main(int argc, char **argv) {
   test_group_allows_req_on_rsp_handoff_cycle(top);
   test_group_supports_two_outstanding_with_rsp_id(top);
   test_sq_forwarding_store_to_younger_load_without_dcache_rsp(top);
+  test_sq_forwarding_lbu_with_byte_offset(top);
   test_lq_queue_occupancy_four_entries(top);
   test_sq_queue_ordered_dequeue_contract(top);
 
