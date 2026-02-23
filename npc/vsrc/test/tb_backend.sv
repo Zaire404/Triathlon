@@ -69,7 +69,13 @@ module tb_backend (
     output logic                               dbg_lsu_issue_fire_o,
     output logic [3:0]                         dbg_lsu_grp_lane_busy_o,
     output logic                               dbg_mem_dep_replay_o,
-    output logic [7:0]                         dbg_completion_q_count_o
+    output logic [7:0]                         dbg_completion_q_count_o,
+    output logic                               dbg_rob_head_complete_o,
+    output logic                               dbg_alu_wb_head_hit_o,
+    output logic                               dbg_bru_wb_head_hit_o,
+    output logic                               dbg_bru_mispred_o,
+    output logic                               dbg_cond_branch_wb_head_non_mispred_o,
+    output logic [2:0]                         dbg_cond_branch_issue_count_o
 );
 
   logic backend_flush_unused;
@@ -150,5 +156,44 @@ module tb_backend (
   assign dbg_lsu_grp_lane_busy_o = {2'b0, dut.u_lsu_group.dbg_lane_busy};
   assign dbg_mem_dep_replay_o = dut.mem_dep_replay_valid;
   assign dbg_completion_q_count_o = dut.completion_q_count;
+  // Observe ROB's effective head-complete (includes same-cycle ALU fast-visible path).
+  assign dbg_rob_head_complete_o = dut.u_rob.head_fast_complete[0];
+  assign dbg_alu_wb_head_hit_o =
+      (dut.alu0_wb_valid && (dut.alu0_wb_tag == dut.rob_head_ptr)) ||
+      (dut.alu1_wb_valid && (dut.alu1_wb_tag == dut.rob_head_ptr)) ||
+      (dut.alu2_wb_valid && (dut.alu2_wb_tag == dut.rob_head_ptr)) ||
+      (dut.alu3_wb_valid && (dut.alu3_wb_tag == dut.rob_head_ptr));
+  assign dbg_bru_wb_head_hit_o =
+      dut.bru_wb_valid && (dut.bru_wb_tag == dut.rob_head_ptr);
+  assign dbg_bru_mispred_o = dut.bru_mispred;
+  assign dbg_cond_branch_wb_head_non_mispred_o =
+      (dut.bru_wb_valid && (dut.bru_wb_tag == dut.rob_head_ptr) &&
+       dut.bru_uop.is_branch && !dut.bru_uop.is_jump && !dut.bru_mispred) ||
+      (dut.alu0_wb_valid && (dut.alu0_wb_tag == dut.rob_head_ptr) &&
+       dut.alu0_uop.is_branch && !dut.alu0_uop.is_jump && !dut.alu0_mispred) ||
+      (dut.alu1_wb_valid && (dut.alu1_wb_tag == dut.rob_head_ptr) &&
+       dut.alu1_uop.is_branch && !dut.alu1_uop.is_jump && !dut.alu1_mispred) ||
+      (dut.alu2_wb_valid && (dut.alu2_wb_tag == dut.rob_head_ptr) &&
+       dut.alu2_uop.is_branch && !dut.alu2_uop.is_jump && !dut.alu2_mispred) ||
+      (dut.alu3_wb_valid && (dut.alu3_wb_tag == dut.rob_head_ptr) &&
+       dut.alu3_uop.is_branch && !dut.alu3_uop.is_jump && !dut.alu3_mispred);
+  always_comb begin
+    dbg_cond_branch_issue_count_o = '0;
+    if (dut.bru_en && dut.bru_uop.is_branch && !dut.bru_uop.is_jump) begin
+      dbg_cond_branch_issue_count_o++;
+    end
+    if (dut.alu0_en && dut.alu0_uop.is_branch && !dut.alu0_uop.is_jump) begin
+      dbg_cond_branch_issue_count_o++;
+    end
+    if (dut.alu1_en && dut.alu1_uop.is_branch && !dut.alu1_uop.is_jump) begin
+      dbg_cond_branch_issue_count_o++;
+    end
+    if (dut.alu2_en && dut.alu2_uop.is_branch && !dut.alu2_uop.is_jump) begin
+      dbg_cond_branch_issue_count_o++;
+    end
+    if (dut.alu3_en && dut.alu3_uop.is_branch && !dut.alu3_uop.is_jump) begin
+      dbg_cond_branch_issue_count_o++;
+    end
+  end
 
 endmodule

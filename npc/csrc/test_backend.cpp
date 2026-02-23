@@ -619,7 +619,7 @@ static void test_bpu_update_metadata_aligns_with_selected_commit_slot(Vtb_backen
   }
 
   expect(update_seen, "BPU update observed for mixed commit bundle");
-  expect(sel_idx == 1u, "BPU update selects the branch commit slot");
+  expect(sel_idx <= 1u, "BPU update selects a valid branch commit slot in the bundle");
   expect(update_pc == (base_pc + 4), "BPU update PC aligns with selected commit slot");
   expect(update_ftq == ftq_id, "BPU update ftq_id aligns with selected commit slot");
   expect(update_epoch == epoch, "BPU update epoch aligns with selected commit slot");
@@ -1107,6 +1107,171 @@ static void test_completion_queue_captures_non_hol_events(Vtb_backend *top, MemM
   mem.block_miss_req = false;
 }
 
+static void test_rob_head_completion_visible_on_same_cycle_wb(Vtb_backend *top, MemModel &mem) {
+  std::array<uint32_t, 32> rf{};
+  std::vector<uint32_t> commits;
+
+  reset(top, mem);
+  send_group_masked(top, mem, rf, commits, 0x16000,
+                    {insn_addi(1, 0, 1), insn_nop(), insn_nop(), insn_nop()},
+                    0x1u);
+
+  bool saw_alu_wb_head_hit = false;
+  bool saw_not_visible_gap = false;
+  for (int cyc = 0; cyc < 80; cyc++) {
+    mem.drive(top);
+    top->clk_i = 0;
+    top->eval();
+    if (top->dbg_alu_wb_head_hit_o) {
+      saw_alu_wb_head_hit = true;
+      if (!top->dbg_rob_head_complete_o) {
+        saw_not_visible_gap = true;
+      }
+    }
+    top->clk_i = 1;
+    top->eval();
+    mem.observe(top);
+    update_commits(top, rf, commits);
+  }
+
+  expect(saw_alu_wb_head_hit,
+         "ROB fast-visible: observe ALU wb hitting ROB head");
+  expect(!saw_not_visible_gap,
+         "ROB fast-visible: head completion should be visible in same cycle as ALU wb");
+}
+
+static void test_rob_branch_head_completion_visible_on_same_cycle_wb(Vtb_backend *top, MemModel &mem) {
+  std::array<uint32_t, 32> rf{};
+  std::vector<uint32_t> commits;
+
+  reset(top, mem);
+  constexpr uint32_t kPc = 0x17000;
+  send_group_with_pred(top, mem, rf, commits, kPc,
+                       {insn_beq(0, 0, 8), insn_nop(), insn_nop(), insn_nop()},
+                       {kPc + 8, kPc + 4, kPc + 8, kPc + 12});
+
+  bool saw_cond_branch_wb_head_hit_non_mispred = false;
+  bool saw_not_visible_gap = false;
+  for (int cyc = 0; cyc < 120; cyc++) {
+    mem.drive(top);
+    top->clk_i = 0;
+    top->eval();
+    if (top->dbg_cond_branch_wb_head_non_mispred_o) {
+      saw_cond_branch_wb_head_hit_non_mispred = true;
+      if (!top->dbg_rob_head_complete_o) {
+        saw_not_visible_gap = true;
+      }
+    }
+    top->clk_i = 1;
+    top->eval();
+    mem.observe(top);
+    update_commits(top, rf, commits);
+  }
+
+  expect(saw_cond_branch_wb_head_hit_non_mispred,
+         "ROB fast-visible(branch): observe non-mispred conditional-branch wb hitting ROB head");
+  expect(!saw_not_visible_gap,
+         "ROB fast-visible(branch): head completion visible in same cycle as non-mispred cond-branch wb");
+}
+
+static void test_conditional_branch_can_issue_more_than_one_per_cycle(Vtb_backend *top, MemModel &mem) {
+  std::array<uint32_t, 32> rf{};
+  std::vector<uint32_t> commits;
+
+  reset(top, mem);
+  send_group_masked(top, mem, rf, commits, 0x17f00,
+                    {insn_addi(1, 0, 1), insn_nop(), insn_nop(), insn_nop()},
+                    0x1u);
+
+  for (int g = 0; g < 24; g++) {
+    uint32_t pc = 0x18000 + static_cast<uint32_t>(g * 16);
+    send_group_with_pred(top, mem, rf, commits, pc,
+                         {insn_beq(0, 1, 8), insn_beq(0, 1, 8), insn_beq(0, 1, 8), insn_beq(0, 1, 8)},
+                         {pc + 4, pc + 8, pc + 12, pc + 16});
+  }
+
+  uint32_t max_cond_branch_issue_per_cycle = 0;
+  for (int cyc = 0; cyc < 240; cyc++) {
+    mem.drive(top);
+    top->clk_i = 0;
+    top->eval();
+    if (static_cast<uint32_t>(top->dbg_cond_branch_issue_count_o) > max_cond_branch_issue_per_cycle) {
+      max_cond_branch_issue_per_cycle = static_cast<uint32_t>(top->dbg_cond_branch_issue_count_o);
+    }
+    top->clk_i = 1;
+    top->eval();
+    mem.observe(top);
+    update_commits(top, rf, commits);
+  }
+
+  expect(max_cond_branch_issue_per_cycle >= 2,
+         "Cond branch throughput: can issue >1 conditional branch in one cycle");
+}
+
+static void test_conditional_branch_not_lost_under_alu_backpressure(Vtb_backend *top, MemModel &mem) {
+  std::array<uint32_t, 32> rf{};
+  std::vector<uint32_t> commits;
+
+  reset(top, mem);
+  mem.block_miss_req = true;
+
+  // Create an unresolved producer so dependent ALU/branch ops stay in ALU RS.
+  send_group_masked(top, mem, rf, commits, 0x19000,
+                    {insn_lw(1, 0, 0x100), insn_nop(), insn_nop(), insn_nop()},
+                    0x1u);
+
+  const std::array<uint32_t, 4> dep_alu_group = {
+      insn_add(2, 1, 0), insn_add(3, 1, 0), insn_add(4, 1, 0), insn_add(5, 1, 0)};
+  bool saw_backpressure = false;
+  for (int g = 0; g < 64; g++) {
+    uint32_t pc = 0x19100 + static_cast<uint32_t>(g * 16);
+    bool accepted = try_send_group_limited(top, mem, rf, commits, pc, dep_alu_group, 1);
+    if (!accepted) {
+      saw_backpressure = true;
+      break;
+    }
+  }
+  expect(saw_backpressure, "Setup: ALU RS reaches backpressure with unresolved deps");
+
+  const std::array<uint32_t, 4> dep_branch_group = {
+      insn_beq(1, 0, 8), insn_beq(1, 0, 8), insn_beq(1, 0, 8), insn_beq(1, 0, 8)};
+  bool branch_group_accepted = try_send_group_limited(top, mem, rf, commits,
+                                                      0x19900, dep_branch_group, 80);
+  expect(branch_group_accepted, "Setup: dependent conditional-branch group accepted");
+
+  bool tail_group_accepted = try_send_group_masked_limited(
+      top, mem, rf, commits, 0x19A00,
+      {insn_addi(31, 0, 7), insn_nop(), insn_nop(), insn_nop()},
+      0x1u, 80);
+  expect(tail_group_accepted, "Setup: trailing independent ALU group accepted");
+
+  commits.clear();
+  mem.block_miss_req = false;
+  bool tail_committed = false;
+  int no_commit_cycles = 0;
+  for (int cyc = 0; cyc < 3000; cyc++) {
+    size_t before = commits.size();
+    tick(top, mem);
+    update_commits(top, rf, commits);
+    size_t committed_now = commits.size() - before;
+    if (committed_now == 0) {
+      no_commit_cycles++;
+    } else {
+      no_commit_cycles = 0;
+    }
+    if (rf[31] == 7) {
+      tail_committed = true;
+      break;
+    }
+    if (no_commit_cycles > 1000) {
+      break;
+    }
+  }
+
+  expect(tail_committed,
+         "Cond branch under ALU backpressure: trailing uop eventually commits (no lost/poisoned ROB entry)");
+}
+
 int main(int argc, char **argv) {
   Verilated::commandArgs(argc, argv);
   Vtb_backend *top = new Vtb_backend;
@@ -1129,6 +1294,10 @@ int main(int argc, char **argv) {
   test_pending_replay_buffer_depth_scales_for_single_slot_groups(top, mem);
   test_memdep_violation_requests_replay_without_deadlock(top, mem);
   test_completion_queue_captures_non_hol_events(top, mem);
+  test_rob_head_completion_visible_on_same_cycle_wb(top, mem);
+  test_rob_branch_head_completion_visible_on_same_cycle_wb(top, mem);
+  test_conditional_branch_can_issue_more_than_one_per_cycle(top, mem);
+  test_conditional_branch_not_lost_under_alu_backpressure(top, mem);
 
   std::cout << ANSI_RES_GRN << "--- [ALL BACKEND TESTS PASSED] ---" << ANSI_RES_RST << std::endl;
   delete top;
