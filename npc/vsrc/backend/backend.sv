@@ -259,6 +259,16 @@ module backend #(
       .wb_ecause_i     (wb_ecause),
       .wb_is_mispred_i (wb_is_mispred),
       .wb_redirect_pc_i(wb_redirect_pc),
+      .fast_alu_valid_i({alu3_wb_valid, alu2_wb_valid, alu1_wb_valid, alu0_wb_valid}),
+      .fast_alu_rob_idx_i({alu3_wb_tag, alu2_wb_tag, alu1_wb_tag, alu0_wb_tag}),
+      .fast_alu_data_i({alu3_wb_data, alu2_wb_data, alu1_wb_data, alu0_wb_data}),
+      .fast_alu_is_mispred_i({alu3_mispred, alu2_mispred, alu1_mispred, alu0_mispred}),
+      .fast_alu_redirect_pc_i({alu3_redirect_pc, alu2_redirect_pc, alu1_redirect_pc, alu0_redirect_pc}),
+      .fast_bru_valid_i(bru_wb_valid),
+      .fast_bru_rob_idx_i(bru_wb_tag),
+      .fast_bru_data_i(bru_wb_data),
+      .fast_bru_redirect_pc_i(bru_redirect_pc),
+      .fast_bru_can_commit_i(bru_wb_valid && !bru_mispred),
 
       .commit_valid_o     (commit_valid),
       .commit_pc_o        (commit_pc),
@@ -532,8 +542,13 @@ module backend #(
             if (can_take) alu_budget--;
           end
           FU_BRANCH: begin
-            can_take = (bru_budget > 0);
-            if (can_take) bru_budget--;
+            if (rename_src_uops[i].is_jump) begin
+              can_take = (bru_budget > 0);
+              if (can_take) bru_budget--;
+            end else begin
+              can_take = (alu_budget > 0);
+              if (can_take) alu_budget--;
+            end
           end
           FU_LSU: begin
             can_take = (lsu_budget > 0);
@@ -846,7 +861,13 @@ module backend #(
       if (rename_src_valid[i]) begin
         unique case (rename_src_uops[i].fu)
           FU_ALU:    alu_need_cnt++;
-          FU_BRANCH: bru_need_cnt++;
+          FU_BRANCH: begin
+            if (rename_src_uops[i].is_jump) begin
+              bru_need_cnt++;
+            end else begin
+              alu_need_cnt++;
+            end
+          end
           FU_LSU:    lsu_need_cnt++;
           FU_MUL,
           FU_DIV:    mdu_need_cnt++;
@@ -971,16 +992,29 @@ module backend #(
             alu_k++;
           end
           FU_BRANCH: begin
-            bru_dispatch_valid[bru_k] = 1'b1;
-            bru_dispatch_op[bru_k]    = rename_sel_uops[i];
-            bru_dispatch_dst[bru_k]   = issue_rd_rob_idx[i];
-            bru_dispatch_v1[bru_k]    = issue_v1[i];
-            bru_dispatch_q1[bru_k]    = issue_q1[i];
-            bru_dispatch_r1[bru_k]    = issue_r1[i];
-            bru_dispatch_v2[bru_k]    = issue_v2[i];
-            bru_dispatch_q2[bru_k]    = issue_q2[i];
-            bru_dispatch_r2[bru_k]    = issue_r2[i];
-            bru_k++;
+            if (rename_sel_uops[i].is_jump) begin
+              bru_dispatch_valid[bru_k] = 1'b1;
+              bru_dispatch_op[bru_k]    = rename_sel_uops[i];
+              bru_dispatch_dst[bru_k]   = issue_rd_rob_idx[i];
+              bru_dispatch_v1[bru_k]    = issue_v1[i];
+              bru_dispatch_q1[bru_k]    = issue_q1[i];
+              bru_dispatch_r1[bru_k]    = issue_r1[i];
+              bru_dispatch_v2[bru_k]    = issue_v2[i];
+              bru_dispatch_q2[bru_k]    = issue_q2[i];
+              bru_dispatch_r2[bru_k]    = issue_r2[i];
+              bru_k++;
+            end else begin
+              alu_dispatch_valid[alu_k] = 1'b1;
+              alu_dispatch_op[alu_k]    = rename_sel_uops[i];
+              alu_dispatch_dst[alu_k]   = issue_rd_rob_idx[i];
+              alu_dispatch_v1[alu_k]    = issue_v1[i];
+              alu_dispatch_q1[alu_k]    = issue_q1[i];
+              alu_dispatch_r1[alu_k]    = issue_r1[i];
+              alu_dispatch_v2[alu_k]    = issue_v2[i];
+              alu_dispatch_q2[alu_k]    = issue_q2[i];
+              alu_dispatch_r2[alu_k]    = issue_r2[i];
+              alu_k++;
+            end
           end
           FU_LSU: begin
             lsu_dispatch_valid[lsu_k] = 1'b1;
