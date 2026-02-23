@@ -134,12 +134,15 @@ module lsu_group #(
   logic                [         N_LSU-1:0]                    ld_req_grant;
   logic                [LANE_SEL_WIDTH-1:0]                    ld_req_lane_idx;
   logic                                                        ld_req_grant_valid;
+  logic                                                        ld_req_fire;
+  logic                [LANE_SEL_WIDTH-1:0]                    ld_req_rr_q;
 
   logic                [         N_LSU-1:0]                    wb_grant;
   logic                [LANE_SEL_WIDTH-1:0]                    wb_lane_idx;
   logic                                                        wb_grant_valid;
   logic                                                        wb_fire;
   logic                                                        wb_fire_is_store;
+  logic                [LANE_SEL_WIDTH-1:0]                    wb_rr_q;
 
   logic                                                        lq_alloc_valid;
   logic                                                        lq_alloc_ready;
@@ -172,6 +175,20 @@ module lsu_group #(
 
   logic rsp_id_in_range;
   logic [LANE_SEL_WIDTH-1:0] rsp_lane_idx;
+
+  function automatic logic [LANE_SEL_WIDTH-1:0] rr_next_idx(
+      input logic [LANE_SEL_WIDTH-1:0] idx
+  );
+    begin
+      if (N_LSU <= 1) begin
+        rr_next_idx = '0;
+      end else if (idx == LANE_SEL_WIDTH'(N_LSU - 1)) begin
+        rr_next_idx = '0;
+      end else begin
+        rr_next_idx = idx + LANE_SEL_WIDTH'(1);
+      end
+    end
+  endfunction
 
   function automatic logic [SQ_BE_WIDTH-1:0] store_be_mask(input decode_pkg::lsu_op_e op,
                                                             input logic [Cfg.PLEN-1:0] addr);
@@ -414,11 +431,16 @@ module lsu_group #(
     ld_req_grant = '0;
     ld_req_lane_idx = '0;
     ld_req_grant_valid = 1'b0;
-    for (int i = 0; i < N_LSU; i++) begin
-      if (!ld_req_grant_valid && lane_ld_req_valid[i]) begin
+    for (int off = 0; off < N_LSU; off++) begin
+      int unsigned idx;
+      idx = $unsigned(ld_req_rr_q) + off;
+      if (idx >= N_LSU) begin
+        idx -= N_LSU;
+      end
+      if (!ld_req_grant_valid && lane_ld_req_valid[idx]) begin
         ld_req_grant_valid = 1'b1;
-        ld_req_grant[i] = 1'b1;
-        ld_req_lane_idx = LANE_SEL_WIDTH'(i);
+        ld_req_grant[idx] = 1'b1;
+        ld_req_lane_idx = LANE_SEL_WIDTH'(idx);
       end
     end
   end
@@ -453,11 +475,16 @@ module lsu_group #(
     wb_grant = '0;
     wb_lane_idx = '0;
     wb_grant_valid = 1'b0;
-    for (int i = 0; i < N_LSU; i++) begin
-      if (!wb_grant_valid && lane_wb_valid[i]) begin
+    for (int off = 0; off < N_LSU; off++) begin
+      int unsigned idx;
+      idx = $unsigned(wb_rr_q) + off;
+      if (idx >= N_LSU) begin
+        idx -= N_LSU;
+      end
+      if (!wb_grant_valid && lane_wb_valid[idx]) begin
         wb_grant_valid = 1'b1;
-        wb_grant[i] = 1'b1;
-        wb_lane_idx = LANE_SEL_WIDTH'(i);
+        wb_grant[idx] = 1'b1;
+        wb_lane_idx = LANE_SEL_WIDTH'(idx);
       end
     end
   end
@@ -484,6 +511,7 @@ module lsu_group #(
   end
 
   assign wb_fire = wb_grant_valid && wb_ready_i;
+  assign ld_req_fire = ld_req_grant_valid && ld_req_ready_i;
 
   always_comb begin
     wb_fire_is_store = 1'b0;
@@ -508,10 +536,20 @@ module lsu_group #(
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (!rst_ni) begin
       lane_has_store_q <= '0;
+      wb_rr_q <= '0;
+      ld_req_rr_q <= '0;
     end else if (flush_i) begin
       lane_has_store_q <= '0;
+      wb_rr_q <= '0;
+      ld_req_rr_q <= '0;
     end else begin
       lane_has_store_q <= lane_has_store_d;
+      if (wb_fire) begin
+        wb_rr_q <= rr_next_idx(wb_lane_idx);
+      end
+      if (ld_req_fire) begin
+        ld_req_rr_q <= rr_next_idx(ld_req_lane_idx);
+      end
     end
   end
 

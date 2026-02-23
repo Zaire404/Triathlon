@@ -145,6 +145,9 @@ module lsu_lane #(
   logic [Cfg.PLEN-1:0] eff_addr;
   logic misaligned;
   logic [Cfg.XLEN-1:0] fwd_data;
+  logic handoff_from_resp_w;
+  logic handoff_from_ld_rsp_w;
+  logic req_fire_w;
 
   assign is_load       = uop_i.is_load;
   assign is_store      = uop_i.is_store;
@@ -165,6 +168,25 @@ module lsu_lane #(
     S_RESP
   } lsu_state_e;
 
+  function automatic lsu_state_e next_state_after_accept(input logic acc_is_store,
+                                                          input logic acc_is_load,
+                                                          input logic acc_misaligned,
+                                                          input logic acc_sb_hit);
+    begin
+      if (acc_is_store) begin
+        next_state_after_accept = S_RESP;
+      end else if (acc_is_load) begin
+        if (acc_misaligned || acc_sb_hit) begin
+          next_state_after_accept = S_RESP;
+        end else begin
+          next_state_after_accept = S_LD_REQ;
+        end
+      end else begin
+        next_state_after_accept = S_RESP;
+      end
+    end
+  endfunction
+
   lsu_state_e state_q, state_d;
 
   // In-flight load request
@@ -181,10 +203,13 @@ module lsu_lane #(
   // ---------------------------------------------------------
   // Output defaults
   // ---------------------------------------------------------
-  assign req_ready_o = (state_q == S_IDLE) && !flush_i;
+  assign handoff_from_resp_w = (state_q == S_RESP) && wb_ready_i;
+  assign handoff_from_ld_rsp_w = (state_q == S_LD_RSP) && ld_rsp_valid_i && wb_ready_i;
+  assign req_ready_o = !flush_i && ((state_q == S_IDLE) || handoff_from_resp_w || handoff_from_ld_rsp_w);
+  assign req_fire_w = req_valid_i && req_ready_o;
 
   // Store buffer execute write (pulse when accepting a store)
-  assign sb_ex_valid_o = (state_q == S_IDLE) && req_valid_i && req_ready_o && is_store && !misaligned;
+  assign sb_ex_valid_o = req_fire_w && is_store && !misaligned;
   assign sb_ex_sb_id_o = sb_id_i;
   assign sb_ex_addr_o = eff_addr;
   assign sb_ex_data_o = rs2_data_i;
@@ -192,8 +217,8 @@ module lsu_lane #(
   assign sb_ex_rob_idx_o = rob_tag_i;
 
   // Store-buffer forwarding address (only meaningful for incoming load)
-  assign sb_load_addr_o = (state_q == S_IDLE && req_valid_i && is_load) ? eff_addr : '0;
-  assign sb_load_rob_idx_o = rob_tag_i;
+  assign sb_load_addr_o = (req_fire_w && is_load) ? eff_addr : '0;
+  assign sb_load_rob_idx_o = req_fire_w ? rob_tag_i : '0;
 
   // D-Cache load port
   assign ld_req_valid_o = (state_q == S_LD_REQ);
@@ -203,11 +228,23 @@ module lsu_lane #(
   assign ld_rsp_ready_o = (state_q == S_LD_RSP);
 
   // Writeback (to CDB/ROB)
-  assign wb_valid_o = (state_q == S_RESP);
-  assign wb_rob_idx_o = resp_tag_q;
-  assign wb_data_o = resp_data_q;
-  assign wb_exception_o = resp_exc_q;
-  assign wb_ecause_o = resp_ecause_q;
+  logic rsp_bypass_wb_valid;
+  logic [ROB_IDX_WIDTH-1:0] rsp_bypass_wb_tag;
+  logic [Cfg.XLEN-1:0] rsp_bypass_wb_data;
+  logic rsp_bypass_wb_exc;
+  logic [ECAUSE_WIDTH-1:0] rsp_bypass_wb_ecause;
+
+  assign rsp_bypass_wb_valid = (state_q == S_LD_RSP) && ld_rsp_valid_i;
+  assign rsp_bypass_wb_tag = req_tag_q;
+  assign rsp_bypass_wb_data = ld_rsp_data_i;
+  assign rsp_bypass_wb_exc = ld_rsp_err_i;
+  assign rsp_bypass_wb_ecause = ld_rsp_err_i ? EXC_LD_ACCESS_FAULT : '0;
+
+  assign wb_valid_o = (state_q == S_RESP) || rsp_bypass_wb_valid;
+  assign wb_rob_idx_o = rsp_bypass_wb_valid ? rsp_bypass_wb_tag : resp_tag_q;
+  assign wb_data_o = rsp_bypass_wb_valid ? rsp_bypass_wb_data : resp_data_q;
+  assign wb_exception_o = rsp_bypass_wb_valid ? rsp_bypass_wb_exc : resp_exc_q;
+  assign wb_ecause_o = rsp_bypass_wb_valid ? rsp_bypass_wb_ecause : resp_ecause_q;
   assign wb_is_mispred_o = 1'b0;
   assign wb_redirect_pc_o = '0;
 
@@ -219,20 +256,8 @@ module lsu_lane #(
 
     unique case (state_q)
       S_IDLE: begin
-        if (req_valid_i && req_ready_o) begin
-          if (is_store) begin
-            state_d = S_RESP;
-          end else if (is_load) begin
-            if (misaligned) begin
-              state_d = S_RESP;
-            end else if (sb_load_hit_i) begin
-              state_d = S_RESP;
-            end else begin
-              state_d = S_LD_REQ;
-            end
-          end else begin
-            state_d = S_RESP;
-          end
+        if (req_fire_w) begin
+          state_d = next_state_after_accept(is_store, is_load, misaligned, sb_load_hit_i);
         end
       end
 
@@ -244,13 +269,25 @@ module lsu_lane #(
 
       S_LD_RSP: begin
         if (ld_rsp_valid_i) begin
-          state_d = S_RESP;
+          if (wb_ready_i) begin
+            if (req_fire_w) begin
+              state_d = next_state_after_accept(is_store, is_load, misaligned, sb_load_hit_i);
+            end else begin
+              state_d = S_IDLE;
+            end
+          end else begin
+            state_d = S_RESP;
+          end
         end
       end
 
       S_RESP: begin
         if (wb_ready_i) begin
-          state_d = S_IDLE;
+          if (req_fire_w) begin
+            state_d = next_state_after_accept(is_store, is_load, misaligned, sb_load_hit_i);
+          end else begin
+            state_d = S_IDLE;
+          end
         end
       end
 
@@ -287,7 +324,7 @@ module lsu_lane #(
         resp_tag_q    <= '0;
       end else begin
         // Accept new request
-        if (state_q == S_IDLE && req_valid_i && req_ready_o) begin
+        if (req_fire_w) begin
           if (is_load && !misaligned && !sb_load_hit_i) begin
             req_addr_q <= eff_addr;
             req_op_q   <= uop_i.lsu_op;
@@ -320,7 +357,7 @@ module lsu_lane #(
         end
 
         // Capture load response
-        if (state_q == S_LD_RSP && ld_rsp_valid_i) begin
+        if (state_q == S_LD_RSP && ld_rsp_valid_i && !wb_ready_i) begin
           resp_tag_q    <= req_tag_q;
           resp_data_q   <= ld_rsp_data_i;
           resp_exc_q    <= ld_rsp_err_i;
