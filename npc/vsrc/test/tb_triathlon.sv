@@ -115,6 +115,14 @@ module tb_triathlon #(
     output logic [$clog2(Cfg.RS_DEPTH+1)-1:0]  dbg_free_bru_o,
     output logic [$clog2(Cfg.RS_DEPTH+1)-1:0]  dbg_free_lsu_o,
     output logic [$clog2(Cfg.RS_DEPTH+1)-1:0]  dbg_free_csr_o,
+    output logic                               dbg_alu_rs_ready_any_o,
+    output logic                               dbg_alu_issue_any_o,
+    output logic                               dbg_alu_ready_not_issued_o,
+    output logic                               dbg_alu_wb_any_o,
+    output logic                               dbg_alu_wb_head_hit_o,
+    output logic                               dbg_bru_rs_ready_any_o,
+    output logic                               dbg_bru_ready_not_issued_o,
+    output logic                               dbg_bru_wb_head_hit_o,
 
     // Debug (LSU load path)
     output logic                               dbg_lsu_ld_req_valid_o,
@@ -366,6 +374,37 @@ module tb_triathlon #(
   assign dbg_free_bru_o = dut.u_backend.bru_free_count;
   assign dbg_free_lsu_o = dut.u_backend.lsu_free_count;
   assign dbg_free_csr_o = dut.u_backend.csr_free_count;
+
+  logic alu_rs_ready_any;
+  logic alu_issue_any;
+  logic alu_wb_any;
+  logic alu_wb_head_hit;
+  logic bru_rs_ready_any;
+  logic bru_wb_head_hit;
+
+  assign alu_rs_ready_any = |dut.u_backend.u_issue_alu.rs_ready_wires;
+  assign alu_issue_any = dut.u_backend.alu0_en | dut.u_backend.alu1_en |
+                         dut.u_backend.alu2_en | dut.u_backend.alu3_en;
+  assign alu_wb_any = dut.u_backend.alu0_wb_valid | dut.u_backend.alu1_wb_valid |
+                      dut.u_backend.alu2_wb_valid | dut.u_backend.alu3_wb_valid;
+  assign alu_wb_head_hit =
+      (dut.u_backend.alu0_wb_valid && (dut.u_backend.alu0_wb_tag == dut.u_backend.rob_head_ptr)) ||
+      (dut.u_backend.alu1_wb_valid && (dut.u_backend.alu1_wb_tag == dut.u_backend.rob_head_ptr)) ||
+      (dut.u_backend.alu2_wb_valid && (dut.u_backend.alu2_wb_tag == dut.u_backend.rob_head_ptr)) ||
+      (dut.u_backend.alu3_wb_valid && (dut.u_backend.alu3_wb_tag == dut.u_backend.rob_head_ptr));
+
+  assign bru_rs_ready_any = |dut.u_backend.u_issue_bru.rs_ready_wires;
+  assign bru_wb_head_hit = dut.u_backend.bru_wb_valid &&
+                           (dut.u_backend.bru_wb_tag == dut.u_backend.rob_head_ptr);
+
+  assign dbg_alu_rs_ready_any_o = alu_rs_ready_any;
+  assign dbg_alu_issue_any_o = alu_issue_any;
+  assign dbg_alu_ready_not_issued_o = alu_rs_ready_any && !alu_issue_any;
+  assign dbg_alu_wb_any_o = alu_wb_any;
+  assign dbg_alu_wb_head_hit_o = alu_wb_head_hit;
+  assign dbg_bru_rs_ready_any_o = bru_rs_ready_any;
+  assign dbg_bru_ready_not_issued_o = bru_rs_ready_any && !dut.u_backend.bru_en;
+  assign dbg_bru_wb_head_hit_o = bru_wb_head_hit;
 
   // Debug: LSU load path
   assign dbg_lsu_ld_req_valid_o = dut.u_backend.lsu_ld_req_valid;

@@ -729,6 +729,9 @@ int main(int argc, char **argv) {
   std::unordered_map<std::string, uint64_t> stall_decode_blocked_detail_hist;
   std::unordered_map<std::string, uint64_t> stall_rob_backpressure_detail_hist;
   std::unordered_map<std::string, uint64_t> stall_other_detail_hist;
+  uint64_t branch_ready_not_issued_cycles = 0;
+  uint64_t alu_ready_not_issued_cycles = 0;
+  uint64_t complete_not_visible_cycles = 0;
   uint64_t ifu_fq_enq = 0;
   uint64_t ifu_fq_deq = 0;
   uint64_t ifu_fq_bypass = 0;
@@ -1141,8 +1144,24 @@ int main(int argc, char **argv) {
     }
 
     if (!rob_head_complete) {
-      if (fu == 1u) return "rob_head_alu_incomplete_nonbp";
-      if (fu == 2u) return "rob_head_branch_incomplete_nonbp";
+      if (fu == 1u) {
+        if (top->dbg_alu_wb_head_hit_o) return "rob_head_alu_complete_not_visible_incomplete_nonbp";
+        if (top->dbg_alu_issue_any_o) return "rob_head_alu_exec_wait_wb_incomplete_nonbp";
+        if (top->dbg_alu_ready_not_issued_o) return "rob_head_alu_ready_not_issued_incomplete_nonbp";
+        if (!top->dbg_gate_alu_o && static_cast<uint32_t>(top->dbg_need_alu_o) > 0u) {
+          return "rob_head_alu_dispatch_blocked_incomplete_nonbp";
+        }
+        return "rob_head_alu_wait_operand_or_select_incomplete_nonbp";
+      }
+      if (fu == 2u) {
+        if (top->dbg_bru_wb_head_hit_o) return "rob_head_branch_complete_not_visible_incomplete_nonbp";
+        if (top->dbg_bru_valid_o) return "rob_head_branch_exec_wait_wb_incomplete_nonbp";
+        if (top->dbg_bru_ready_not_issued_o) return "rob_head_branch_ready_not_issued_incomplete_nonbp";
+        if (!top->dbg_gate_bru_o && static_cast<uint32_t>(top->dbg_need_bru_o) > 0u) {
+          return "rob_head_branch_dispatch_blocked_incomplete_nonbp";
+        }
+        return "rob_head_branch_wait_operand_or_select_incomplete_nonbp";
+      }
       if (fu == 3u) {
         bool ld_valid = top->dbg_lsu_ld_req_valid_o;
         bool ld_ready = top->dbg_lsu_ld_req_ready_o;
@@ -1315,6 +1334,11 @@ int main(int argc, char **argv) {
     emit_detail_summary("stallm4", "rob_backpressure_total", stall_cycle_hist[kStallROBBackpressure],
                         stall_rob_backpressure_detail_hist);
     emit_detail_summary("stallm5", "other_total", stall_cycle_hist[kStallOther], stall_other_detail_hist);
+    std::cout << "[stallm6] mode=cycle"
+              << " branch_ready_not_issued=" << branch_ready_not_issued_cycles
+              << " alu_ready_not_issued=" << alu_ready_not_issued_cycles
+              << " complete_not_visible_to_rob=" << complete_not_visible_cycles
+              << "\n";
     emit_ranked_summary("hotpcm", "pc", commit_pc_hist);
     emit_ranked_summary("hotinstm", "inst", commit_inst_hist);
   };
@@ -1641,6 +1665,12 @@ int main(int argc, char **argv) {
         stall_rob_backpressure_detail_hist[classify_rob_backpressure_detail_cycle()]++;
       } else if (stall_kind == kStallOther) {
         stall_other_detail_hist[classify_other_detail_cycle()]++;
+      }
+      if (top->dbg_bru_ready_not_issued_o) branch_ready_not_issued_cycles++;
+      if (top->dbg_alu_ready_not_issued_o) alu_ready_not_issued_cycles++;
+      if (!top->dbg_rob_head_complete_o &&
+          (top->dbg_bru_wb_head_hit_o || top->dbg_alu_wb_head_hit_o)) {
+        complete_not_visible_cycles++;
       }
       if (args.stall_trace && args.stall_threshold > 0 &&
           (no_commit_cycles == args.stall_threshold ||

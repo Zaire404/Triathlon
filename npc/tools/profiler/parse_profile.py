@@ -777,6 +777,7 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
     has_stall_other_summary = False
     stall_other_total_summary = 0
     stall_other_detail_summary: Counter[str] = Counter()
+    stall_other_aux_summary: Counter[str] = Counter()
     has_ifu_fq_summary = False
     ifu_fq_summary: dict[str, int] = {}
     ifu_fq_occ_hist_summary: dict[int, int] = {}
@@ -1087,6 +1088,15 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
                 stall_other_detail_summary[key] += _parse_int(val, 0)
             if stall_other_total_summary == 0:
                 stall_other_total_summary = sum(stall_other_detail_summary.values())
+            continue
+
+        stallm6_pos = raw.find("[stallm6]")
+        if stallm6_pos >= 0:
+            kv = _parse_kv_pairs(raw[stallm6_pos:])
+            for key, val in kv.items():
+                if key == "mode":
+                    continue
+                stall_other_aux_summary[key] = _parse_int(val, 0)
             continue
 
         ifum_pos = raw.find("[ifum]")
@@ -1582,6 +1592,7 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
         "stall_rob_backpressure_detail": dict(stall_rob_backpressure_detail),
         "stall_other_total": stall_other_total,
         "stall_other_detail": dict(stall_other_detail),
+        "stall_other_aux": dict(stall_other_aux_summary),
         "stall_frontend_empty_total": stall_frontend_empty_total,
         "stall_frontend_empty_detail": dict(stall_frontend_empty_detail_summary),
         "ifu_fq": ifu_fq,
@@ -1646,6 +1657,7 @@ def _bench_markdown(name: str, data: dict[str, Any]) -> str:
     rob_backpressure_detail = data.get("stall_rob_backpressure_detail", {})
     other_total = data.get("stall_other_total", 0)
     other_detail = data.get("stall_other_detail", {})
+    other_aux = data.get("stall_other_aux", {})
     frontend_empty_total = data.get("stall_frontend_empty_total", 0)
     frontend_empty_detail = data.get("stall_frontend_empty_detail", {})
     ifu_fq = data.get("ifu_fq", {})
@@ -1799,6 +1811,14 @@ def _bench_markdown(name: str, data: dict[str, Any]) -> str:
                 lines.append(f"- {key}: `{val}` ({_fmt_pct(val, other_total)})")
         else:
             lines.append("- (no other detail breakdown)")
+
+    lines.append("")
+    lines.append("Other Auxiliary Counters:")
+    if other_aux:
+        for key, val in sorted(other_aux.items(), key=lambda x: x[0]):
+            lines.append(f"- {key}: `{val}`")
+    else:
+        lines.append("- (no auxiliary counters)")
 
     lines.append("")
     lines.append("Flush Reasons:")

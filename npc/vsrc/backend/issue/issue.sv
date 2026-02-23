@@ -198,6 +198,8 @@ module issue #(
       .cdb_valid(cdb_valid),
       .cdb_tag  (cdb_tag),
       .cdb_value(cdb_val),
+      .comb_wakeup_en(1'b0),
+      .cdb_wakeup_mask({CDB_W{1'b1}}),
 
       .busy_vector(rs_busy_wires),
 

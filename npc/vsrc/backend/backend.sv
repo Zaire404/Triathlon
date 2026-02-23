@@ -1091,7 +1091,8 @@ module backend #(
       .RS_DEPTH(RS_DEPTH),
       .DATA_W(Cfg.XLEN),
       .TAG_W (ROB_IDX_WIDTH),
-      .CDB_W (WB_WIDTH)
+      .CDB_W (WB_WIDTH),
+      .COMB_WAKEUP_EN(1'b0)
   ) u_issue_bru (
       .clk(clk_i),
       .rst_n(rst_ni),
@@ -1115,6 +1116,7 @@ module backend #(
       .cdb_valid(cdb_valid),
       .cdb_tag  (cdb_tag),
       .cdb_val  (cdb_val),
+      .cdb_wakeup_mask({WB_WIDTH{1'b1}}),
 
       .fu_en (bru_en),
       .fu_uop(bru_uop),
@@ -1170,7 +1172,8 @@ module backend #(
       .RS_DEPTH(RS_DEPTH),
       .DATA_W(Cfg.XLEN),
       .TAG_W (ROB_IDX_WIDTH),
-      .CDB_W (WB_WIDTH)
+      .CDB_W (WB_WIDTH),
+      .COMB_WAKEUP_EN(1'b0)
   ) u_issue_csr (
       .clk(clk_i),
       .rst_n(rst_ni),
@@ -1194,6 +1197,7 @@ module backend #(
       .cdb_valid(cdb_valid),
       .cdb_tag  (cdb_tag),
       .cdb_val  (cdb_val),
+      .cdb_wakeup_mask({WB_WIDTH{1'b1}} & ~(WB_WIDTH'(1) << 6)),
 
       .fu_en (csr_en),
       .fu_uop(csr_uop),

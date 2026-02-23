@@ -876,6 +876,29 @@ class ParseProfileTest(unittest.TestCase):
         self.assertNotIn("rob_head_lsu_incomplete_wait_req_ready", detail)
         self.assertNotIn("rob_head_lsu_incomplete_wait_rsp_valid", detail)
 
+    def test_cycle_stallm6_other_aux_counters_are_parsed(self):
+        mod = load_parser_module()
+        with tempfile.TemporaryDirectory() as td:
+            log = Path(td) / "coremark.log"
+            log.write_text(
+                "\n".join(
+                    [
+                        "[stallm] mode=cycle stall_total_cycles=40 flush_recovery=1 icache_miss_wait=1 dcache_miss_wait=1 rob_backpressure=8 frontend_empty=8 decode_blocked=6 lsu_req_blocked=2 other=13",
+                        "[stallm5] mode=cycle other_total=13 rob_head_alu_incomplete_nonbp=5 rob_head_branch_incomplete_nonbp=8",
+                        "[stallm6] mode=cycle branch_ready_not_issued=11 alu_ready_not_issued=22 complete_not_visible_to_rob=33",
+                        "IPC=0.500000 CPI=2.000000 cycles=100 commits=50",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            result = mod.parse_single_log(log)
+
+        aux = result["stall_other_aux"]
+        self.assertEqual(aux["branch_ready_not_issued"], 11)
+        self.assertEqual(aux["alu_ready_not_issued"], 22)
+        self.assertEqual(aux["complete_not_visible_to_rob"], 33)
+
     def test_sampled_stall_other_secondary_breakdown(self):
         mod = load_parser_module()
         with tempfile.TemporaryDirectory() as td:

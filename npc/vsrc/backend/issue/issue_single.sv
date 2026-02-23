@@ -6,7 +6,8 @@ module issue_single #(
     parameter RS_DEPTH = Cfg.RS_DEPTH,
     parameter DATA_W   = Cfg.XLEN,
     parameter TAG_W    = 6,
-    parameter CDB_W    = 4
+    parameter CDB_W    = 4,
+    parameter bit COMB_WAKEUP_EN = 1'b1
 ) (
     input wire clk,
     input wire rst_n,
@@ -34,6 +35,7 @@ module issue_single #(
     input wire [ CDB_W-1:0] cdb_valid,
     input wire [ TAG_W-1:0] cdb_tag  [0:CDB_W-1],
     input wire [DATA_W-1:0] cdb_val  [0:CDB_W-1],
+    input wire [ CDB_W-1:0] cdb_wakeup_mask,
 
     // FU 接口 (单发射)
     output wire                           fu_en,
@@ -139,6 +141,8 @@ module issue_single #(
       .cdb_valid(cdb_valid),
       .cdb_tag  (cdb_tag),
       .cdb_value(cdb_val),
+      .comb_wakeup_en(COMB_WAKEUP_EN),
+      .cdb_wakeup_mask(cdb_wakeup_mask),
 
       .busy_vector(rs_busy_wires),
 
