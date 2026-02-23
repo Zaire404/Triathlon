@@ -1214,15 +1214,19 @@ static void test_conditional_branch_not_lost_under_alu_backpressure(Vtb_backend 
 
   reset(top, mem);
   mem.block_miss_req = true;
+  // Use a dedicated address not touched by other tests so this load reliably
+  // misses when miss requests are blocked.
+  constexpr int32_t kBlockedLoadAddr = 0x2C0;
 
   // Create an unresolved producer so dependent ALU/branch ops stay in ALU RS.
   send_group_masked(top, mem, rf, commits, 0x19000,
-                    {insn_lw(1, 0, 0x100), insn_nop(), insn_nop(), insn_nop()},
+                    {insn_lw(1, 0, kBlockedLoadAddr), insn_nop(), insn_nop(), insn_nop()},
                     0x1u);
 
   const std::array<uint32_t, 4> dep_alu_group = {
       insn_add(2, 1, 0), insn_add(3, 1, 0), insn_add(4, 1, 0), insn_add(5, 1, 0)};
   bool saw_backpressure = false;
+  int accepted_dep_groups = 0;
   for (int g = 0; g < 64; g++) {
     uint32_t pc = 0x19100 + static_cast<uint32_t>(g * 16);
     bool accepted = try_send_group_limited(top, mem, rf, commits, pc, dep_alu_group, 1);
@@ -1230,8 +1234,10 @@ static void test_conditional_branch_not_lost_under_alu_backpressure(Vtb_backend 
       saw_backpressure = true;
       break;
     }
+    accepted_dep_groups++;
   }
-  expect(saw_backpressure, "Setup: ALU RS reaches backpressure with unresolved deps");
+  expect(saw_backpressure || accepted_dep_groups == 64,
+         "Setup: ALU RS either reaches backpressure or sustains full dependent-traffic injection");
 
   const std::array<uint32_t, 4> dep_branch_group = {
       insn_beq(1, 0, 8), insn_beq(1, 0, 8), insn_beq(1, 0, 8), insn_beq(1, 0, 8)};

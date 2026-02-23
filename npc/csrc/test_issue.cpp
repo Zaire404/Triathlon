@@ -300,6 +300,84 @@ int main(int argc, char **argv) {
 
     std::cout << "--- Test 3 PASSED ---" << std::endl;
 
+    // =================================================================
+    // Test 4: 高索引指令不应被低索引持续补充饿死 (Starvation)
+    // =================================================================
+    std::cout << "\n--- Test 4: High-index starvation check ---" << std::endl;
+
+    // 清空 RS
+    top->flush_i = 1;
+    tick(top);
+    top->flush_i = 0;
+    tick(top);
+
+    uint32_t OP_BLOCK = 0xB10C0001;
+    uint32_t OP_SENTINEL = 0x51E70001;  // 目标：放在高索引，检查是否被饿死
+    uint32_t OP_SPAM = 0x5A4D0001;      // 低索引持续补充流量
+    uint32_t WAKE_TAG = 42;
+
+    auto mk_block = [&](uint32_t op) {
+      return DispatchInstr{true, op, 12, 0, WAKE_TAG, 0, 0, WAKE_TAG, 0};
+    };
+    auto mk_ready_spam = [&]() {
+      return DispatchInstr{true, OP_SPAM, 13, 1, 0, 1, 2, 0, 1};
+    };
+
+    // 填满 RS：全部先阻塞；最后一批最后一条放 sentinel，尽量落到高索引。
+    int fill_batches4 = 0;
+    const int max_fill_batches4 = 64;
+    bool sentinel_injected = false;
+    while (top->issue_ready && fill_batches4 < max_fill_batches4) {
+      std::vector<DispatchInstr> batch = {
+          mk_block(OP_BLOCK), mk_block(OP_BLOCK), mk_block(OP_BLOCK), mk_block(OP_BLOCK)};
+      if (!sentinel_injected && top->free_count_o <= 4) {
+        batch[3] = mk_block(OP_SENTINEL);
+        sentinel_injected = true;
+      }
+      set_dispatch(top, batch);
+      tick(top);
+      fill_batches4++;
+      // 当 ready 变 0 说明已满；将最后一次真正填充的 batch 放 sentinel。
+      if (!top->issue_ready) {
+        break;
+      }
+    }
+    set_dispatch(top, {});
+    top->eval();
+    assert(sentinel_injected && "Sentinel must be injected before RS becomes full");
+    assert(top->issue_ready == 0 && "RS should be full before starvation test");
+
+    // 唤醒所有阻塞项，使其全部 ready。
+    set_cdb(top, {{WAKE_TAG, 0xABCD1234}});
+    tick(top);
+    set_cdb(top, {});
+
+    bool sentinel_issued = false;
+    const int stress_cycles = 200;
+    for (int cyc = 0; cyc < stress_cycles; ++cyc) {
+      // 只在可接收时补充低索引 ready 流量，制造持续竞争。
+      if (top->issue_ready) {
+        std::vector<DispatchInstr> spam = {
+            mk_ready_spam(), mk_ready_spam(), mk_ready_spam(), mk_ready_spam()};
+        set_dispatch(top, spam);
+      } else {
+        set_dispatch(top, {});
+      }
+
+      top->eval();
+      if (top->alu0_en && top->alu0_uop[0] == OP_SENTINEL) sentinel_issued = true;
+      if (top->alu1_en && top->alu1_uop[0] == OP_SENTINEL) sentinel_issued = true;
+      if (top->alu2_en && top->alu2_uop[0] == OP_SENTINEL) sentinel_issued = true;
+      if (top->alu3_en && top->alu3_uop[0] == OP_SENTINEL) sentinel_issued = true;
+
+      tick(top);
+      if (sentinel_issued) break;
+    }
+    set_dispatch(top, {});
+
+    assert(sentinel_issued && "High-index ready instruction starved by fixed-priority issue select");
+    std::cout << "--- Test 4 PASSED ---" << std::endl;
+
     std::cout << "\n--- [SUCCESS] All Issue Stage Tests Passed! ---" << std::endl;
 
     delete top;
