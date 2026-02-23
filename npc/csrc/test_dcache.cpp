@@ -744,6 +744,166 @@ int main(int argc, char **argv) {
   std::cout << "[PASS] Case 12: ID/data pairing is preserved." << std::endl;
 
   // ============================================================
+  // Test 12B: Response handoff should start next lookup without IDLE bubble
+  // ============================================================
+  std::cout << "[TEST] Case 12B: Response handoff no-bubble lookup" << std::endl;
+
+  reset(top, tfp);
+  top->miss_req_ready_i = 1;
+  top->refill_valid_i = 0;
+  top->wb_req_ready_i = 1;
+  top->ld_rsp_ready_i = 1;
+  top->st_req_valid_i = 0;
+  top->ld_req_valid_i = 0;
+
+  const uint32_t case14_addr = 0x8000C000;
+  const uint32_t case14_data = 0xCC33AA55;
+
+  // Warm one cache line so both requests are hit path.
+  check_load(top, tfp, case14_addr, case14_data, OP_LW, "Case 12B: Warmup");
+
+  // First hit request (id=1), wait until response is valid.
+  wait_until_ready(top, tfp, false);
+  top->ld_req_valid_i = 1;
+  top->ld_req_addr_i = case14_addr;
+  top->ld_req_op_i = OP_LW;
+  top->ld_req_id_i = 1;
+  tick(top, tfp);
+  top->ld_req_valid_i = 0;
+
+  bool case14_first_rsp_seen = false;
+  for (int i = 0; i < 20; i++) {
+    if (top->ld_rsp_valid_o) {
+      case14_first_rsp_seen = true;
+      break;
+    }
+    tick(top, tfp);
+  }
+  if (!case14_first_rsp_seen) {
+    std::cout << "[FAIL] Case 12B: first response not observed." << std::endl;
+    assert(false);
+  }
+  if (top->ld_rsp_data_o != case14_data || top->ld_rsp_id_o != 1) {
+    std::cout << "[FAIL] Case 12B: first response payload mismatch." << std::endl;
+    assert(false);
+  }
+
+  // On response consume cycle, inject second hit request (id=0) simultaneously.
+  top->ld_rsp_ready_i = 1;
+  top->ld_req_valid_i = 1;
+  top->ld_req_addr_i = case14_addr;
+  top->ld_req_op_i = OP_LW;
+  top->ld_req_id_i = 0;
+  top->eval();
+  if (!top->ld_req_ready_o) {
+    std::cout << "[FAIL] Case 12B: second request not accepted on handoff cycle."
+              << std::endl;
+    assert(false);
+  }
+  tick(top, tfp); // consume first response + accept second request
+  top->ld_req_valid_i = 0;
+
+  // One cycle later, second response should already be valid (no IDLE bubble).
+  tick(top, tfp);
+  if (!top->ld_rsp_valid_o) {
+    std::cout << "[FAIL] Case 12B: second response missing at no-bubble timing."
+              << std::endl;
+    assert(false);
+  }
+  if (top->ld_rsp_id_o != 0 || top->ld_rsp_data_o != case14_data) {
+    std::cout << "[FAIL] Case 12B: second response payload mismatch."
+              << " id=" << std::hex << static_cast<int>(top->ld_rsp_id_o)
+              << " data=0x" << top->ld_rsp_data_o << std::endl;
+    assert(false);
+  }
+  top->ld_rsp_ready_i = 1;
+  tick(top, tfp);
+  std::cout << "[PASS] Case 12B: Response handoff starts next lookup immediately."
+            << std::endl;
+
+  // ============================================================
+  // Test 12C: Response handoff must predrive next lookup address
+  // ============================================================
+  std::cout << "[TEST] Case 12C: Response handoff cross-line no-stale-read"
+            << std::endl;
+
+  reset(top, tfp);
+  top->miss_req_ready_i = 1;
+  top->refill_valid_i = 0;
+  top->wb_req_ready_i = 1;
+  top->ld_rsp_ready_i = 1;
+  top->st_req_valid_i = 0;
+  top->ld_req_valid_i = 0;
+
+  const uint32_t case12c_a = 0x8000D040;
+  const uint32_t case12c_b = 0x8000D080;
+  const uint32_t case12c_a_data = 0x11223344;
+  const uint32_t case12c_b_data = 0x55667788;
+
+  check_load(top, tfp, case12c_a, case12c_a_data, OP_LW, "Case 12C: Warmup A");
+  check_load(top, tfp, case12c_b, case12c_b_data, OP_LW, "Case 12C: Warmup B");
+
+  // First hit request A(id=1), wait until response is valid.
+  wait_until_ready(top, tfp, false);
+  top->ld_req_valid_i = 1;
+  top->ld_req_addr_i = case12c_a;
+  top->ld_req_op_i = OP_LW;
+  top->ld_req_id_i = 1;
+  tick(top, tfp);
+  top->ld_req_valid_i = 0;
+
+  bool case12c_first_rsp_seen = false;
+  for (int i = 0; i < 20; i++) {
+    if (top->ld_rsp_valid_o) {
+      case12c_first_rsp_seen = true;
+      break;
+    }
+    tick(top, tfp);
+  }
+  if (!case12c_first_rsp_seen) {
+    std::cout << "[FAIL] Case 12C: first response not observed." << std::endl;
+    assert(false);
+  }
+  if (top->ld_rsp_data_o != case12c_a_data || top->ld_rsp_id_o != 1) {
+    std::cout << "[FAIL] Case 12C: first response payload mismatch." << std::endl;
+    assert(false);
+  }
+
+  // On response consume cycle, inject second hit request to a different line B(id=0).
+  top->ld_rsp_ready_i = 1;
+  top->ld_req_valid_i = 1;
+  top->ld_req_addr_i = case12c_b;
+  top->ld_req_op_i = OP_LW;
+  top->ld_req_id_i = 0;
+  top->eval();
+  if (!top->ld_req_ready_o) {
+    std::cout << "[FAIL] Case 12C: second request not accepted on handoff cycle."
+              << std::endl;
+    assert(false);
+  }
+  tick(top, tfp); // consume first response + accept second request
+  top->ld_req_valid_i = 0;
+
+  // One cycle later, second response should be B's payload (not stale A).
+  tick(top, tfp);
+  if (!top->ld_rsp_valid_o) {
+    std::cout << "[FAIL] Case 12C: second response missing at no-bubble timing."
+              << std::endl;
+    assert(false);
+  }
+  if (top->ld_rsp_id_o != 0 || top->ld_rsp_data_o != case12c_b_data) {
+    std::cout << "[FAIL] Case 12C: stale or mismatched payload."
+              << " id=" << std::hex << static_cast<int>(top->ld_rsp_id_o)
+              << " data=0x" << top->ld_rsp_data_o << " exp=0x"
+              << case12c_b_data << std::endl;
+    assert(false);
+  }
+  top->ld_rsp_ready_i = 1;
+  tick(top, tfp);
+  std::cout << "[PASS] Case 12C: handoff cross-line read data is correct."
+            << std::endl;
+
+  // ============================================================
   // Test 13: Reset must invalidate cache contents
   // ============================================================
   std::cout << "[TEST] Case 13: Reset invalidates cache lines" << std::endl;

@@ -200,6 +200,21 @@ module dcache #(
   logic [LD_PORT_ID_WIDTH-1:0] sel_id;
   logic ld_req_line_in_mshr;
   logic st_req_line_in_mshr;
+  logic rsp_fire_w;
+  logic rsp_handoff_use_pending_w;
+  logic rsp_handoff_use_live_req_w;
+  logic rsp_handoff_fire_w;
+
+  logic [Cfg.PLEN-1:0] rsp_handoff_addr_w;
+  decode_pkg::lsu_op_e rsp_handoff_op_w;
+  logic [LD_PORT_ID_WIDTH-1:0] rsp_handoff_id_w;
+  logic [LINE_ADDR_WIDTH-1:0] rsp_handoff_line_addr_w;
+  logic [INDEX_WIDTH-1:0] rsp_handoff_index_w;
+  logic [TAG_WIDTH-1:0] rsp_handoff_tag_w;
+  logic [OFFSET_WIDTH-1:0] rsp_handoff_byte_off_w;
+  logic [SETS_PER_BANK_WIDTH-1:0] rsp_handoff_bank_addr_w;
+  logic [BANK_SEL_WIDTH-1:0] rsp_handoff_bank_sel_w;
+  logic rsp_handoff_err_w;
 
   // Ready policy: serve requests in IDLE, but give refill handshake priority.
   always_comb begin
@@ -248,6 +263,23 @@ module dcache #(
 
   logic accept_req;
   assign accept_req = sel_is_load || sel_is_store;
+
+  assign rsp_fire_w = (state_q == S_RESP) && ld_rsp_valid_o && ld_rsp_ready_i;
+  assign rsp_handoff_use_pending_w = rsp_fire_w && pending_ld_valid_q && !flush_i && !refill_valid_i;
+  assign rsp_handoff_use_live_req_w = rsp_fire_w && !pending_ld_valid_q && ld_req_valid_i &&
+                                      ld_req_ready_o && !flush_i && !refill_valid_i;
+  assign rsp_handoff_fire_w = rsp_handoff_use_pending_w || rsp_handoff_use_live_req_w;
+
+  assign rsp_handoff_addr_w = rsp_handoff_use_pending_w ? pending_ld_addr_q : ld_req_addr_i;
+  assign rsp_handoff_op_w = rsp_handoff_use_pending_w ? pending_ld_op_q : ld_req_op_i;
+  assign rsp_handoff_id_w = rsp_handoff_use_pending_w ? pending_ld_id_q : ld_req_id_i;
+  assign rsp_handoff_line_addr_w = rsp_handoff_addr_w[Cfg.PLEN-1:OFFSET_WIDTH];
+  assign rsp_handoff_index_w = rsp_handoff_line_addr_w[INDEX_WIDTH-1:0];
+  assign rsp_handoff_tag_w = rsp_handoff_line_addr_w[INDEX_WIDTH+:TAG_WIDTH];
+  assign rsp_handoff_byte_off_w = rsp_handoff_addr_w[OFFSET_WIDTH-1:0];
+  assign rsp_handoff_bank_addr_w = rsp_handoff_index_w[INDEX_WIDTH-1:BANK_SEL_WIDTH];
+  assign rsp_handoff_bank_sel_w = rsp_handoff_index_w[BANK_SEL_WIDTH-1:0];
+  assign rsp_handoff_err_w = is_misaligned(rsp_handoff_op_w, rsp_handoff_addr_w);
 
   // ---------------------------------------------------------------------------
   // Address decode for the selected request (combinational)
@@ -714,6 +746,12 @@ module dcache #(
       r_bank_sel  = req_bank_sel_q;
     end
 
+    // Response handoff: predrive next lookup address because SRAM read is sync.
+    if ((state_q == S_RESP) && rsp_handoff_fire_w) begin
+      r_bank_addr = rsp_handoff_bank_addr_w;
+      r_bank_sel  = rsp_handoff_bank_sel_w;
+    end
+
     // During refill write, force read A to same bank/address as the write
     if (state_q == S_WAIT_REFILL) begin
       r_bank_addr = miss_bank_addr_q;
@@ -929,7 +967,11 @@ module dcache #(
 
       S_RESP: begin
         if (ld_rsp_valid_o && ld_rsp_ready_i) begin
-          state_d = S_IDLE;
+          if (rsp_handoff_fire_w) begin
+            state_d = S_LOOKUP;
+          end else begin
+            state_d = S_IDLE;
+          end
         end
       end
 
@@ -1043,11 +1085,30 @@ module dcache #(
       // ----------------------------------------------------------
       // Accept new request
       // ----------------------------------------------------------
-      if ((state_q == S_RESP) && ld_req_valid_i && ld_req_ready_o) begin
+      if ((state_q == S_RESP) && ld_req_valid_i && ld_req_ready_o && !rsp_fire_w) begin
         pending_ld_valid_q <= 1'b1;
         pending_ld_addr_q  <= ld_req_addr_i;
         pending_ld_op_q    <= ld_req_op_i;
         pending_ld_id_q    <= ld_req_id_i;
+      end
+
+      if ((state_q == S_RESP) && rsp_handoff_fire_w) begin
+        req_is_store_q  <= 1'b0;
+        req_addr_q      <= rsp_handoff_addr_w;
+        req_op_q        <= rsp_handoff_op_w;
+        req_wdata_q     <= '0;
+        req_id_q        <= rsp_handoff_id_w;
+        req_line_addr_q <= rsp_handoff_line_addr_w;
+        req_index_q     <= rsp_handoff_index_w;
+        req_tag_q       <= rsp_handoff_tag_w;
+        req_byte_off_q  <= rsp_handoff_byte_off_w;
+        req_bank_addr_q <= rsp_handoff_bank_addr_w;
+        req_bank_sel_q  <= rsp_handoff_bank_sel_w;
+        req_err_q       <= rsp_handoff_err_w;
+
+        if (rsp_handoff_use_pending_w) begin
+          pending_ld_valid_q <= 1'b0;
+        end
       end
 
       if (state_q == S_IDLE && accept_req) begin
