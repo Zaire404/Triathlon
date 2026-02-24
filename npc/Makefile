@@ -57,7 +57,7 @@ SIM_MAIN ?= $(firstword $(wildcard \
 	$(abspath ./csrc/main.cpp) \
 	$(abspath ./csrc/main.cc) \
 	$(abspath ./csrc/main.c)))
-SIM_SRCS ?=
+SIM_SRCS ?= $(sort $(wildcard $(abspath ./csrc/lib/*.cpp)))
 
 VSRCS = $(PKG_VSRCS) $(DESIGN_VSRCS) $(TOP_SV)
 CSRCS = $(SIM_MAIN) $(SIM_SRCS) $(SRC_AUTO_BIND)
@@ -72,7 +72,7 @@ IMG ?=
 ARGS ?=
 NPC_EXE := $(strip $(ARGS) $(DIFFTEST) $(IMG))
 INCFLAGS = $(addprefix -I, $(INC_PATH))
-CXXFLAGS += $(INCFLAGS) -I$(abspath ./include) -DTOP_NAME="\"V$(TOPNAME)\"" -g -std=c++17
+CXXFLAGS += $(INCFLAGS) -I$(abspath ./include) -I$(abspath ./csrc/include) -DTOP_NAME="\"V$(TOPNAME)\"" -g -std=c++17
 LDFLAGS += -lreadline -ldl -pie $(LLVM_LIBS)
 
 NEED_CHECKS := $(filter-out clean clean-all help,$(MAKECMDGOALS))
