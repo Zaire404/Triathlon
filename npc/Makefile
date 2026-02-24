@@ -112,18 +112,24 @@ gdb: $(BIN)
 .PHONY: profile-report profile-parse
 
 PROFILE_TOOL_DIR := $(abspath ./tools/profiler)
-PROFILE_OUT_DIR ?= $(abspath ./build/profile/latest)
+PROFILE_OUT_DIR ?=
+PROFILE_PARSE_DIR ?= $(if $(strip $(PROFILE_OUT_DIR)),$(PROFILE_OUT_DIR),$(abspath ./build/profile/latest))
 
 profile-report:
-	OUT_DIR=$(PROFILE_OUT_DIR) ARCH=$(ARCH) CROSS_COMPILE=$(CROSS_COMPILE) \
-		$(PROFILE_TOOL_DIR)/run_profile.sh
+	@if [ -n "$(PROFILE_OUT_DIR)" ]; then \
+		OUT_DIR=$(PROFILE_OUT_DIR) ARCH=$(ARCH) CROSS_COMPILE=$(CROSS_COMPILE) \
+			$(PROFILE_TOOL_DIR)/run_profile.sh; \
+	else \
+		ARCH=$(ARCH) CROSS_COMPILE=$(CROSS_COMPILE) \
+			$(PROFILE_TOOL_DIR)/run_profile.sh; \
+	fi
 
 profile-parse:
 	python3 $(PROFILE_TOOL_DIR)/parse_profile.py \
-		--log-dir $(PROFILE_OUT_DIR) \
+		--log-dir $(PROFILE_PARSE_DIR) \
 		--template $(PROFILE_TOOL_DIR)/report_template.md \
-		--out-json $(PROFILE_OUT_DIR)/summary.json \
-		--out-md $(PROFILE_OUT_DIR)/report.md
+		--out-json $(PROFILE_PARSE_DIR)/summary.json \
+		--out-md $(PROFILE_PARSE_DIR)/report.md
 
 clean:
 	rm -rf $(BUILD_DIR)

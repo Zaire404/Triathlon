@@ -8,9 +8,16 @@ make -C npc profile-report ARCH=riscv32e-npc CROSS_COMPILE=riscv64-elf-
 
 Default output directory:
 
-- `npc/build/profile/latest/summary.json`
-- `npc/build/profile/latest/report.md`
+- `npc/build/profile/<timestamp>/summary.json`
+- `npc/build/profile/<timestamp>/report.md`
 - raw logs: `dhrystone.log`, `coremark.log`, `coremark_commit_sample.log`
+
+If you want a fixed output directory (for example `latest`), override it:
+
+```bash
+make -C npc profile-report ARCH=riscv32e-npc CROSS_COMPILE=riscv64-elf- \
+  PROFILE_OUT_DIR=$(pwd)/npc/build/profile/latest
+```
 
 ## Parse existing logs only
 
