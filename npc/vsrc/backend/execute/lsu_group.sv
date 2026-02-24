@@ -87,6 +87,9 @@ module lsu_group #(
   localparam int unsigned DBG_SEL_WIDTH = (N_LSU <= 1) ? 1 : $clog2(N_LSU + 1);
   localparam int unsigned SQ_BE_WIDTH = Cfg.XLEN / 8;
   localparam int unsigned SQ_BYTE_OFF_W = (SQ_BE_WIDTH <= 1) ? 1 : $clog2(SQ_BE_WIDTH);
+  localparam int unsigned STORE_WB_Q_DEPTH = (N_LSU < 2) ? 2 : N_LSU;
+  localparam int unsigned STORE_WB_Q_IDX_W = (STORE_WB_Q_DEPTH <= 1) ? 1 : $clog2(STORE_WB_Q_DEPTH);
+  localparam logic [ECAUSE_WIDTH-1:0] EXC_ST_ADDR_MISALIGNED = ECAUSE_WIDTH'(6);
 
   // Keep these debug names for existing testbench hierarchical probes.
   logic                [               1:0]                    state_q;
@@ -129,7 +132,8 @@ module lsu_group #(
 
   logic                [         N_LSU-1:0]                    alloc_grant;
   logic                [LANE_SEL_WIDTH-1:0]                    alloc_lane_idx;
-  logic                                                        alloc_fire;
+  logic                                                        load_alloc_fire;
+  logic                                                        store_req_fire;
 
   logic                [         N_LSU-1:0]                    ld_req_grant;
   logic                [LANE_SEL_WIDTH-1:0]                    ld_req_lane_idx;
@@ -141,7 +145,7 @@ module lsu_group #(
   logic                [LANE_SEL_WIDTH-1:0]                    wb_lane_idx;
   logic                                                        wb_grant_valid;
   logic                                                        wb_fire;
-  logic                                                        wb_fire_is_store;
+  logic                                                        wb_sel_store;
   logic                [LANE_SEL_WIDTH-1:0]                    wb_rr_q;
 
   logic                                                        lq_alloc_valid;
@@ -170,8 +174,31 @@ module lsu_group #(
   logic                [      Cfg.XLEN-1:0]                   req_eff_addr_xlen;
   logic                [      Cfg.PLEN-1:0]                   req_eff_addr;
 
-  logic                [         N_LSU-1:0]                    lane_has_store_q;
-  logic                [         N_LSU-1:0]                    lane_has_store_d;
+  logic                                                        req_is_load;
+  logic                                                        req_is_store;
+  logic                                                        store_misaligned;
+  logic                                                        store_need_sq;
+  logic                                                        store_req_ready;
+  logic                                                        load_req_ready;
+
+  logic [STORE_WB_Q_DEPTH-1:0] store_wb_valid_q;
+  logic [STORE_WB_Q_DEPTH-1:0][ROB_IDX_WIDTH-1:0] store_wb_rob_idx_q;
+  logic [STORE_WB_Q_DEPTH-1:0][Cfg.XLEN-1:0] store_wb_data_q;
+  logic [STORE_WB_Q_DEPTH-1:0] store_wb_exception_q;
+  logic [STORE_WB_Q_DEPTH-1:0][ECAUSE_WIDTH-1:0] store_wb_ecause_q;
+  logic [STORE_WB_Q_DEPTH-1:0] store_wb_is_mispred_q;
+  logic [STORE_WB_Q_DEPTH-1:0][Cfg.PLEN-1:0] store_wb_redirect_pc_q;
+  logic [STORE_WB_Q_DEPTH-1:0] store_wb_has_sq_q;
+  logic [STORE_WB_Q_IDX_W-1:0] store_wb_head_q, store_wb_tail_q;
+  logic [$clog2(STORE_WB_Q_DEPTH+1)-1:0] store_wb_count_q;
+  logic store_wb_head_valid;
+  logic [ROB_IDX_WIDTH-1:0] store_wb_head_rob_idx;
+  logic [Cfg.XLEN-1:0] store_wb_head_data;
+  logic store_wb_head_exception;
+  logic [ECAUSE_WIDTH-1:0] store_wb_head_ecause;
+  logic store_wb_head_is_mispred;
+  logic [Cfg.PLEN-1:0] store_wb_head_redirect_pc;
+  logic store_wb_head_has_sq;
 
   logic rsp_id_in_range;
   logic [LANE_SEL_WIDTH-1:0] rsp_lane_idx;
@@ -186,6 +213,20 @@ module lsu_group #(
         rr_next_idx = '0;
       end else begin
         rr_next_idx = idx + LANE_SEL_WIDTH'(1);
+      end
+    end
+  endfunction
+
+  function automatic logic [STORE_WB_Q_IDX_W-1:0] store_wbq_next_idx(
+      input logic [STORE_WB_Q_IDX_W-1:0] idx
+  );
+    begin
+      if (STORE_WB_Q_DEPTH <= 1) begin
+        store_wbq_next_idx = '0;
+      end else if (idx == STORE_WB_Q_IDX_W'(STORE_WB_Q_DEPTH - 1)) begin
+        store_wbq_next_idx = '0;
+      end else begin
+        store_wbq_next_idx = idx + STORE_WB_Q_IDX_W'(1);
       end
     end
   endfunction
@@ -263,6 +304,19 @@ module lsu_group #(
         end
       endcase
       load_be_mask = mask;
+    end
+  endfunction
+
+  function automatic logic is_store_misaligned(input decode_pkg::lsu_op_e op,
+                                                input logic [Cfg.PLEN-1:0] addr);
+    begin
+      unique case (op)
+        decode_pkg::LSU_SB: is_store_misaligned = 1'b0;
+        decode_pkg::LSU_SH: is_store_misaligned = addr[0];
+        decode_pkg::LSU_SW: is_store_misaligned = |addr[1:0];
+        decode_pkg::LSU_SD: is_store_misaligned = |addr[2:0];
+        default:            is_store_misaligned = 1'b0;
+      endcase
     end
   endfunction
 
@@ -365,50 +419,74 @@ module lsu_group #(
   assign req_addr_q = g_lanes[0].u_lane.req_addr_q;
   assign req_eff_addr_xlen = rs1_data_i + uop_i.imm;
   assign req_eff_addr = req_eff_addr_xlen[Cfg.PLEN-1:0];
+  assign req_is_load = uop_i.is_load;
+  assign req_is_store = uop_i.is_store;
+  assign store_misaligned = is_store_misaligned(uop_i.lsu_op, req_eff_addr);
+  assign store_need_sq = req_is_store && !store_misaligned;
+  assign store_wb_head_valid = (store_wb_count_q != 0);
+  assign store_wb_head_rob_idx = store_wb_rob_idx_q[store_wb_head_q];
+  assign store_wb_head_data = store_wb_data_q[store_wb_head_q];
+  assign store_wb_head_exception = store_wb_exception_q[store_wb_head_q];
+  assign store_wb_head_ecause = store_wb_ecause_q[store_wb_head_q];
+  assign store_wb_head_is_mispred = store_wb_is_mispred_q[store_wb_head_q];
+  assign store_wb_head_redirect_pc = store_wb_redirect_pc_q[store_wb_head_q];
+  assign store_wb_head_has_sq = store_wb_has_sq_q[store_wb_head_q];
   assign sq_req_word_addr = {req_eff_addr[Cfg.PLEN-1:SQ_BYTE_OFF_W], {SQ_BYTE_OFF_W{1'b0}}};
   assign sq_store_be = store_be_mask(uop_i.lsu_op, req_eff_addr);
   assign sq_load_be = load_be_mask(uop_i.lsu_op, req_eff_addr);
   assign sq_store_data_aligned = store_aligned_data(uop_i.lsu_op, rs2_data_i, req_eff_addr);
-  assign sq_fwd_query_valid = alloc_fire && uop_i.is_load;
+  assign sq_fwd_query_valid = load_alloc_fire && req_is_load;
   assign sq_fwd_data_rshift = sq_fwd_query_data >> (8 * req_eff_addr[SQ_BYTE_OFF_W-1:0]);
   assign sb_load_hit_mux = sb_load_hit_i || sq_fwd_query_hit;
   assign sb_load_data_mux = sq_fwd_query_hit ? sq_fwd_data_rshift : sb_load_data_i;
 
-  assign lq_alloc_valid = alloc_fire && uop_i.is_load;
-  assign sq_alloc_valid = alloc_fire && uop_i.is_store;
+  assign lq_alloc_valid = load_alloc_fire && req_is_load;
+  assign sq_alloc_valid = store_req_fire && store_need_sq;
 
   always_comb begin
-    req_ready_o = 1'b0;
+    load_req_ready = 1'b0;
     alloc_grant = '0;
     alloc_lane_idx = '0;
     for (int i = 0; i < N_LSU; i++) begin
-      if (!req_ready_o && lane_req_ready[i] &&
-          (!uop_i.is_load || lq_alloc_ready) &&
-          (!uop_i.is_store || sq_alloc_ready)) begin
-        req_ready_o = 1'b1;
+      if (!load_req_ready && lane_req_ready[i] && lq_alloc_ready) begin
+        load_req_ready = 1'b1;
         alloc_grant[i] = 1'b1;
         alloc_lane_idx = LANE_SEL_WIDTH'(i);
       end
     end
   end
 
-  assign alloc_fire = req_valid_i && req_ready_o;
-  assign dbg_alloc_fire = alloc_fire;
+  // Keep store admission independent from selected-uop decode details to avoid
+  // combinational feedback with issue selection.
+  assign store_req_ready = ((store_wb_count_q < STORE_WB_Q_DEPTH) || (store_wb_head_valid && wb_ready_i)) &&
+                           sq_alloc_ready;
+  always_comb begin
+    req_ready_o = 1'b0;
+    if (req_is_load) begin
+      req_ready_o = load_req_ready;
+    end else if (req_is_store) begin
+      req_ready_o = store_req_ready;
+    end
+  end
+
+  assign load_alloc_fire = req_valid_i && req_ready_o && req_is_load;
+  assign store_req_fire = req_valid_i && req_ready_o && req_is_store;
+  assign dbg_alloc_fire = load_alloc_fire | store_req_fire;
 
   always_comb begin
     lane_req_valid = '0;
     for (int i = 0; i < N_LSU; i++) begin
-      lane_req_valid[i] = alloc_fire && alloc_grant[i];
+      lane_req_valid[i] = load_alloc_fire && alloc_grant[i];
     end
   end
 
   always_comb begin
-    sb_ex_valid_o = 1'b0;
-    sb_ex_sb_id_o = '0;
-    sb_ex_addr_o = '0;
-    sb_ex_data_o = '0;
-    sb_ex_op_o = decode_pkg::LSU_LW;
-    sb_ex_rob_idx_o = '0;
+    sb_ex_valid_o = store_req_fire && !store_misaligned;
+    sb_ex_sb_id_o = sb_id_i;
+    sb_ex_addr_o = req_eff_addr;
+    sb_ex_data_o = rs2_data_i;
+    sb_ex_op_o = uop_i.lsu_op;
+    sb_ex_rob_idx_o = rob_tag_i;
     sb_load_addr_o = '0;
     sb_load_rob_idx_o = '0;
     for (int i = 0; i < N_LSU; i++) begin
@@ -490,7 +568,8 @@ module lsu_group #(
   end
 
   always_comb begin
-    wb_valid_o = wb_grant_valid;
+    wb_sel_store = store_wb_head_valid;
+    wb_valid_o = store_wb_head_valid || wb_grant_valid;
     wb_rob_idx_o = '0;
     wb_data_o = '0;
     wb_exception_o = 1'b0;
@@ -499,7 +578,15 @@ module lsu_group #(
     wb_redirect_pc_o = '0;
     lane_wb_ready = '0;
 
-    if (wb_grant_valid) begin
+    if (store_wb_head_valid) begin
+      wb_rob_idx_o = store_wb_head_rob_idx;
+      wb_data_o = store_wb_head_data;
+      wb_exception_o = store_wb_head_exception;
+      wb_ecause_o = store_wb_head_ecause;
+      wb_is_mispred_o = store_wb_head_is_mispred;
+      wb_redirect_pc_o = store_wb_head_redirect_pc;
+    end else if (wb_grant_valid) begin
+      wb_sel_store = 1'b0;
       wb_rob_idx_o = lane_wb_rob_idx[wb_lane_idx];
       wb_data_o = lane_wb_data[wb_lane_idx];
       wb_exception_o = lane_wb_exception[wb_lane_idx];
@@ -510,41 +597,62 @@ module lsu_group #(
     end
   end
 
-  assign wb_fire = wb_grant_valid && wb_ready_i;
+  assign wb_fire = wb_valid_o && wb_ready_i;
   assign ld_req_fire = ld_req_grant_valid && ld_req_ready_i;
-
-  always_comb begin
-    wb_fire_is_store = 1'b0;
-    if (wb_grant_valid) begin
-      wb_fire_is_store = lane_has_store_q[wb_lane_idx];
-    end
-  end
-
-  assign lq_pop_valid = wb_fire && !wb_fire_is_store;
-  assign sq_pop_valid = wb_fire && wb_fire_is_store;
-
-  always_comb begin
-    lane_has_store_d = lane_has_store_q;
-    if (wb_fire) begin
-      lane_has_store_d[wb_lane_idx] = 1'b0;
-    end
-    if (alloc_fire) begin
-      lane_has_store_d[alloc_lane_idx] = uop_i.is_store;
-    end
-  end
+  assign lq_pop_valid = wb_fire && !wb_sel_store;
+  assign sq_pop_valid = wb_fire && wb_sel_store && store_wb_head_has_sq;
 
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (!rst_ni) begin
-      lane_has_store_q <= '0;
+      store_wb_valid_q <= '0;
+      store_wb_rob_idx_q <= '0;
+      store_wb_data_q <= '0;
+      store_wb_exception_q <= '0;
+      store_wb_ecause_q <= '0;
+      store_wb_is_mispred_q <= '0;
+      store_wb_redirect_pc_q <= '0;
+      store_wb_has_sq_q <= '0;
+      store_wb_head_q <= '0;
+      store_wb_tail_q <= '0;
+      store_wb_count_q <= '0;
       wb_rr_q <= '0;
       ld_req_rr_q <= '0;
     end else if (flush_i) begin
-      lane_has_store_q <= '0;
+      store_wb_valid_q <= '0;
+      store_wb_rob_idx_q <= '0;
+      store_wb_data_q <= '0;
+      store_wb_exception_q <= '0;
+      store_wb_ecause_q <= '0;
+      store_wb_is_mispred_q <= '0;
+      store_wb_redirect_pc_q <= '0;
+      store_wb_has_sq_q <= '0;
+      store_wb_head_q <= '0;
+      store_wb_tail_q <= '0;
+      store_wb_count_q <= '0;
       wb_rr_q <= '0;
       ld_req_rr_q <= '0;
     end else begin
-      lane_has_store_q <= lane_has_store_d;
-      if (wb_fire) begin
+      if (store_req_fire) begin
+        store_wb_valid_q[store_wb_tail_q] <= 1'b1;
+        store_wb_rob_idx_q[store_wb_tail_q] <= rob_tag_i;
+        store_wb_data_q[store_wb_tail_q] <= '0;
+        store_wb_exception_q[store_wb_tail_q] <= store_misaligned;
+        store_wb_ecause_q[store_wb_tail_q] <= store_misaligned ? EXC_ST_ADDR_MISALIGNED : '0;
+        store_wb_is_mispred_q[store_wb_tail_q] <= 1'b0;
+        store_wb_redirect_pc_q[store_wb_tail_q] <= '0;
+        store_wb_has_sq_q[store_wb_tail_q] <= !store_misaligned;
+        store_wb_tail_q <= store_wbq_next_idx(store_wb_tail_q);
+      end
+      if (wb_fire && wb_sel_store) begin
+        store_wb_valid_q[store_wb_head_q] <= 1'b0;
+        store_wb_head_q <= store_wbq_next_idx(store_wb_head_q);
+      end
+      if (store_req_fire && !(wb_fire && wb_sel_store)) begin
+        store_wb_count_q <= store_wb_count_q + 1'b1;
+      end else if (!store_req_fire && (wb_fire && wb_sel_store)) begin
+        store_wb_count_q <= store_wb_count_q - 1'b1;
+      end
+      if (wb_fire && !wb_sel_store && wb_grant_valid) begin
         wb_rr_q <= rr_next_idx(wb_lane_idx);
       end
       if (ld_req_fire) begin
@@ -607,7 +715,7 @@ module lsu_group #(
   );
 
   always_comb begin
-    dbg_alloc_lane = alloc_fire ? DBG_SEL_WIDTH'(alloc_lane_idx + 1'b1) : '0;
+    dbg_alloc_lane = load_alloc_fire ? DBG_SEL_WIDTH'(alloc_lane_idx + 1'b1) : '0;
     dbg_ld_owner = '0;
 
     // Prefer the response lane in current cycle; fallback to first lane waiting response.

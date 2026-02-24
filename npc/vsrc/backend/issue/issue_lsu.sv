@@ -58,15 +58,25 @@ module issue_lsu #(
   // B. RS <-> Select Logic 之间的握手线
   wire [RS_DEPTH-1:0] rs_ready_wires;
   wire [RS_DEPTH-1:0] grant_mask_wires;
+  wire [RS_DEPTH-1:0] grant_mask_sel_wires;
 
   // C. Select Logic -> LSU
   wire [$clog2(RS_DEPTH)-1:0] lsu_sel;
   localparam int ISSUE_WIDTH = 1;
+  wire [ISSUE_WIDTH-1:0] issue_valid_raw;
   wire [ISSUE_WIDTH-1:0] issue_valid;
+  wire [$clog2(RS_DEPTH)-1:0] issue_rs_idx_raw[0:ISSUE_WIDTH-1];
   wire [$clog2(RS_DEPTH)-1:0] issue_rs_idx[0:ISSUE_WIDTH-1];
 
   assign lsu_en  = issue_valid[0];
   assign lsu_sel = issue_rs_idx[0];
+  assign grant_mask_wires = fu_ready_i ? grant_mask_sel_wires : '0;
+  assign issue_valid = issue_valid_raw & {ISSUE_WIDTH{fu_ready_i}};
+  generate
+    for (genvar gi = 0; gi < ISSUE_WIDTH; gi++) begin : g_issue_idx_passthru
+      assign issue_rs_idx[gi] = issue_rs_idx_raw[gi];
+    end
+  endgenerate
 
   // D. Crossbar inputs
   decode_pkg::uop_t rs_in_op[0:RS_DEPTH-1];
@@ -161,10 +171,10 @@ module issue_lsu #(
       .Cfg(Cfg),
       .ISSUE_WIDTH(ISSUE_WIDTH)
   ) u_select (
-      .ready_mask      (rs_ready_wires & {RS_DEPTH{fu_ready_i}}),
-      .issue_grant_mask(grant_mask_wires),
-      .issue_valid     (issue_valid),
-      .issue_rs_idx    (issue_rs_idx)
+      .ready_mask      (rs_ready_wires),
+      .issue_grant_mask(grant_mask_sel_wires),
+      .issue_valid     (issue_valid_raw),
+      .issue_rs_idx    (issue_rs_idx_raw)
   );
 
   // Free count for backpressure

@@ -338,6 +338,73 @@ static void test_group_accepts_second_req_when_first_waits_dcache(Vtb_lsu *top) 
   top->ld_rsp_valid_i = 0;
 }
 
+static void test_group_allows_store_when_load_lanes_wait_dcache(Vtb_lsu *top) {
+  set_defaults(top);
+
+  // Fill lane0 with a load that cannot issue dcache req yet.
+  top->req_valid_i = 1;
+  top->is_load_i = 1;
+  top->is_store_i = 0;
+  top->lsu_op_i = LSU_LW;
+  top->rs1_data_i = 0x5200;
+  top->imm_i = 0;
+  top->rob_tag_i = 0x1A;
+  eval_comb(top);
+  expect(top->req_ready_o == 1, "LSU ls/st decouple: first load accepted");
+  tick(top);  // lane0 -> S_LD_REQ
+
+  // Fill lane1 with another load that also waits on dcache req.
+  top->ld_req_ready_i = 0;
+  top->req_valid_i = 1;
+  top->is_load_i = 1;
+  top->is_store_i = 0;
+  top->lsu_op_i = LSU_LW;
+  top->rs1_data_i = 0x5300;
+  top->imm_i = 0;
+  top->rob_tag_i = 0x1B;
+  eval_comb(top);
+  expect(top->req_ready_o == 1, "LSU ls/st decouple: second load accepted");
+  tick(top);  // lane1 -> S_LD_REQ
+
+  // While both load lanes wait for dcache ownership, a store should still be accepted.
+  top->req_valid_i = 1;
+  top->is_load_i = 0;
+  top->is_store_i = 1;
+  top->lsu_op_i = LSU_SW;
+  top->rs1_data_i = 0x5400;
+  top->imm_i = 8;
+  top->rs2_data_i = 0xA1B2C3D4;
+  top->rob_tag_i = 0x1C;
+  top->sb_id_i = 0x6;
+  eval_comb(top);
+  expect(top->req_ready_o == 1, "LSU ls/st decouple: store accepted while loads wait dcache");
+  expect(top->sb_ex_valid_o == 1, "LSU ls/st decouple: store writes SB without waiting load lane");
+  expect(top->sb_ex_addr_o == 0x5408, "LSU ls/st decouple: store address");
+  expect(top->sb_ex_data_o == 0xA1B2C3D4, "LSU ls/st decouple: store data");
+  tick(top);
+
+  // Let store and both loads drain for clean test exit.
+  top->req_valid_i = 0;
+  top->wb_ready_i = 1;
+  eval_comb(top);
+  if (top->wb_valid_o) tick(top);  // store wb if present
+
+  top->ld_req_ready_i = 1;
+  tick(top);  // one lane issues req
+  tick(top);  // another lane issues req
+  top->ld_req_ready_i = 0;
+
+  top->ld_rsp_valid_i = 1;
+  top->ld_rsp_id_i = 0;
+  top->ld_rsp_data_i = 0x11112222;
+  top->ld_rsp_err_i = 0;
+  tick(top);
+  top->ld_rsp_id_i = 1;
+  top->ld_rsp_data_i = 0x33334444;
+  tick(top);
+  top->ld_rsp_valid_i = 0;
+}
+
 static void test_store_can_complete_without_dcache_roundtrip(Vtb_lsu *top) {
   set_defaults(top);
   top->is_store_i = 1;
@@ -810,14 +877,15 @@ static void test_sq_does_not_forward_from_younger_store(Vtb_lsu *top) {
   eval_comb(top);
   expect(top->ld_req_valid_o == 1, "SQ age: older load must go to dcache");
   expect(top->ld_req_addr_o == 0xB200, "SQ age: dcache addr matches load");
-  expect(top->ld_req_id_o == 1, "SQ age: older load issued on lane1");
+  uint32_t older_load_rsp_id = top->ld_req_id_o;
+  expect(older_load_rsp_id < 2, "SQ age: older load issued with valid lane id");
 
   top->ld_req_ready_i = 1;
   tick(top);
   top->ld_req_ready_i = 0;
 
   top->ld_rsp_valid_i = 1;
-  top->ld_rsp_id_i = 1;
+  top->ld_rsp_id_i = older_load_rsp_id;
   top->ld_rsp_data_i = 0x11223344;
   top->ld_rsp_err_i = 0;
   eval_comb(top);
@@ -1045,6 +1113,7 @@ int main(int argc, char **argv) {
   test_load_misaligned(top);
   test_load_access_fault(top);
   test_group_accepts_second_req_when_first_waits_dcache(top);
+  test_group_allows_store_when_load_lanes_wait_dcache(top);
   test_store_can_complete_without_dcache_roundtrip(top);
   test_group_allows_new_req_when_older_lane_waits(top);
   test_group_allows_req_on_rsp_handoff_cycle(top);
