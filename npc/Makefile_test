@@ -5,8 +5,10 @@
 TEST ?= test_build_config test_ifu
 
 # --- Paths ---
-TEST_CPP_DIR = ./csrc
-TEST_CPP_ABSPATH = $(abspath $(TEST_CPP_DIR)/$(TEST).cpp)
+LEGACY_TEST_CPP = ./csrc/$(TEST).cpp
+NESTED_TEST_CPP = ./csrc/test/$(TEST).cpp
+TEST_CPP_PATH = $(firstword $(wildcard $(LEGACY_TEST_CPP) $(NESTED_TEST_CPP)))
+TEST_CPP_ABSPATH = $(abspath $(if $(TEST_CPP_PATH),$(TEST_CPP_PATH),$(LEGACY_TEST_CPP)))
 TEST_TB_MODULE = tb_$(subst test_,,$(TEST))
 TEST_TB_SV_DIR = ./vsrc/test
 TEST_TB_SV = $(TEST_TB_SV_DIR)/$(TEST_TB_MODULE).sv
@@ -21,6 +23,7 @@ VERILATOR = verilator
 VERILATOR_CFLAGS += -cc --exe --build -O3 --x-assign fast --x-initial fast --assert --trace
 VERILATOR_CFLAGS += --Wno-fatal --Wno-WIDTH
 VERILATOR_CFLAGS += -I./vsrc/include -I./vsrc
+VERILATOR_CFLAGS += -I./csrc/include
 
 PKG_VSRCS = \
 	./vsrc/include/config_pkg.sv \
@@ -48,6 +51,7 @@ all: $(BIN)
 
 # The build rule for the final executable
 $(BIN): $(VSRCS) $(TEST_CPP_ABSPATH)
+	@rm -rf $(OBJ_DIR)
 	@mkdir -p $(OBJ_DIR)
 	@echo "============================================="
 	@echo " VERILATING  : $(TEST_TB_MODULE) (from $(TEST_TB_SV))"
@@ -75,13 +79,16 @@ clean-all:
 
 # --- Run All Tests Logic ---
 
-ALL_TESTS = $(basename $(notdir $(wildcard ./csrc/test_*.cpp)))
+ALL_TESTS_ROOT = $(basename $(notdir $(wildcard ./csrc/test_*.cpp)))
+ALL_TESTS_NESTED = $(basename $(notdir $(wildcard ./csrc/test/test_*.cpp)))
+# Deduplicate by test name so the same test can temporarily exist in both paths.
+ALL_TESTS = $(sort $(ALL_TESTS_ROOT) $(ALL_TESTS_NESTED))
 
 .PHONY: run-all
 
 run-all:
 	@echo "============================================="
-	@echo " Running $(words $(ALL_TESTS)) tests found in ./csrc"
+	@echo " Running $(words $(ALL_TESTS)) tests found in ./csrc and ./csrc/test"
 	@echo "============================================="
 	@mkdir -p ./build
 	@rm -f ./build/run-all.fail
