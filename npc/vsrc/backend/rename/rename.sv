@@ -13,69 +13,72 @@ module rename #(
     input logic rst_ni,
 
     // --- From Decoder ---
-    input logic [3:0] dec_valid_i,
-    input decode_pkg::uop_t [3:0] dec_uops_i,
+    input logic [Cfg.INSTR_PER_FETCH-1:0] dec_valid_i,
+    input decode_pkg::uop_t [Cfg.INSTR_PER_FETCH-1:0] dec_uops_i,
     output logic rename_ready_o,  // 告诉 Decoder 可以发指令
 
     // --- To ROB (Dispatch Interface) ---
-    output logic            [3:0]               rob_dispatch_valid_o,
-    output logic            [3:0][Cfg.PLEN-1:0] rob_dispatch_pc_o,
-    output decode_pkg::fu_e [3:0]               rob_dispatch_fu_type_o,
-    output logic            [3:0][         4:0] rob_dispatch_areg_o,
-    output logic            [3:0]               rob_dispatch_has_rd_o,
-    output logic            [3:0]               rob_dispatch_is_branch_o,
-    output logic            [3:0]               rob_dispatch_is_jump_o,
-    output logic            [3:0]               rob_dispatch_is_call_o,
-    output logic            [3:0]               rob_dispatch_is_ret_o,
+    output logic            [Cfg.INSTR_PER_FETCH-1:0]               rob_dispatch_valid_o,
+    output logic            [Cfg.INSTR_PER_FETCH-1:0][Cfg.PLEN-1:0] rob_dispatch_pc_o,
+    output decode_pkg::fu_e [Cfg.INSTR_PER_FETCH-1:0]               rob_dispatch_fu_type_o,
+    output logic            [Cfg.INSTR_PER_FETCH-1:0][         4:0] rob_dispatch_areg_o,
+    output logic            [Cfg.INSTR_PER_FETCH-1:0]               rob_dispatch_has_rd_o,
+    output logic            [Cfg.INSTR_PER_FETCH-1:0]               rob_dispatch_is_branch_o,
+    output logic            [Cfg.INSTR_PER_FETCH-1:0]               rob_dispatch_is_jump_o,
+    output logic            [Cfg.INSTR_PER_FETCH-1:0]               rob_dispatch_is_call_o,
+    output logic            [Cfg.INSTR_PER_FETCH-1:0]               rob_dispatch_is_ret_o,
+    output logic            [Cfg.INSTR_PER_FETCH-1:0][decode_pkg::FTQ_ID_W-1:0] rob_dispatch_ftq_id_o,
+    output logic            [Cfg.INSTR_PER_FETCH-1:0][decode_pkg::FETCH_EPOCH_W-1:0] rob_dispatch_fetch_epoch_o,
 
     // [新增] 傳遞 Store 信息給 ROB
-    output logic [3:0]                   rob_dispatch_is_store_o,
-    output logic [3:0][SB_IDX_WIDTH-1:0] rob_dispatch_sb_id_o,
+    output logic [Cfg.INSTR_PER_FETCH-1:0]                   rob_dispatch_is_store_o,
+    output logic [Cfg.INSTR_PER_FETCH-1:0][SB_IDX_WIDTH-1:0] rob_dispatch_sb_id_o,
 
     // 輸入 ROB 的狀態
     input logic rob_ready_i,
     input logic [ROB_IDX_WIDTH-1:0] rob_tail_ptr_i,
 
     // --- To Store Buffer (Allocation Interface) [新增] ---
-    output logic [3:0] sb_alloc_req_o,  // 請求分配 SB Entry (每条store一项)
+    output logic [Cfg.INSTR_PER_FETCH-1:0] sb_alloc_req_o,  // 請求分配 SB Entry (每条store一项)
     input logic sb_alloc_ready_i,  // SB 是否可接受本周期所有请求
-    input logic [3:0][SB_IDX_WIDTH-1:0] sb_alloc_id_i,  // 每条store对应的 SB ID
+    input logic [Cfg.INSTR_PER_FETCH-1:0][SB_IDX_WIDTH-1:0] sb_alloc_id_i,  // 每条store对应的 SB ID
 
     // --- To Issue Queue / Operand Read Logic ---
-    output logic [3:0] issue_valid_o,
+    output logic [Cfg.INSTR_PER_FETCH-1:0] issue_valid_o,
 
     // 源操作數 1 信息
-    output logic [3:0] issue_rs1_in_rob_o,  // 1: 在 ROB, 0: 在 ARF
-    output logic [3:0][ROB_IDX_WIDTH-1:0] issue_rs1_rob_idx_o,  // 如果在 ROB，這是 Tag
-    output logic [3:0][4:0] issue_rs1_idx_o,        // [關鍵新增] 如果在 ARF，這是邏輯寄存器號
+    output logic [Cfg.INSTR_PER_FETCH-1:0] issue_rs1_in_rob_o,  // 1: 在 ROB, 0: 在 ARF
+    output logic [Cfg.INSTR_PER_FETCH-1:0][ROB_IDX_WIDTH-1:0] issue_rs1_rob_idx_o,  // 如果在 ROB，這是 Tag
+    output logic [Cfg.INSTR_PER_FETCH-1:0][4:0] issue_rs1_idx_o,        // [關鍵新增] 如果在 ARF，這是邏輯寄存器號
 
     // 源操作數 2 信息
-    output logic [3:0]                    issue_rs2_in_rob_o,
-    output logic [3:0][ROB_IDX_WIDTH-1:0] issue_rs2_rob_idx_o,
-    output logic [3:0][              4:0] issue_rs2_idx_o,      // [關鍵新增] 用於讀 ARF
+    output logic [Cfg.INSTR_PER_FETCH-1:0]                    issue_rs2_in_rob_o,
+    output logic [Cfg.INSTR_PER_FETCH-1:0][ROB_IDX_WIDTH-1:0] issue_rs2_rob_idx_o,
+    output logic [Cfg.INSTR_PER_FETCH-1:0][              4:0] issue_rs2_idx_o,      // [關鍵新增] 用於讀 ARF
 
     // 目標 Tag (分配給這條指令的 ROB ID)
-    output logic [3:0][ROB_IDX_WIDTH-1:0] issue_rd_rob_idx_o,
+    output logic [Cfg.INSTR_PER_FETCH-1:0][ROB_IDX_WIDTH-1:0] issue_rd_rob_idx_o,
 
     // --- From ROB Commit (用於更新 RAT 狀態) ---
-    input logic [3:0] commit_valid_i,
-    input logic [3:0][4:0] commit_areg_i,
-    input logic [3:0][ROB_IDX_WIDTH-1:0] commit_rob_idx_i,
+    input logic [Cfg.INSTR_PER_FETCH-1:0] commit_valid_i,
+    input logic [Cfg.INSTR_PER_FETCH-1:0][4:0] commit_areg_i,
+    input logic [Cfg.INSTR_PER_FETCH-1:0][ROB_IDX_WIDTH-1:0] commit_rob_idx_i,
 
     input logic flush_i
 );
+  localparam int unsigned DISPATCH_WIDTH = Cfg.INSTR_PER_FETCH;
 
   // ---------------------------------------------------------
   // 0. Store 檢測與 Flush 屏蔽
   // ---------------------------------------------------------
-  logic [3:0] dec_valid_masked;
-  logic [3:0] store_mask;
+  logic [DISPATCH_WIDTH-1:0] dec_valid_masked;
+  logic [DISPATCH_WIDTH-1:0] store_mask;
   logic has_store;
 
   always_comb begin
     has_store  = 1'b0;
     store_mask = '0;
-    for (int i = 0; i < 4; i++) begin
+    for (int i = 0; i < DISPATCH_WIDTH; i++) begin
       // 如果發生 Flush，屏蔽當前週期的輸入，防止錯誤指令進入 ROB
       dec_valid_masked[i] = dec_valid_i[i] && !flush_i;
 
@@ -101,11 +104,11 @@ module rename #(
   // ---------------------------------------------------------
   // 2. 生成新的 Tags (ROB ID 作為物理寄存器號)
   // ---------------------------------------------------------
-  logic [3:0][ROB_IDX_WIDTH-1:0] new_tags;
-  logic [3:0] alloc_req;  // 是否寫寄存器 (需要更新 RAT)
+  logic [DISPATCH_WIDTH-1:0][ROB_IDX_WIDTH-1:0] new_tags;
+  logic [DISPATCH_WIDTH-1:0] alloc_req;  // 是否寫寄存器 (需要更新 RAT)
 
   always_comb begin
-    for (int i = 0; i < 4; i++) begin
+    for (int i = 0; i < DISPATCH_WIDTH; i++) begin
       // Tag = ROB Tail + Offset
       new_tags[i]  = (rob_tail_ptr_i + i) % ROB_DEPTH;
 
@@ -118,17 +121,18 @@ module rename #(
   // ---------------------------------------------------------
   // 3. RAT 讀寫 (查表 + 更新)
   // ---------------------------------------------------------
-  logic [3:0] rat_rs1_in_rob, rat_rs2_in_rob;
-  logic [3:0][ROB_IDX_WIDTH-1:0] rat_rs1_tag, rat_rs2_tag;
+  logic [DISPATCH_WIDTH-1:0] rat_rs1_in_rob, rat_rs2_in_rob;
+  logic [DISPATCH_WIDTH-1:0][ROB_IDX_WIDTH-1:0] rat_rs1_tag, rat_rs2_tag;
 
   // 輔助函數提取端口信號
-  logic [3:0][4:0] rs1_indices, rs2_indices, rd_indices;
+  logic [DISPATCH_WIDTH-1:0][4:0] rs1_indices, rs2_indices, rd_indices;
   assign rs1_indices = get_rs1_indices(dec_uops_i);
   assign rs2_indices = get_rs2_indices(dec_uops_i);
   assign rd_indices  = get_rd_indices(dec_uops_i);
 
   rat #(
-      .ROB_DEPTH(ROB_DEPTH)
+      .ROB_DEPTH(ROB_DEPTH),
+      .DISPATCH_WIDTH(DISPATCH_WIDTH)
   ) u_rat (
       .clk_i,
       .rst_ni,
@@ -157,8 +161,8 @@ module rename #(
   // 4. 組內依賴檢查 (Intra-group Dependency Check)
   // ---------------------------------------------------------
   // 處理同一週期發射的 4 條指令之間的 RAW 依賴
-  logic [3:0] final_rs1_in_rob, final_rs2_in_rob;
-  logic [3:0][ROB_IDX_WIDTH-1:0] final_rs1_tag, final_rs2_tag;
+  logic [DISPATCH_WIDTH-1:0] final_rs1_in_rob, final_rs2_in_rob;
+  logic [DISPATCH_WIDTH-1:0][ROB_IDX_WIDTH-1:0] final_rs1_tag, final_rs2_tag;
 
   always_comb begin
     // 默認來自 RAT 查找結果
@@ -168,7 +172,7 @@ module rename #(
     final_rs2_tag    = rat_rs2_tag;
 
     // 檢查前面的指令是否寫了我的源寄存器
-    for (int i = 1; i < 4; i++) begin
+    for (int i = 1; i < DISPATCH_WIDTH; i++) begin
       for (int j = 0; j < i; j++) begin
         // Check RS1
         if (alloc_req[j] && dec_uops_i[i].has_rs1 && (rs1_indices[i] == rd_indices[j])) begin
@@ -188,7 +192,7 @@ module rename #(
   // 5. 輸出打包
   // ---------------------------------------------------------
   always_comb begin
-    for (int i = 0; i < 4; i++) begin
+    for (int i = 0; i < DISPATCH_WIDTH; i++) begin
       if (rename_ready_o && dec_valid_masked[i]) begin
         // --- To ROB ---
         rob_dispatch_valid_o[i]    = 1'b1;
@@ -204,6 +208,8 @@ module rename #(
             (dec_uops_i[i].rd == 5'd0) &&
             ((dec_uops_i[i].rs1 == 5'd1) || (dec_uops_i[i].rs1 == 5'd5)) &&
             (dec_uops_i[i].imm == Cfg.XLEN'(0));
+        rob_dispatch_ftq_id_o[i] = dec_uops_i[i].ftq_id;
+        rob_dispatch_fetch_epoch_o[i] = dec_uops_i[i].fetch_epoch;
 
         // Store 信息傳遞
         rob_dispatch_is_store_o[i] = dec_uops_i[i].is_store;
@@ -241,6 +247,8 @@ module rename #(
         rob_dispatch_is_jump_o[i] = 1'b0;
         rob_dispatch_is_call_o[i] = 1'b0;
         rob_dispatch_is_ret_o[i] = 1'b0;
+        rob_dispatch_ftq_id_o[i] = '0;
+        rob_dispatch_fetch_epoch_o[i] = '0;
         rob_dispatch_is_store_o[i] = 1'b0;
         rob_dispatch_sb_id_o[i]    = '0;
 
@@ -261,14 +269,17 @@ module rename #(
   // ---------------------------------------------------------
   // 輔助函數 (用於切片結構體數組)
   // ---------------------------------------------------------
-  function automatic logic [3:0][4:0] get_rs1_indices(decode_pkg::uop_t [3:0] uops);
-    for (int k = 0; k < 4; k++) get_rs1_indices[k] = uops[k].rs1;
+  function automatic logic [DISPATCH_WIDTH-1:0][4:0] get_rs1_indices(
+      decode_pkg::uop_t [DISPATCH_WIDTH-1:0] uops);
+    for (int k = 0; k < DISPATCH_WIDTH; k++) get_rs1_indices[k] = uops[k].rs1;
   endfunction
-  function automatic logic [3:0][4:0] get_rs2_indices(decode_pkg::uop_t [3:0] uops);
-    for (int k = 0; k < 4; k++) get_rs2_indices[k] = uops[k].rs2;
+  function automatic logic [DISPATCH_WIDTH-1:0][4:0] get_rs2_indices(
+      decode_pkg::uop_t [DISPATCH_WIDTH-1:0] uops);
+    for (int k = 0; k < DISPATCH_WIDTH; k++) get_rs2_indices[k] = uops[k].rs2;
   endfunction
-  function automatic logic [3:0][4:0] get_rd_indices(decode_pkg::uop_t [3:0] uops);
-    for (int k = 0; k < 4; k++) get_rd_indices[k] = uops[k].rd;
+  function automatic logic [DISPATCH_WIDTH-1:0][4:0] get_rd_indices(
+      decode_pkg::uop_t [DISPATCH_WIDTH-1:0] uops);
+    for (int k = 0; k < DISPATCH_WIDTH; k++) get_rd_indices[k] = uops[k].rd;
   endfunction
 
 endmodule

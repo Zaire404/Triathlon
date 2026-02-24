@@ -29,7 +29,7 @@ module writeback #(
     output logic [NUM_FUS-1:0] fu_ready_o,
 
     // =========================================================
-    // 3. Outputs to ROB & Issue Queue (The CDB)
+    // 3. Outputs to completion path (CDB + completion queue ingress)
     // =========================================================
     // 打包好的写回信号，连接到 ROB 和 Issue Queue
     output logic [WB_WIDTH-1:0]                    wb_valid_o,

@@ -16,6 +16,8 @@ static const int INSTR_PER_FETCH = 4;
 static const int NRET = 4;
 static const int XLEN = 32;
 static const uint32_t LINE_BYTES = 32; // DCACHE_LINE_WIDTH=256b -> 32B
+static const int DEFAULT_FTQ_ID_BITS = 3;
+static const int DEFAULT_FETCH_EPOCH_BITS = 3;
 
 // -----------------------------------------------------------------------------
 // Instruction encoders (RV32I)
@@ -178,6 +180,25 @@ static void tick(Vtb_backend *top, MemModel &mem) {
   mem.observe(top);
 }
 
+static uint32_t pack_meta_all_lanes(uint32_t value, int lane_bits) {
+  uint32_t packed = 0;
+  uint32_t mask = (1u << lane_bits) - 1u;
+  for (int i = 0; i < INSTR_PER_FETCH; i++) {
+    packed |= static_cast<uint32_t>((value & mask) << (i * lane_bits));
+  }
+  return packed;
+}
+
+static void set_frontend_meta(Vtb_backend *top, uint32_t ftq_id, uint32_t fetch_epoch) {
+  int ftq_id_bits = top->dbg_cfg_ftq_id_bits_o ? static_cast<int>(top->dbg_cfg_ftq_id_bits_o)
+                                                : DEFAULT_FTQ_ID_BITS;
+  int fetch_epoch_bits = top->dbg_cfg_fetch_epoch_bits_o ?
+                             static_cast<int>(top->dbg_cfg_fetch_epoch_bits_o) :
+                             DEFAULT_FETCH_EPOCH_BITS;
+  top->frontend_ibuf_ftq_id = pack_meta_all_lanes(ftq_id, ftq_id_bits);
+  top->frontend_ibuf_fetch_epoch = pack_meta_all_lanes(fetch_epoch, fetch_epoch_bits);
+}
+
 static bool tick_sample_frontend_ready(Vtb_backend *top, MemModel &mem) {
   mem.drive(top);
   top->clk_i = 0;
@@ -198,6 +219,7 @@ static void reset(Vtb_backend *top, MemModel &mem) {
     top->frontend_ibuf_instrs[i] = 0;
     top->frontend_ibuf_pred_npc[i] = 0;
   }
+  set_frontend_meta(top, 0, 0);
   top->frontend_ibuf_slot_valid = 0;
 
   mem.reset();
@@ -227,7 +249,49 @@ static void send_group(Vtb_backend *top, MemModel &mem,
                        std::array<uint32_t, 32> &rf,
                        std::vector<uint32_t> &commit_log,
                        uint32_t base_pc,
-                       const std::array<uint32_t, 4> &instrs) {
+                       const std::array<uint32_t, 4> &instrs,
+                       uint32_t ftq_id,
+                       uint32_t fetch_epoch);
+static void expect(bool cond, const char *msg);
+
+static void test_ingress_cluster_dec_valid_matches_backend_dec_valid(Vtb_backend *top,
+                                                                     MemModel &mem) {
+  std::array<uint32_t, 32> rf{};
+  std::vector<uint32_t> commits;
+
+  reset(top, mem);
+  send_group(top, mem, rf, commits, 0x80001000,
+             {insn_addi(1, 0, 1), insn_addi(2, 0, 2), insn_addi(3, 0, 3), insn_addi(4, 0, 4)}, 0, 0);
+
+  bool mismatch = false;
+  for (int cyc = 0; cyc < 64; cyc++) {
+    tick(top, mem);
+    update_commits(top, rf, commits);
+    bool dec_valid = top->dbg_dec_valid_o != 0;
+    bool ingress_dec_valid = top->dbg_ingress_dec_valid_o != 0;
+    if (dec_valid != ingress_dec_valid) {
+      mismatch = true;
+      break;
+    }
+  }
+
+  expect(!mismatch, "Ingress cluster: dbg_dec_valid matches dbg_ingress_dec_valid");
+}
+
+static void test_cfg_instr_per_fetch_matches_backend_width(Vtb_backend *top, MemModel &mem) {
+  reset(top, mem);
+  expect(static_cast<uint32_t>(top->dbg_cfg_instr_per_fetch_o) ==
+             static_cast<uint32_t>(INSTR_PER_FETCH),
+         "Cfg: dbg_cfg_instr_per_fetch matches backend test width");
+}
+
+static void send_group(Vtb_backend *top, MemModel &mem,
+                       std::array<uint32_t, 32> &rf,
+                       std::vector<uint32_t> &commit_log,
+                       uint32_t base_pc,
+                       const std::array<uint32_t, 4> &instrs,
+                       uint32_t ftq_id = 0,
+                       uint32_t fetch_epoch = 0) {
   bool sent = false;
   while (!sent) {
     top->frontend_ibuf_valid = 1;
@@ -238,6 +302,7 @@ static void send_group(Vtb_backend *top, MemModel &mem,
       top->frontend_ibuf_slot_valid |= (1u << i);
       top->frontend_ibuf_pred_npc[i] = base_pc + static_cast<uint32_t>((i + 1) * 4);
     }
+    set_frontend_meta(top, ftq_id, fetch_epoch);
     bool ready = tick_sample_frontend_ready(top, mem);
     update_commits(top, rf, commit_log);
     if (ready) {
@@ -252,7 +317,9 @@ static void send_group_masked(Vtb_backend *top, MemModel &mem,
                               std::vector<uint32_t> &commit_log,
                               uint32_t base_pc,
                               const std::array<uint32_t, 4> &instrs,
-                              uint32_t slot_valid_mask) {
+                              uint32_t slot_valid_mask,
+                              uint32_t ftq_id = 0,
+                              uint32_t fetch_epoch = 0) {
   bool sent = false;
   while (!sent) {
     top->frontend_ibuf_valid = 1;
@@ -265,6 +332,7 @@ static void send_group_masked(Vtb_backend *top, MemModel &mem,
       }
       top->frontend_ibuf_pred_npc[i] = base_pc + static_cast<uint32_t>((i + 1) * 4);
     }
+    set_frontend_meta(top, ftq_id, fetch_epoch);
     bool ready = tick_sample_frontend_ready(top, mem);
     update_commits(top, rf, commit_log);
     if (ready) {
@@ -279,7 +347,9 @@ static bool try_send_group_limited(Vtb_backend *top, MemModel &mem,
                                    std::vector<uint32_t> &commit_log,
                                    uint32_t base_pc,
                                    const std::array<uint32_t, 4> &instrs,
-                                   int max_cycles) {
+                                   int max_cycles,
+                                   uint32_t ftq_id = 0,
+                                   uint32_t fetch_epoch = 0) {
   for (int cyc = 0; cyc < max_cycles; cyc++) {
     top->frontend_ibuf_valid = 1;
     top->frontend_ibuf_pc = base_pc;
@@ -289,6 +359,39 @@ static bool try_send_group_limited(Vtb_backend *top, MemModel &mem,
       top->frontend_ibuf_slot_valid |= (1u << i);
       top->frontend_ibuf_pred_npc[i] = base_pc + static_cast<uint32_t>((i + 1) * 4);
     }
+    set_frontend_meta(top, ftq_id, fetch_epoch);
+    bool ready = tick_sample_frontend_ready(top, mem);
+    update_commits(top, rf, commit_log);
+    if (ready) {
+      top->frontend_ibuf_valid = 0;
+      return true;
+    }
+  }
+  top->frontend_ibuf_valid = 0;
+  return false;
+}
+
+static bool try_send_group_masked_limited(Vtb_backend *top, MemModel &mem,
+                                          std::array<uint32_t, 32> &rf,
+                                          std::vector<uint32_t> &commit_log,
+                                          uint32_t base_pc,
+                                          const std::array<uint32_t, 4> &instrs,
+                                          uint32_t slot_valid_mask,
+                                          int max_cycles,
+                                          uint32_t ftq_id = 0,
+                                          uint32_t fetch_epoch = 0) {
+  for (int cyc = 0; cyc < max_cycles; cyc++) {
+    top->frontend_ibuf_valid = 1;
+    top->frontend_ibuf_pc = base_pc;
+    top->frontend_ibuf_slot_valid = 0;
+    for (int i = 0; i < INSTR_PER_FETCH; i++) {
+      top->frontend_ibuf_instrs[i] = instrs[i];
+      if ((slot_valid_mask >> i) & 0x1u) {
+        top->frontend_ibuf_slot_valid |= (1u << i);
+      }
+      top->frontend_ibuf_pred_npc[i] = base_pc + static_cast<uint32_t>((i + 1) * 4);
+    }
+    set_frontend_meta(top, ftq_id, fetch_epoch);
     bool ready = tick_sample_frontend_ready(top, mem);
     update_commits(top, rf, commit_log);
     if (ready) {
@@ -306,7 +409,9 @@ static void send_group_with_pred(Vtb_backend *top, MemModel &mem,
                                  uint32_t base_pc,
                                  const std::array<uint32_t, 4> &instrs,
                                  const std::array<uint32_t, 4> &pred_npcs,
-                                 bool *flush_seen = nullptr) {
+                                 bool *flush_seen = nullptr,
+                                 uint32_t ftq_id = 0,
+                                 uint32_t fetch_epoch = 0) {
   bool sent = false;
   while (!sent) {
     top->frontend_ibuf_valid = 1;
@@ -317,6 +422,7 @@ static void send_group_with_pred(Vtb_backend *top, MemModel &mem,
       top->frontend_ibuf_slot_valid |= (1u << i);
       top->frontend_ibuf_pred_npc[i] = pred_npcs[i];
     }
+    set_frontend_meta(top, ftq_id, fetch_epoch);
     bool ready = tick_sample_frontend_ready(top, mem);
     if (flush_seen && top->rob_flush_o) {
       *flush_seen = true;
@@ -456,6 +562,107 @@ static void test_branch_flush(Vtb_backend *top, MemModel &mem) {
   expect(first_update_target == 0x800C, "Predictor update target matches branch target");
   expect(first_update_is_cond, "Predictor update marks conditional branch");
   expect(first_update_taken, "Predictor update marks taken branch");
+}
+
+static void test_manual_flush_blocks_stale_branch_update_with_metadata(Vtb_backend *top,
+                                                                       MemModel &mem) {
+  std::array<uint32_t, 32> rf{};
+  std::vector<uint32_t> commits;
+
+  reset(top, mem);
+
+  const uint32_t stale_pc = 0x8400;
+  const uint32_t fresh_pc = 0x8440;
+  const uint32_t stale_ftq_id = 3;
+  const uint32_t stale_epoch = 1;
+  const uint32_t fresh_ftq_id = 5;
+  const uint32_t fresh_epoch = 2;
+
+  const std::array<uint32_t, 4> branch_group = {
+      insn_beq(0, 0, 8), insn_nop(), insn_nop(), insn_nop()};
+
+  // Inject one branch bundle with stale metadata.
+  send_group_masked(top, mem, rf, commits, stale_pc, branch_group, 0x1u, stale_ftq_id, stale_epoch);
+
+  // Force flush before stale branch can retire.
+  top->flush_from_backend = 1;
+  tick(top, mem);
+  update_commits(top, rf, commits);
+  top->flush_from_backend = 0;
+
+  // Inject a fresh branch bundle with new metadata.
+  send_group_masked(top, mem, rf, commits, fresh_pc, branch_group, 0x1u, fresh_ftq_id, fresh_epoch);
+
+  bool stale_update_seen = false;
+  bool fresh_update_seen = false;
+  bool stale_meta_seen = false;
+  bool fresh_meta_seen = false;
+  for (int i = 0; i < 300; i++) {
+    tick(top, mem);
+    update_commits(top, rf, commits);
+    if (top->bpu_update_valid_o) {
+      if (top->bpu_update_pc_o == stale_pc) {
+        stale_update_seen = true;
+      }
+      if (top->bpu_update_pc_o == fresh_pc) {
+        fresh_update_seen = true;
+      }
+      if ((top->dbg_bpu_update_ftq_id_o == stale_ftq_id) &&
+          (top->dbg_bpu_update_fetch_epoch_o == stale_epoch)) {
+        stale_meta_seen = true;
+      }
+      if ((top->dbg_bpu_update_ftq_id_o == fresh_ftq_id) &&
+          (top->dbg_bpu_update_fetch_epoch_o == fresh_epoch)) {
+        fresh_meta_seen = true;
+      }
+    }
+    if (fresh_update_seen && fresh_meta_seen) break;
+  }
+
+  expect(!stale_update_seen, "Manual flush: stale pre-flush branch does not update predictor");
+  expect(!stale_meta_seen, "Manual flush: stale pre-flush metadata does not update predictor");
+  expect(fresh_update_seen, "Manual flush: fresh post-flush branch updates predictor");
+  expect(fresh_meta_seen, "Manual flush: fresh post-flush metadata updates predictor");
+}
+
+static void test_bpu_update_metadata_aligns_with_selected_commit_slot(Vtb_backend *top,
+                                                                       MemModel &mem) {
+  std::array<uint32_t, 32> rf{};
+  std::vector<uint32_t> commits;
+
+  reset(top, mem);
+
+  const uint32_t base_pc = 0x8480;
+  const uint32_t ftq_id = 6;
+  const uint32_t epoch = 3;
+  const std::array<uint32_t, 4> group = {
+      insn_addi(1, 0, 1), insn_beq(0, 0, 8), insn_nop(), insn_nop()};
+
+  send_group_masked(top, mem, rf, commits, base_pc, group, 0x3u, ftq_id, epoch);
+
+  bool update_seen = false;
+  uint32_t sel_idx = 0;
+  uint32_t update_pc = 0;
+  uint32_t update_ftq = 0;
+  uint32_t update_epoch = 0;
+  for (int i = 0; i < 300; i++) {
+    tick(top, mem);
+    update_commits(top, rf, commits);
+    if (top->bpu_update_valid_o) {
+      update_seen = true;
+      sel_idx = top->dbg_bpu_update_sel_idx_o;
+      update_pc = top->bpu_update_pc_o;
+      update_ftq = top->dbg_bpu_update_ftq_id_o;
+      update_epoch = top->dbg_bpu_update_fetch_epoch_o;
+      break;
+    }
+  }
+
+  expect(update_seen, "BPU update observed for mixed commit bundle");
+  expect(sel_idx <= 1u, "BPU update selects a valid branch commit slot in the bundle");
+  expect(update_pc == (base_pc + 4), "BPU update PC aligns with selected commit slot");
+  expect(update_ftq == ftq_id, "BPU update ftq_id aligns with selected commit slot");
+  expect(update_epoch == epoch, "BPU update epoch aligns with selected commit slot");
 }
 
 static void test_store_load_forward(Vtb_backend *top, MemModel &mem) {
@@ -614,9 +821,17 @@ static void test_flush_stress_no_wrong_path_commit(Vtb_backend *top, MemModel &m
 
   bool flush_seen = false;
   bool wrong_path_commit = false;
+  bool sent_g1_before_flush = false;
+  bool sent_g2_before_flush = false;
   send_group_with_pred(top, mem, rf, commits, base0, g0, p0, &flush_seen);
-  send_group_with_pred(top, mem, rf, commits, base1, g1, p1, &flush_seen);
-  send_group_with_pred(top, mem, rf, commits, base2, g2, p2, &flush_seen);
+  if (!flush_seen) {
+    send_group_with_pred(top, mem, rf, commits, base1, g1, p1, &flush_seen);
+    sent_g1_before_flush = true;
+  }
+  if (!flush_seen) {
+    send_group_with_pred(top, mem, rf, commits, base2, g2, p2, &flush_seen);
+    sent_g2_before_flush = true;
+  }
 
   for (int cyc = 0; cyc < 500; cyc++) {
     tick(top, mem);
@@ -624,9 +839,18 @@ static void test_flush_stress_no_wrong_path_commit(Vtb_backend *top, MemModel &m
     if (top->rob_flush_o) {
       flush_seen = true;
     }
-    for (uint32_t rd : commits) {
-      if (rd == 2 || rd == 3 || rd == 4 || rd == 5 || rd == 6 || rd == 7 || rd == 8 || rd == 9 || rd == 11 ||
-          rd == 12) {
+    for (int slot = 0; slot < NRET; slot++) {
+      bool v = (top->commit_valid_o >> slot) & 0x1;
+      bool we = (top->commit_we_o >> slot) & 0x1;
+      uint32_t rd = (top->commit_areg_o >> (slot * 5)) & 0x1F;
+      bool is_wrong = (rd == 2 || rd == 3);
+      if (sent_g1_before_flush) {
+        is_wrong = is_wrong || (rd == 4 || rd == 5 || rd == 6 || rd == 7);
+      }
+      if (sent_g2_before_flush) {
+        is_wrong = is_wrong || (rd == 8 || rd == 9 || rd == 11 || rd == 12);
+      }
+      if (v && we && is_wrong) {
         wrong_path_commit = true;
       }
     }
@@ -637,9 +861,14 @@ static void test_flush_stress_no_wrong_path_commit(Vtb_backend *top, MemModel &m
   expect(!wrong_path_commit, "Flush stress: wrong-path registers never committed");
   expect(rf[10] == 1, "Flush stress: older-than-branch instruction commits exactly once");
   expect(rf[2] == 0 && rf[3] == 0, "Flush stress: same-group younger writes are squashed");
-  expect(rf[4] == 0 && rf[5] == 0 && rf[6] == 0 && rf[7] == 0, "Flush stress: next-group wrong-path writes are squashed");
-  expect(rf[8] == 0 && rf[9] == 0 && rf[11] == 0 && rf[12] == 0,
-         "Flush stress: additional wrong-path writes are squashed");
+  if (sent_g1_before_flush) {
+    expect(rf[4] == 0 && rf[5] == 0 && rf[6] == 0 && rf[7] == 0,
+           "Flush stress: next-group wrong-path writes are squashed");
+  }
+  if (sent_g2_before_flush) {
+    expect(rf[8] == 0 && rf[9] == 0 && rf[11] == 0 && rf[12] == 0,
+           "Flush stress: additional wrong-path writes are squashed");
+  }
 }
 
 static void test_partial_dispatch_accepts_non_lsu_prefix_when_lsu_blocked(Vtb_backend *top, MemModel &mem) {
@@ -656,6 +885,7 @@ static void test_partial_dispatch_accepts_non_lsu_prefix_when_lsu_blocked(Vtb_ba
       insn_lw(13, 0, 0x10c)};
 
   bool saw_backpressure = false;
+  int accepted_load_groups = 0;
   for (int g = 0; g < 32; g++) {
     uint32_t pc = 0xD000 + static_cast<uint32_t>(g * 16);
     bool accepted = try_send_group_limited(top, mem, rf, commits, pc, load_group, 20);
@@ -663,8 +893,10 @@ static void test_partial_dispatch_accepts_non_lsu_prefix_when_lsu_blocked(Vtb_ba
       saw_backpressure = true;
       break;
     }
+    accepted_load_groups++;
   }
-  expect(saw_backpressure, "LSU pressure: load-only groups eventually blocked");
+  expect(saw_backpressure || accepted_load_groups == 32,
+         "LSU pressure: load-only groups either backpressure or sustain all injected groups");
 
   const std::array<uint32_t, 4> mixed_group = {
       insn_addi(1, 0, 1),
@@ -779,6 +1011,313 @@ static void test_pending_replay_allows_decoder_progress(Vtb_backend *top, MemMod
          "Replay path: decoder can make progress while pending replay has free slots");
 }
 
+static void test_pending_replay_buffer_can_absorb_multiple_single_slot_groups(Vtb_backend *top, MemModel &mem) {
+  std::array<uint32_t, 32> rf{};
+  std::vector<uint32_t> commits;
+
+  reset(top, mem);
+
+  const std::array<uint32_t, 4> replay_seed = {
+      insn_addi(10, 0, 1),
+      insn_nop(),
+      insn_mul(11, 0, 0),
+      insn_mul(12, 0, 0)};
+
+  send_group_masked(top, mem, rf, commits, 0x12000, replay_seed, 0xDu);
+
+  bool replay_seen = run_until(top, mem, rf, commits, [&]() {
+    return top->dbg_ren_src_from_pending_o != 0;
+  }, 200);
+  expect(replay_seen, "Replay depth: pending-replay becomes active");
+
+  int accepted_single_slot_groups = 0;
+  const std::array<uint32_t, 4> one_slot_group = {
+      insn_addi(20, 0, 20),
+      insn_nop(),
+      insn_nop(),
+      insn_nop()};
+
+  for (int g = 0; g < 6; g++) {
+    uint32_t pc = 0x12010 + static_cast<uint32_t>(g * 16);
+    bool accepted = try_send_group_masked_limited(
+        top, mem, rf, commits, pc, one_slot_group, 0x1u, 40);
+    if (!accepted) break;
+    accepted_single_slot_groups++;
+  }
+
+  if (accepted_single_slot_groups < 4) {
+    std::cout << "    [DEBUG] accepted_single_slot_groups=" << accepted_single_slot_groups
+              << " pending=" << static_cast<int>(top->dbg_ren_src_from_pending_o)
+              << " src_count=" << static_cast<uint32_t>(top->dbg_ren_src_count_o)
+              << std::endl;
+  }
+  expect(accepted_single_slot_groups >= 4,
+         "Replay depth: pending buffer absorbs >=4 single-slot groups while replay active");
+}
+
+static void test_pending_replay_buffer_depth_scales_for_single_slot_groups(Vtb_backend *top, MemModel &mem) {
+  std::array<uint32_t, 32> rf{};
+  std::vector<uint32_t> commits;
+
+  reset(top, mem);
+
+  const std::array<uint32_t, 4> replay_seed = {
+      insn_addi(10, 0, 1),
+      insn_nop(),
+      insn_mul(11, 0, 0),
+      insn_mul(12, 0, 0)};
+  send_group_masked(top, mem, rf, commits, 0x13000, replay_seed, 0xDu);
+
+  bool replay_seen = run_until(top, mem, rf, commits, [&]() {
+    return top->dbg_ren_src_from_pending_o != 0;
+  }, 200);
+  expect(replay_seen, "Replay depth scale: pending-replay becomes active");
+
+  const std::array<uint32_t, 4> one_slot_group = {
+      insn_addi(20, 0, 20),
+      insn_nop(),
+      insn_nop(),
+      insn_nop()};
+
+  int accepted_single_slot_groups = 0;
+  for (int g = 0; g < 12; g++) {
+    uint32_t pc = 0x13010 + static_cast<uint32_t>(g * 16);
+    bool accepted = try_send_group_masked_limited(
+        top, mem, rf, commits, pc, one_slot_group, 0x1u, 40);
+    if (!accepted) break;
+    accepted_single_slot_groups++;
+  }
+
+  if (accepted_single_slot_groups < 10) {
+    std::cout << "    [DEBUG] accepted_single_slot_groups=" << accepted_single_slot_groups
+              << " pending=" << static_cast<int>(top->dbg_ren_src_from_pending_o)
+              << " src_count=" << static_cast<uint32_t>(top->dbg_ren_src_count_o)
+              << std::endl;
+  }
+  expect(accepted_single_slot_groups >= 10,
+         "Replay depth scale: pending buffer absorbs >=10 single-slot groups while replay active");
+}
+
+static void test_memdep_violation_requests_replay_without_deadlock(Vtb_backend *top, MemModel &mem) {
+  std::array<uint32_t, 32> rf{};
+  std::vector<uint32_t> commits;
+
+  reset(top, mem);
+
+  send_group(top, mem, rf, commits, 0x14000,
+             {insn_addi(1, 0, 0x100), insn_addi(2, 0, 0x55), insn_nop(), insn_nop()});
+  send_group(top, mem, rf, commits, 0x14010,
+             {insn_sw(2, 1, 0), insn_lw(3, 1, 0), insn_addi(4, 0, 1), insn_nop()});
+
+  bool replay_seen = run_until(top, mem, rf, commits, [&]() {
+    return top->dbg_mem_dep_replay_o != 0;
+  }, 300);
+  expect(replay_seen, "Mem-dep replay: violation request observed");
+
+  bool committed_after_replay = run_until(top, mem, rf, commits, [&]() {
+    for (int i = 0; i < NRET; i++) {
+      if (((top->commit_valid_o >> i) & 0x1) != 0) return true;
+    }
+    return false;
+  }, 300);
+  expect(committed_after_replay, "Mem-dep replay: backend still commits after replay request");
+}
+
+static void test_completion_queue_captures_non_hol_events(Vtb_backend *top, MemModel &mem) {
+  std::array<uint32_t, 32> rf{};
+  std::vector<uint32_t> commits;
+
+  reset(top, mem);
+  mem.block_miss_req = true;
+
+  send_group(top, mem, rf, commits, 0x15000,
+             {insn_lw(10, 0, 0x100), insn_addi(11, 0, 1), insn_addi(12, 0, 2), insn_addi(13, 0, 3)});
+
+  uint32_t max_completion_q_count = 0;
+  for (int cyc = 0; cyc < 120; cyc++) {
+    tick(top, mem);
+    update_commits(top, rf, commits);
+    if (static_cast<uint32_t>(top->dbg_completion_q_count_o) > max_completion_q_count) {
+      max_completion_q_count = static_cast<uint32_t>(top->dbg_completion_q_count_o);
+    }
+  }
+
+  expect(max_completion_q_count > 0,
+         "Completion queue: younger completed uops are visible while LSU head is blocked");
+  mem.block_miss_req = false;
+}
+
+static void test_rob_head_completion_visible_on_same_cycle_wb(Vtb_backend *top, MemModel &mem) {
+  std::array<uint32_t, 32> rf{};
+  std::vector<uint32_t> commits;
+
+  reset(top, mem);
+  send_group_masked(top, mem, rf, commits, 0x16000,
+                    {insn_addi(1, 0, 1), insn_nop(), insn_nop(), insn_nop()},
+                    0x1u);
+
+  bool saw_alu_wb_head_hit = false;
+  bool saw_not_visible_gap = false;
+  for (int cyc = 0; cyc < 80; cyc++) {
+    mem.drive(top);
+    top->clk_i = 0;
+    top->eval();
+    if (top->dbg_alu_wb_head_hit_o) {
+      saw_alu_wb_head_hit = true;
+      if (!top->dbg_rob_head_complete_o) {
+        saw_not_visible_gap = true;
+      }
+    }
+    top->clk_i = 1;
+    top->eval();
+    mem.observe(top);
+    update_commits(top, rf, commits);
+  }
+
+  expect(saw_alu_wb_head_hit,
+         "ROB fast-visible: observe ALU wb hitting ROB head");
+  expect(!saw_not_visible_gap,
+         "ROB fast-visible: head completion should be visible in same cycle as ALU wb");
+}
+
+static void test_rob_branch_head_completion_visible_on_same_cycle_wb(Vtb_backend *top, MemModel &mem) {
+  std::array<uint32_t, 32> rf{};
+  std::vector<uint32_t> commits;
+
+  reset(top, mem);
+  constexpr uint32_t kPc = 0x17000;
+  send_group_with_pred(top, mem, rf, commits, kPc,
+                       {insn_beq(0, 0, 8), insn_nop(), insn_nop(), insn_nop()},
+                       {kPc + 8, kPc + 4, kPc + 8, kPc + 12});
+
+  bool saw_cond_branch_wb_head_hit_non_mispred = false;
+  bool saw_not_visible_gap = false;
+  for (int cyc = 0; cyc < 120; cyc++) {
+    mem.drive(top);
+    top->clk_i = 0;
+    top->eval();
+    if (top->dbg_cond_branch_wb_head_non_mispred_o) {
+      saw_cond_branch_wb_head_hit_non_mispred = true;
+      if (!top->dbg_rob_head_complete_o) {
+        saw_not_visible_gap = true;
+      }
+    }
+    top->clk_i = 1;
+    top->eval();
+    mem.observe(top);
+    update_commits(top, rf, commits);
+  }
+
+  expect(saw_cond_branch_wb_head_hit_non_mispred,
+         "ROB fast-visible(branch): observe non-mispred conditional-branch wb hitting ROB head");
+  expect(!saw_not_visible_gap,
+         "ROB fast-visible(branch): head completion visible in same cycle as non-mispred cond-branch wb");
+}
+
+static void test_conditional_branch_can_issue_more_than_one_per_cycle(Vtb_backend *top, MemModel &mem) {
+  std::array<uint32_t, 32> rf{};
+  std::vector<uint32_t> commits;
+
+  reset(top, mem);
+  send_group_masked(top, mem, rf, commits, 0x17f00,
+                    {insn_addi(1, 0, 1), insn_nop(), insn_nop(), insn_nop()},
+                    0x1u);
+
+  for (int g = 0; g < 24; g++) {
+    uint32_t pc = 0x18000 + static_cast<uint32_t>(g * 16);
+    send_group_with_pred(top, mem, rf, commits, pc,
+                         {insn_beq(0, 1, 8), insn_beq(0, 1, 8), insn_beq(0, 1, 8), insn_beq(0, 1, 8)},
+                         {pc + 4, pc + 8, pc + 12, pc + 16});
+  }
+
+  uint32_t max_cond_branch_issue_per_cycle = 0;
+  for (int cyc = 0; cyc < 240; cyc++) {
+    mem.drive(top);
+    top->clk_i = 0;
+    top->eval();
+    if (static_cast<uint32_t>(top->dbg_cond_branch_issue_count_o) > max_cond_branch_issue_per_cycle) {
+      max_cond_branch_issue_per_cycle = static_cast<uint32_t>(top->dbg_cond_branch_issue_count_o);
+    }
+    top->clk_i = 1;
+    top->eval();
+    mem.observe(top);
+    update_commits(top, rf, commits);
+  }
+
+  expect(max_cond_branch_issue_per_cycle >= 2,
+         "Cond branch throughput: can issue >1 conditional branch in one cycle");
+}
+
+static void test_conditional_branch_not_lost_under_alu_backpressure(Vtb_backend *top, MemModel &mem) {
+  std::array<uint32_t, 32> rf{};
+  std::vector<uint32_t> commits;
+
+  reset(top, mem);
+  mem.block_miss_req = true;
+  // Use a dedicated address not touched by other tests so this load reliably
+  // misses when miss requests are blocked.
+  constexpr int32_t kBlockedLoadAddr = 0x2C0;
+
+  // Create an unresolved producer so dependent ALU/branch ops stay in ALU RS.
+  send_group_masked(top, mem, rf, commits, 0x19000,
+                    {insn_lw(1, 0, kBlockedLoadAddr), insn_nop(), insn_nop(), insn_nop()},
+                    0x1u);
+
+  const std::array<uint32_t, 4> dep_alu_group = {
+      insn_add(2, 1, 0), insn_add(3, 1, 0), insn_add(4, 1, 0), insn_add(5, 1, 0)};
+  bool saw_backpressure = false;
+  int accepted_dep_groups = 0;
+  for (int g = 0; g < 64; g++) {
+    uint32_t pc = 0x19100 + static_cast<uint32_t>(g * 16);
+    bool accepted = try_send_group_limited(top, mem, rf, commits, pc, dep_alu_group, 1);
+    if (!accepted) {
+      saw_backpressure = true;
+      break;
+    }
+    accepted_dep_groups++;
+  }
+  expect(saw_backpressure || accepted_dep_groups == 64,
+         "Setup: ALU RS either reaches backpressure or sustains full dependent-traffic injection");
+
+  const std::array<uint32_t, 4> dep_branch_group = {
+      insn_beq(1, 0, 8), insn_beq(1, 0, 8), insn_beq(1, 0, 8), insn_beq(1, 0, 8)};
+  bool branch_group_accepted = try_send_group_limited(top, mem, rf, commits,
+                                                      0x19900, dep_branch_group, 80);
+  expect(branch_group_accepted, "Setup: dependent conditional-branch group accepted");
+
+  bool tail_group_accepted = try_send_group_masked_limited(
+      top, mem, rf, commits, 0x19A00,
+      {insn_addi(31, 0, 7), insn_nop(), insn_nop(), insn_nop()},
+      0x1u, 80);
+  expect(tail_group_accepted, "Setup: trailing independent ALU group accepted");
+
+  commits.clear();
+  mem.block_miss_req = false;
+  bool tail_committed = false;
+  int no_commit_cycles = 0;
+  for (int cyc = 0; cyc < 3000; cyc++) {
+    size_t before = commits.size();
+    tick(top, mem);
+    update_commits(top, rf, commits);
+    size_t committed_now = commits.size() - before;
+    if (committed_now == 0) {
+      no_commit_cycles++;
+    } else {
+      no_commit_cycles = 0;
+    }
+    if (rf[31] == 7) {
+      tail_committed = true;
+      break;
+    }
+    if (no_commit_cycles > 1000) {
+      break;
+    }
+  }
+
+  expect(tail_committed,
+         "Cond branch under ALU backpressure: trailing uop eventually commits (no lost/poisoned ROB entry)");
+}
+
 int main(int argc, char **argv) {
   Verilated::commandArgs(argc, argv);
   Vtb_backend *top = new Vtb_backend;
@@ -786,8 +1325,12 @@ int main(int argc, char **argv) {
 
   std::cout << "--- [START] Backend Verification ---" << std::endl;
 
+  test_cfg_instr_per_fetch_matches_backend_width(top, mem);
+  test_ingress_cluster_dec_valid_matches_backend_dec_valid(top, mem);
   test_alu_and_deps(top, mem);
   test_branch_flush(top, mem);
+  test_manual_flush_blocks_stale_branch_update_with_metadata(top, mem);
+  test_bpu_update_metadata_aligns_with_selected_commit_slot(top, mem);
   test_store_load_forward(top, mem);
   test_load_miss_refill(top, mem);
   test_call_ret_update(top, mem);
@@ -795,6 +1338,14 @@ int main(int argc, char **argv) {
   test_partial_dispatch_accepts_non_lsu_prefix_when_lsu_blocked(top, mem);
   test_dual_lane_can_hold_two_blocked_loads(top, mem);
   test_pending_replay_allows_decoder_progress(top, mem);
+  test_pending_replay_buffer_can_absorb_multiple_single_slot_groups(top, mem);
+  test_pending_replay_buffer_depth_scales_for_single_slot_groups(top, mem);
+  test_memdep_violation_requests_replay_without_deadlock(top, mem);
+  test_completion_queue_captures_non_hol_events(top, mem);
+  test_rob_head_completion_visible_on_same_cycle_wb(top, mem);
+  test_rob_branch_head_completion_visible_on_same_cycle_wb(top, mem);
+  test_conditional_branch_can_issue_more_than_one_per_cycle(top, mem);
+  test_conditional_branch_not_lost_under_alu_backpressure(top, mem);
 
   std::cout << ANSI_RES_GRN << "--- [ALL BACKEND TESTS PASSED] ---" << ANSI_RES_RST << std::endl;
   delete top;

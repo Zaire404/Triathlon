@@ -26,6 +26,8 @@ void tick(Vtb_dcache *top, VerilatedVcdC *tfp) {
 }
 
 void reset(Vtb_dcache *top, VerilatedVcdC *tfp) {
+  top->ld_req_id_i = 0;
+  top->ld_rsp_ready_i = 0;
   top->rst_ni = 0;
   tick(top, tfp);
   tick(top, tfp);
@@ -111,6 +113,7 @@ void check_load(Vtb_dcache *top, VerilatedVcdC *tfp, uint32_t addr,
   top->ld_req_valid_i = 1;
   top->ld_req_addr_i = addr;
   top->ld_req_op_i = op;
+  top->ld_req_id_i = 0;
 
   bool req_accepted = false;
   while (!req_accepted && sim_time < MAX_SIM_TIME) {
@@ -138,6 +141,10 @@ void check_load(Vtb_dcache *top, VerilatedVcdC *tfp, uint32_t addr,
   bool got_resp = false;
   while (!got_resp && sim_time < MAX_SIM_TIME) {
     if (top->ld_rsp_valid_o) {
+      if (top->ld_rsp_id_o != 0) {
+        std::cout << "[FAIL] " << msg << " unexpected ld_rsp_id=" << top->ld_rsp_id_o << std::endl;
+        assert(false);
+      }
       if (top->ld_rsp_data_o != expected_data) {
         std::cout << "[FAIL] " << msg << " Addr=" << std::hex << addr
                   << " Exp=" << expected_data << " Got=" << top->ld_rsp_data_o
@@ -506,6 +513,521 @@ int main(int argc, char **argv) {
     assert(false);
   }
   std::cout << "[PASS] Case 9: Store miss non-blocking path works." << std::endl;
+
+  // ============================================================
+  // Test 10: Accept next load while previous load response is stalled
+  // ============================================================
+  std::cout << "[TEST] Case 10: Queue load req during response stall" << std::endl;
+
+  reset(top, tfp);
+  top->miss_req_ready_i = 1;
+  top->refill_valid_i = 0;
+  top->wb_req_ready_i = 1;
+  top->ld_rsp_ready_i = 1;
+  top->st_req_valid_i = 0;
+  top->ld_req_valid_i = 0;
+
+  const uint32_t case10_a = 0x80008000;
+  const uint32_t case10_a_data = 0x11112222;
+
+  // Warm up one line into cache (both requests hit the same line afterwards).
+  check_load(top, tfp, case10_a, case10_a_data, OP_LW, "Case 10: Warmup A");
+
+  // First load (A) -> let response become valid, but do not consume it yet.
+  wait_until_ready(top, tfp, false);
+  top->ld_req_valid_i = 1;
+  top->ld_req_addr_i = case10_a;
+  top->ld_req_op_i = OP_LW;
+  top->ld_req_id_i = 1;
+  tick(top, tfp);
+  top->ld_req_valid_i = 0;
+  top->ld_rsp_ready_i = 0;
+
+  bool first_rsp_seen = false;
+  for (int i = 0; i < 20; i++) {
+    if (top->ld_rsp_valid_o) {
+      first_rsp_seen = true;
+      break;
+    }
+    tick(top, tfp);
+  }
+  if (!first_rsp_seen) {
+    std::cout << "[FAIL] Case 10: first load response not observed." << std::endl;
+    assert(false);
+  }
+  if (top->ld_rsp_data_o != case10_a_data || top->ld_rsp_id_o != 1) {
+    std::cout << "[FAIL] Case 10: first response payload mismatch." << std::endl;
+    assert(false);
+  }
+
+  // Response channel is stalled now.
+  top->eval();
+
+  // Second load (B) should still be accepted while first response is stalled.
+  top->ld_req_valid_i = 1;
+  top->ld_req_addr_i = case10_a;
+  top->ld_req_op_i = OP_LW;
+  top->ld_req_id_i = 0;
+  top->eval();
+  if (!top->ld_req_ready_o) {
+    std::cout << "[FAIL] Case 10: second load not accepted during response stall."
+              << std::endl;
+    assert(false);
+  }
+  tick(top, tfp); // handshake second request
+  top->ld_req_valid_i = 0;
+
+  // Release first response.
+  top->ld_rsp_ready_i = 1;
+  tick(top, tfp);
+
+  // Then second response should eventually arrive with id=0/data=A.
+  bool second_rsp_seen = false;
+  for (int i = 0; i < 30; i++) {
+    if (top->ld_rsp_valid_o) {
+      if (top->ld_rsp_id_o == 0) {
+        if (top->ld_rsp_data_o != case10_a_data) {
+          std::cout << "[FAIL] Case 10: second response payload mismatch."
+                    << std::endl;
+          assert(false);
+        }
+        tick(top, tfp); // consume second response
+        second_rsp_seen = true;
+        break;
+      }
+    }
+    if (top->miss_req_valid_o || top->wb_req_valid_o) {
+      handle_memory_interaction(top, tfp, case10_a_data);
+      continue;
+    }
+    tick(top, tfp);
+  }
+  if (!second_rsp_seen) {
+    std::cout << "[FAIL] Case 10: second response not observed." << std::endl;
+    assert(false);
+  }
+  std::cout << "[PASS] Case 10: Load queueing during response stall works."
+            << std::endl;
+
+  // ============================================================
+  // Test 11: Do not accept same-line load during miss LOOKUP cycle
+  // ============================================================
+  std::cout << "[TEST] Case 11: Block same-line load in miss LOOKUP" << std::endl;
+
+  reset(top, tfp);
+  top->miss_req_ready_i = 1;
+  top->refill_valid_i = 0;
+  top->wb_req_ready_i = 1;
+  top->ld_rsp_ready_i = 1;
+  top->st_req_valid_i = 0;
+  top->ld_req_valid_i = 0;
+
+  const uint32_t case11_addr = 0x80009000;
+
+  // First load: make it miss.
+  wait_until_ready(top, tfp, false);
+  top->ld_req_valid_i = 1;
+  top->ld_req_addr_i = case11_addr;
+  top->ld_req_op_i = OP_LW;
+  top->ld_req_id_i = 0;
+  tick(top, tfp); // handshake first request; next cycle enters LOOKUP.
+  top->ld_req_valid_i = 0;
+
+  // In LOOKUP cycle, second same-line load must not be accepted.
+  top->ld_req_valid_i = 1;
+  top->ld_req_addr_i = case11_addr;
+  top->ld_req_op_i = OP_LW;
+  top->ld_req_id_i = 1;
+  top->eval();
+  if (top->ld_req_ready_o) {
+    std::cout << "[FAIL] Case 11: second same-line load accepted in miss LOOKUP."
+              << std::endl;
+    assert(false);
+  }
+  top->ld_req_valid_i = 0;
+  std::cout << "[PASS] Case 11: same-line load blocked in miss LOOKUP."
+            << std::endl;
+
+  // ============================================================
+  // Test 12: Response ID/data pairing under response stall
+  // ============================================================
+  std::cout << "[TEST] Case 12: Keep ID/data pairing with stalled response"
+            << std::endl;
+
+  reset(top, tfp);
+  top->miss_req_ready_i = 1;
+  top->refill_valid_i = 0;
+  top->wb_req_ready_i = 1;
+  top->ld_rsp_ready_i = 1;
+  top->st_req_valid_i = 0;
+  top->ld_req_valid_i = 0;
+
+  const uint32_t case12_a = 0x8000A000;
+  const uint32_t case12_b = 0x8000B000;
+  const uint32_t case12_a_data = 0xA1A2A3A4;
+  const uint32_t case12_b_data = 0xB1B2B3B4;
+
+  check_load(top, tfp, case12_a, case12_a_data, OP_LW, "Case 12: Warmup A");
+  check_load(top, tfp, case12_b, case12_b_data, OP_LW, "Case 12: Warmup B");
+
+  // First request A(id=1), then hold response channel.
+  wait_until_ready(top, tfp, false);
+  top->ld_req_valid_i = 1;
+  top->ld_req_addr_i = case12_a;
+  top->ld_req_op_i = OP_LW;
+  top->ld_req_id_i = 1;
+  tick(top, tfp);
+  top->ld_req_valid_i = 0;
+  top->ld_rsp_ready_i = 0;
+
+  bool case12_first_rsp_seen = false;
+  for (int i = 0; i < 30; i++) {
+    if (top->ld_rsp_valid_o) {
+      case12_first_rsp_seen = true;
+      break;
+    }
+    tick(top, tfp);
+  }
+  if (!case12_first_rsp_seen) {
+    std::cout << "[FAIL] Case 12: first response not observed." << std::endl;
+    assert(false);
+  }
+  if (top->ld_rsp_id_o != 1 || top->ld_rsp_data_o != case12_a_data) {
+    std::cout << "[FAIL] Case 12: first response payload mismatch."
+              << " id=" << std::hex << static_cast<int>(top->ld_rsp_id_o)
+              << " data=0x" << top->ld_rsp_data_o << std::endl;
+    assert(false);
+  }
+
+  // While first response is stalled, second request B(id=0) must be accepted.
+  top->ld_req_valid_i = 1;
+  top->ld_req_addr_i = case12_b;
+  top->ld_req_op_i = OP_LW;
+  top->ld_req_id_i = 0;
+  top->eval();
+  if (!top->ld_req_ready_o) {
+    std::cout << "[FAIL] Case 12: second request not accepted while stalled."
+              << std::endl;
+    assert(false);
+  }
+  tick(top, tfp);
+  top->ld_req_valid_i = 0;
+
+  // Consume first response.
+  top->ld_rsp_ready_i = 1;
+  tick(top, tfp);
+
+  // Then second response must carry B(id=0,data=B).
+  bool case12_second_rsp_seen = false;
+  for (int i = 0; i < 40; i++) {
+    if (top->ld_rsp_valid_o && top->ld_rsp_id_o == 0) {
+      if (top->ld_rsp_data_o != case12_b_data) {
+        std::cout << "[FAIL] Case 12: second response data mismatch. got=0x"
+                  << std::hex << top->ld_rsp_data_o << " exp=0x"
+                  << case12_b_data << std::endl;
+        assert(false);
+      }
+      tick(top, tfp);
+      case12_second_rsp_seen = true;
+      break;
+    }
+    if (top->miss_req_valid_o || top->wb_req_valid_o) {
+      handle_memory_interaction(top, tfp, case12_b_data);
+      continue;
+    }
+    tick(top, tfp);
+  }
+  if (!case12_second_rsp_seen) {
+    std::cout << "[FAIL] Case 12: second response not observed." << std::endl;
+    assert(false);
+  }
+  std::cout << "[PASS] Case 12: ID/data pairing is preserved." << std::endl;
+
+  // ============================================================
+  // Test 12B: Response handoff should start next lookup without IDLE bubble
+  // ============================================================
+  std::cout << "[TEST] Case 12B: Response handoff no-bubble lookup" << std::endl;
+
+  reset(top, tfp);
+  top->miss_req_ready_i = 1;
+  top->refill_valid_i = 0;
+  top->wb_req_ready_i = 1;
+  top->ld_rsp_ready_i = 1;
+  top->st_req_valid_i = 0;
+  top->ld_req_valid_i = 0;
+
+  const uint32_t case14_addr = 0x8000C000;
+  const uint32_t case14_data = 0xCC33AA55;
+
+  // Warm one cache line so both requests are hit path.
+  check_load(top, tfp, case14_addr, case14_data, OP_LW, "Case 12B: Warmup");
+
+  // First hit request (id=1), wait until response is valid.
+  wait_until_ready(top, tfp, false);
+  top->ld_req_valid_i = 1;
+  top->ld_req_addr_i = case14_addr;
+  top->ld_req_op_i = OP_LW;
+  top->ld_req_id_i = 1;
+  tick(top, tfp);
+  top->ld_req_valid_i = 0;
+
+  bool case14_first_rsp_seen = false;
+  for (int i = 0; i < 20; i++) {
+    if (top->ld_rsp_valid_o) {
+      case14_first_rsp_seen = true;
+      break;
+    }
+    tick(top, tfp);
+  }
+  if (!case14_first_rsp_seen) {
+    std::cout << "[FAIL] Case 12B: first response not observed." << std::endl;
+    assert(false);
+  }
+  if (top->ld_rsp_data_o != case14_data || top->ld_rsp_id_o != 1) {
+    std::cout << "[FAIL] Case 12B: first response payload mismatch." << std::endl;
+    assert(false);
+  }
+
+  // On response consume cycle, inject second hit request (id=0) simultaneously.
+  top->ld_rsp_ready_i = 1;
+  top->ld_req_valid_i = 1;
+  top->ld_req_addr_i = case14_addr;
+  top->ld_req_op_i = OP_LW;
+  top->ld_req_id_i = 0;
+  top->eval();
+  if (!top->ld_req_ready_o) {
+    std::cout << "[FAIL] Case 12B: second request not accepted on handoff cycle."
+              << std::endl;
+    assert(false);
+  }
+  tick(top, tfp); // consume first response + accept second request
+  top->ld_req_valid_i = 0;
+
+  // One cycle later, second response should already be valid (no IDLE bubble).
+  tick(top, tfp);
+  if (!top->ld_rsp_valid_o) {
+    std::cout << "[FAIL] Case 12B: second response missing at no-bubble timing."
+              << std::endl;
+    assert(false);
+  }
+  if (top->ld_rsp_id_o != 0 || top->ld_rsp_data_o != case14_data) {
+    std::cout << "[FAIL] Case 12B: second response payload mismatch."
+              << " id=" << std::hex << static_cast<int>(top->ld_rsp_id_o)
+              << " data=0x" << top->ld_rsp_data_o << std::endl;
+    assert(false);
+  }
+  top->ld_rsp_ready_i = 1;
+  tick(top, tfp);
+  std::cout << "[PASS] Case 12B: Response handoff starts next lookup immediately."
+            << std::endl;
+
+  // ============================================================
+  // Test 12C: Response handoff must predrive next lookup address
+  // ============================================================
+  std::cout << "[TEST] Case 12C: Response handoff cross-line no-stale-read"
+            << std::endl;
+
+  reset(top, tfp);
+  top->miss_req_ready_i = 1;
+  top->refill_valid_i = 0;
+  top->wb_req_ready_i = 1;
+  top->ld_rsp_ready_i = 1;
+  top->st_req_valid_i = 0;
+  top->ld_req_valid_i = 0;
+
+  const uint32_t case12c_a = 0x8000D040;
+  const uint32_t case12c_b = 0x8000D080;
+  const uint32_t case12c_a_data = 0x11223344;
+  const uint32_t case12c_b_data = 0x55667788;
+
+  check_load(top, tfp, case12c_a, case12c_a_data, OP_LW, "Case 12C: Warmup A");
+  check_load(top, tfp, case12c_b, case12c_b_data, OP_LW, "Case 12C: Warmup B");
+
+  // First hit request A(id=1), wait until response is valid.
+  wait_until_ready(top, tfp, false);
+  top->ld_req_valid_i = 1;
+  top->ld_req_addr_i = case12c_a;
+  top->ld_req_op_i = OP_LW;
+  top->ld_req_id_i = 1;
+  tick(top, tfp);
+  top->ld_req_valid_i = 0;
+
+  bool case12c_first_rsp_seen = false;
+  for (int i = 0; i < 20; i++) {
+    if (top->ld_rsp_valid_o) {
+      case12c_first_rsp_seen = true;
+      break;
+    }
+    tick(top, tfp);
+  }
+  if (!case12c_first_rsp_seen) {
+    std::cout << "[FAIL] Case 12C: first response not observed." << std::endl;
+    assert(false);
+  }
+  if (top->ld_rsp_data_o != case12c_a_data || top->ld_rsp_id_o != 1) {
+    std::cout << "[FAIL] Case 12C: first response payload mismatch." << std::endl;
+    assert(false);
+  }
+
+  // On response consume cycle, inject second hit request to a different line B(id=0).
+  top->ld_rsp_ready_i = 1;
+  top->ld_req_valid_i = 1;
+  top->ld_req_addr_i = case12c_b;
+  top->ld_req_op_i = OP_LW;
+  top->ld_req_id_i = 0;
+  top->eval();
+  if (!top->ld_req_ready_o) {
+    std::cout << "[FAIL] Case 12C: second request not accepted on handoff cycle."
+              << std::endl;
+    assert(false);
+  }
+  tick(top, tfp); // consume first response + accept second request
+  top->ld_req_valid_i = 0;
+
+  // One cycle later, second response should be B's payload (not stale A).
+  tick(top, tfp);
+  if (!top->ld_rsp_valid_o) {
+    std::cout << "[FAIL] Case 12C: second response missing at no-bubble timing."
+              << std::endl;
+    assert(false);
+  }
+  if (top->ld_rsp_id_o != 0 || top->ld_rsp_data_o != case12c_b_data) {
+    std::cout << "[FAIL] Case 12C: stale or mismatched payload."
+              << " id=" << std::hex << static_cast<int>(top->ld_rsp_id_o)
+              << " data=0x" << top->ld_rsp_data_o << " exp=0x"
+              << case12c_b_data << std::endl;
+    assert(false);
+  }
+  top->ld_rsp_ready_i = 1;
+  tick(top, tfp);
+  std::cout << "[PASS] Case 12C: handoff cross-line read data is correct."
+            << std::endl;
+
+  // ============================================================
+  // Test 13: Reset must invalidate cache contents
+  // ============================================================
+  std::cout << "[TEST] Case 13: Reset invalidates cache lines" << std::endl;
+
+  const uint32_t case13_addr = 0x80001234;
+  const uint32_t case13_data = 0x13579BDF;
+
+  // Populate one line first.
+  reset(top, tfp);
+  top->miss_req_ready_i = 1;
+  top->refill_valid_i = 0;
+  top->wb_req_ready_i = 1;
+  top->ld_rsp_ready_i = 1;
+  top->st_req_valid_i = 0;
+  top->ld_req_valid_i = 0;
+  check_load(top, tfp, case13_addr, case13_data, OP_LW, "Case 13: Warm line");
+
+  // Reset DUT again. After reset, the same address must miss (cannot hit stale line).
+  reset(top, tfp);
+  top->miss_req_ready_i = 1;
+  top->refill_valid_i = 0;
+  top->wb_req_ready_i = 1;
+  top->ld_rsp_ready_i = 1;
+  top->st_req_valid_i = 0;
+  top->ld_req_valid_i = 0;
+
+  wait_until_ready(top, tfp, false);
+  top->ld_req_valid_i = 1;
+  top->ld_req_addr_i = case13_addr;
+  top->ld_req_op_i = OP_LW;
+  top->ld_req_id_i = 0;
+  tick(top, tfp);  // handshake
+  top->ld_req_valid_i = 0;
+
+  bool case13_seen_miss = false;
+  bool case13_seen_rsp_early = false;
+  for (int i = 0; i < 20; i++) {
+    if (top->miss_req_valid_o) {
+      case13_seen_miss = true;
+      break;
+    }
+    if (top->ld_rsp_valid_o) {
+      case13_seen_rsp_early = true;
+      break;
+    }
+    tick(top, tfp);
+  }
+
+  if (case13_seen_rsp_early || !case13_seen_miss) {
+    std::cout << "[FAIL] Case 13: load hit stale cache line after reset."
+              << std::endl;
+    assert(false);
+  }
+  std::cout << "[PASS] Case 13: reset causes miss as expected." << std::endl;
+
+  // Complete miss/refill and check response payload.
+  handle_memory_interaction(top, tfp, case13_data);
+  bool case13_rsp_ok = false;
+  for (int i = 0; i < 30; i++) {
+    if (top->ld_rsp_valid_o) {
+      if (top->ld_rsp_data_o != case13_data || top->ld_rsp_id_o != 0) {
+        std::cout << "[FAIL] Case 13: response payload mismatch after refill."
+                  << std::endl;
+        assert(false);
+      }
+      top->ld_rsp_ready_i = 1;
+      tick(top, tfp);
+      top->ld_rsp_ready_i = 0;
+      case13_rsp_ok = true;
+      break;
+    }
+    tick(top, tfp);
+  }
+  if (!case13_rsp_ok) {
+    std::cout << "[FAIL] Case 13: no response after refill." << std::endl;
+    assert(false);
+  }
+
+  // ============================================================
+  // Test 14: Deep miss-under-miss capacity (12+ outstanding misses)
+  // ============================================================
+  std::cout << "[TEST] Case 14: 12+ outstanding misses before refill" << std::endl;
+
+  reset(top, tfp);
+  top->miss_req_ready_i = 1;
+  top->refill_valid_i = 0;
+  top->wb_req_ready_i = 1;
+  top->ld_rsp_ready_i = 1;
+  top->st_req_valid_i = 0;
+  top->ld_req_valid_i = 0;
+
+  constexpr int kTargetMisses = 12;
+  int issued_load_misses = 0;
+  int fired_miss_reqs = 0;
+  int cycles = 0;
+
+  while ((issued_load_misses < kTargetMisses || fired_miss_reqs < kTargetMisses) &&
+         cycles < 2000) {
+    top->eval();
+    if (top->miss_req_valid_o && top->miss_req_ready_i) {
+      fired_miss_reqs++;
+    }
+
+    if (issued_load_misses < kTargetMisses && top->ld_req_ready_o) {
+      top->ld_req_valid_i = 1;
+      top->ld_req_addr_i = 0x81000000 + static_cast<uint32_t>(issued_load_misses * 0x1000);
+      top->ld_req_op_i = OP_LW;
+      top->ld_req_id_i = static_cast<uint32_t>(issued_load_misses & 0x1);
+      tick(top, tfp);
+      top->ld_req_valid_i = 0;
+      issued_load_misses++;
+    } else {
+      tick(top, tfp);
+    }
+    cycles++;
+  }
+
+  if (issued_load_misses < kTargetMisses || fired_miss_reqs < kTargetMisses) {
+    std::cout << "[FAIL] Case 14: outstanding miss depth too shallow. issued="
+              << issued_load_misses << " miss_fire=" << fired_miss_reqs << std::endl;
+    assert(false);
+  }
+  std::cout << "[PASS] Case 14: dcache accepts >=12 outstanding misses."
+            << std::endl;
 
   // Cleanup
   for (int i = 0; i < 20; i++)

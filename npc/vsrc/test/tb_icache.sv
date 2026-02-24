@@ -50,7 +50,8 @@ module tb_icache (
 
   // 3. 实例化 DUT
   icache #(
-      .Cfg(Cfg)
+      .Cfg(Cfg),
+      .HIT_PIPELINE_EN(1'b1)
   ) DUT (
       .clk_i (clk_i),
       .rst_ni(rst_ni),

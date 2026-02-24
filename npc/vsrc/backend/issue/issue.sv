@@ -68,16 +68,20 @@ module issue #(
 
   // B. RS <-> Select Logic 之间的握手线
   wire [RS_DEPTH-1:0] rs_ready_wires;  // RS -> Select
-  wire [RS_DEPTH-1:0] grant_mask_wires;  // Select -> RS (清除Busy)
+  logic [RS_DEPTH-1:0] grant_mask_wires;  // Select -> RS (清除Busy)
 
   // C. Select Logic -> ALU Mux 的选择信号
   wire [$clog2(RS_DEPTH)-1:0] alu0_sel;
   wire [$clog2(RS_DEPTH)-1:0] alu1_sel;
   wire [$clog2(RS_DEPTH)-1:0] alu2_sel;
   wire [$clog2(RS_DEPTH)-1:0] alu3_sel;
-  localparam int ISSUE_WIDTH = 4;
-  wire [ISSUE_WIDTH-1:0] issue_valid;
-  wire [$clog2(RS_DEPTH)-1:0] issue_rs_idx[0:ISSUE_WIDTH-1];
+  localparam int ISSUE_WIDTH = Cfg.INSTR_PER_FETCH;
+  localparam int RS_IDX_W = $clog2(RS_DEPTH);
+  logic [ISSUE_WIDTH-1:0] issue_valid;
+  logic [$clog2(RS_DEPTH)-1:0] issue_rs_idx[0:ISSUE_WIDTH-1];
+  logic [RS_DEPTH-1:0] select_mask_stage[0:ISSUE_WIDTH];
+  logic [RS_DEPTH-1:0] select_grant_stage[0:ISSUE_WIDTH-1];
+  logic [$clog2(RS_DEPTH)-1:0] rr_base_q, rr_base_d;
 
   assign alu0_en  = issue_valid[0];
   assign alu1_en  = issue_valid[1];
@@ -87,6 +91,30 @@ module issue #(
   assign alu1_sel = issue_rs_idx[1];
   assign alu2_sel = issue_rs_idx[2];
   assign alu3_sel = issue_rs_idx[3];
+
+  function automatic logic [RS_DEPTH-1:0] find_first_one_from_base(
+      input logic [RS_DEPTH-1:0] in_vec,
+      input logic [RS_IDX_W-1:0] base
+  );
+    logic [RS_DEPTH-1:0] out_vec;
+    logic found;
+    begin
+      out_vec = '0;
+      found = 1'b0;
+      for (int off = 0; off < RS_DEPTH; off++) begin
+        int unsigned idx_int;
+        logic [RS_IDX_W-1:0] idx;
+        idx_int = base + off;
+        if (idx_int >= RS_DEPTH) idx_int -= RS_DEPTH;
+        idx = RS_IDX_W'(idx_int);
+        if (in_vec[idx] && !found) begin
+          out_vec[idx] = 1'b1;
+          found = 1'b1;
+        end
+      end
+      return out_vec;
+    end
+  endfunction
 
   // D. Crossbar <-> RS 输入数据线 (16组宽总线)
   // 这些是在 always_comb 里被驱动的
@@ -124,54 +152,25 @@ module issue #(
       rs_in_r2[k]  = 0;
     end
 
-    if (dispatch_valid[0]) begin
-      rs_in_op[routing_idx[0]]  = dispatch_op[0];
-      rs_in_dst[routing_idx[0]] = dispatch_dst[0];
-      rs_in_v1[routing_idx[0]]  = dispatch_v1[0];
-      rs_in_q1[routing_idx[0]]  = dispatch_q1[0];
-      rs_in_r1[routing_idx[0]]  = dispatch_r1[0];
-      rs_in_v2[routing_idx[0]]  = dispatch_v2[0];
-      rs_in_q2[routing_idx[0]]  = dispatch_q2[0];
-      rs_in_r2[routing_idx[0]]  = dispatch_r2[0];
-    end
-
-    // 指令 1
-    if (dispatch_valid[1]) begin
-      rs_in_op[routing_idx[1]]  = dispatch_op[1];
-      rs_in_dst[routing_idx[1]] = dispatch_dst[1];
-      rs_in_v1[routing_idx[1]]  = dispatch_v1[1];
-      rs_in_q1[routing_idx[1]]  = dispatch_q1[1];
-      rs_in_r1[routing_idx[1]]  = dispatch_r1[1];
-      rs_in_v2[routing_idx[1]]  = dispatch_v2[1];
-      rs_in_q2[routing_idx[1]]  = dispatch_q2[1];
-      rs_in_r2[routing_idx[1]]  = dispatch_r2[1];
-    end
-
-    if (dispatch_valid[2]) begin
-      rs_in_op[routing_idx[2]]  = dispatch_op[2];
-      rs_in_dst[routing_idx[2]] = dispatch_dst[2];
-      rs_in_v1[routing_idx[2]]  = dispatch_v1[2];
-      rs_in_q1[routing_idx[2]]  = dispatch_q1[2];
-      rs_in_r1[routing_idx[2]]  = dispatch_r1[2];
-      rs_in_v2[routing_idx[2]]  = dispatch_v2[2];
-      rs_in_q2[routing_idx[2]]  = dispatch_q2[2];
-      rs_in_r2[routing_idx[2]]  = dispatch_r2[2];
-    end
-
-    if (dispatch_valid[3]) begin
-      rs_in_q1[routing_idx[3]]  = dispatch_q1[3];
-      rs_in_r1[routing_idx[3]]  = dispatch_r1[3];
-      rs_in_v2[routing_idx[3]]  = dispatch_v2[3];
-      rs_in_q2[routing_idx[3]]  = dispatch_q2[3];
-      rs_in_r2[routing_idx[3]]  = dispatch_r2[3];
-      rs_in_op[routing_idx[3]]  = dispatch_op[3];
-      rs_in_dst[routing_idx[3]] = dispatch_dst[3];
-      rs_in_v1[routing_idx[3]]  = dispatch_v1[3];
+    for (int slot = 0; slot < ISSUE_WIDTH; slot++) begin
+      if (dispatch_valid[slot]) begin
+        rs_in_op[routing_idx[slot]]  = dispatch_op[slot];
+        rs_in_dst[routing_idx[slot]] = dispatch_dst[slot];
+        rs_in_v1[routing_idx[slot]]  = dispatch_v1[slot];
+        rs_in_q1[routing_idx[slot]]  = dispatch_q1[slot];
+        rs_in_r1[routing_idx[slot]]  = dispatch_r1[slot];
+        rs_in_v2[routing_idx[slot]]  = dispatch_v2[slot];
+        rs_in_q2[routing_idx[slot]]  = dispatch_q2[slot];
+        rs_in_r2[routing_idx[slot]]  = dispatch_r2[slot];
+      end
     end
   end
 
   reservation_station #(
       .Cfg(Cfg),
+      .RS_DEPTH(RS_DEPTH),
+      .DATA_W(DATA_W),
+      .TAG_W(TAG_W),
       .CDB_W(CDB_W)
   ) u_rs (
       .clk(clk),
@@ -195,6 +194,8 @@ module issue #(
       .cdb_valid(cdb_valid),
       .cdb_tag  (cdb_tag),
       .cdb_value(cdb_val),
+      .comb_wakeup_en(1'b0),
+      .cdb_wakeup_mask({CDB_W{1'b1}}),
 
       .busy_vector(rs_busy_wires),
 
@@ -228,17 +229,57 @@ module issue #(
   );
 
   // ==========================================
-  // 模块 3: 选择逻辑 (Issue Select)
+  // 模块 3: 选择逻辑 (Round-Robin from base)
   // ==========================================
-  issue_select #(
-      .Cfg(Cfg),
-      .ISSUE_WIDTH(ISSUE_WIDTH)
-  ) u_select (
-      .ready_mask      (rs_ready_wires),
-      .issue_grant_mask(grant_mask_wires),
-      .issue_valid     (issue_valid),
-      .issue_rs_idx    (issue_rs_idx)
-  );
+  always_comb begin
+    select_mask_stage[0] = rs_ready_wires;
+    grant_mask_wires = '0;
+    for (int j = 0; j < ISSUE_WIDTH; j++) begin
+      select_grant_stage[j] = find_first_one_from_base(select_mask_stage[j], rr_base_q);
+      select_mask_stage[j+1] = select_mask_stage[j] & ~select_grant_stage[j];
+      grant_mask_wires |= select_grant_stage[j];
+
+      issue_valid[j] = |select_grant_stage[j];
+      issue_rs_idx[j] = '0;
+      for (int i = 0; i < RS_DEPTH; i++) begin
+        if (select_grant_stage[j][i]) begin
+          issue_rs_idx[j] = i[RS_IDX_W-1:0];
+        end
+      end
+    end
+  end
+
+  always_comb begin
+    logic any_issue;
+    logic [RS_IDX_W-1:0] last_issue_idx;
+    any_issue = 1'b0;
+    last_issue_idx = rr_base_q;
+    for (int j = 0; j < ISSUE_WIDTH; j++) begin
+      if (issue_valid[j]) begin
+        any_issue = 1'b1;
+        last_issue_idx = issue_rs_idx[j];
+      end
+    end
+
+    rr_base_d = rr_base_q;
+    if (any_issue) begin
+      if (last_issue_idx == RS_DEPTH - 1) begin
+        rr_base_d = '0;
+      end else begin
+        rr_base_d = last_issue_idx + RS_IDX_W'(1);
+      end
+    end
+  end
+
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      rr_base_q <= '0;
+    end else if (flush_i) begin
+      rr_base_q <= '0;
+    end else begin
+      rr_base_q <= rr_base_d;
+    end
+  end
 
   // Free count for backpressure
   always_comb begin

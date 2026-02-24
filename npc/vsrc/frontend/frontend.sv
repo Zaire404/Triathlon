@@ -1,5 +1,6 @@
 // vsrc/frontend/frontend.sv
 import global_config_pkg::*;
+import core_contract_pkg::*;
 
 module frontend #(
     parameter config_pkg::cfg_t Cfg = config_pkg::EmptyCfg
@@ -17,6 +18,8 @@ module frontend #(
     output logic [           Cfg.PLEN-1:0]               ibuffer_pc_o,     // Fetch Group 的 PC
     output logic [Cfg.INSTR_PER_FETCH-1:0]               ibuffer_slot_valid_o,
     output logic [Cfg.INSTR_PER_FETCH-1:0][Cfg.PLEN-1:0] ibuffer_pred_npc_o,
+    output logic [Cfg.INSTR_PER_FETCH-1:0][((Cfg.IFU_INF_DEPTH >= 2) ? $clog2(Cfg.IFU_INF_DEPTH) : 1)-1:0] ibuffer_ftq_id_o,
+    output logic [Cfg.INSTR_PER_FETCH-1:0][2:0] ibuffer_fetch_epoch_o,
 
     // 冲刷与重定向 (Input from Backend)
     input logic                flush_i,
@@ -51,14 +54,6 @@ module frontend #(
     input  logic [     Cfg.ICACHE_LINE_WIDTH-1:0] refill_data_i
 );
 
-`ifdef BPU_ENABLE_GSHARE
-  localparam bit BPU_USE_GSHARE = 1'b1;
-`else
-  localparam bit BPU_USE_GSHARE = 1'b0;
-`endif
-  localparam int unsigned BPU_BTB_ENTRIES = 128;
-  localparam int unsigned BPU_BHT_ENTRIES = 512;
-
   // =================================================================
   // 内部信号定义
   // =================================================================
@@ -82,6 +77,7 @@ module frontend #(
   logic [Cfg.VLEN-1:0] ifu2icache_req_addr;
   logic [Cfg.INSTR_PER_FETCH-1:0][Cfg.ILEN-1:0] icache2ifu_rsp_data;
   logic flush_icache;
+  fe_be_bundle_t fe_be_view;
 
   // =================================================================
   // 逻辑连接与适配
@@ -95,6 +91,14 @@ module frontend #(
   assign bpu2ifu_pred_slot_valid = bpu_to_ifu_struct.pred_slot_valid;
   assign bpu2ifu_pred_slot_idx = bpu_to_ifu_struct.pred_slot_idx;
   assign bpu2ifu_pred_target = bpu_to_ifu_struct.pred_slot_target;
+  assign fe_be_view.valid = ibuffer_valid_o;
+  assign fe_be_view.ready = ibuffer_ready_i;
+  assign fe_be_view.pc = ibuffer_pc_o;
+  assign fe_be_view.instrs = ibuffer_data_o;
+  assign fe_be_view.slot_valid = ibuffer_slot_valid_o;
+  assign fe_be_view.pred_npc = ibuffer_pred_npc_o;
+  assign fe_be_view.ftq_id = ibuffer_ftq_id_o;
+  assign fe_be_view.fetch_epoch = ibuffer_fetch_epoch_o;
 
   // =================================================================
   // 模块实例化
@@ -132,6 +136,8 @@ module frontend #(
       .ifu_ibuffer_rsp_data_o (ibuffer_data_o),
       .ifu_ibuffer_rsp_slot_valid_o(ibuffer_slot_valid_o),
       .ifu_ibuffer_rsp_pred_npc_o(ibuffer_pred_npc_o),
+      .ifu_ibuffer_rsp_ftq_id_o(ibuffer_ftq_id_o),
+      .ifu_ibuffer_rsp_fetch_epoch_o(ibuffer_fetch_epoch_o),
 
       // --- Backend Control ---
       .flush_i      (flush_i),
@@ -143,9 +149,37 @@ module frontend #(
   // -------------------
   bpu #(
       .Cfg(Cfg),
-      .BTB_ENTRIES(BPU_BTB_ENTRIES),
-      .BHT_ENTRIES(BPU_BHT_ENTRIES),
-      .USE_GSHARE(BPU_USE_GSHARE)
+      .BTB_ENTRIES(Cfg.BPU_BTB_ENTRIES),
+      .BHT_ENTRIES(Cfg.BPU_BHT_ENTRIES),
+      .RAS_DEPTH(Cfg.BPU_RAS_DEPTH),
+      .USE_GSHARE(Cfg.BPU_USE_GSHARE != 0),
+      .USE_TAGE(Cfg.BPU_USE_TAGE != 0),
+      .USE_SC_L(Cfg.BPU_USE_SC_L != 0),
+      .USE_TOURNAMENT(Cfg.BPU_USE_TOURNAMENT != 0),
+      .BTB_HASH_ENABLE(Cfg.BPU_BTB_HASH_ENABLE != 0),
+      .BHT_HASH_ENABLE(Cfg.BPU_BHT_HASH_ENABLE != 0),
+      .GHR_BITS(Cfg.BPU_GHR_BITS),
+      .SC_L_ENTRIES(Cfg.BPU_SC_L_ENTRIES),
+      .SC_L_CONF_THRESH(Cfg.BPU_SC_L_CONF_THRESH),
+      .SC_L_REQUIRE_DISAGREE(Cfg.BPU_SC_L_REQUIRE_DISAGREE != 0),
+      .SC_L_REQUIRE_BOTH_WEAK(Cfg.BPU_SC_L_REQUIRE_BOTH_WEAK != 0),
+      .SC_L_BLOCK_ON_TAGE_HIT(Cfg.BPU_SC_L_BLOCK_ON_TAGE_HIT != 0),
+      .USE_LOOP(Cfg.BPU_USE_LOOP != 0),
+      .LOOP_ENTRIES(Cfg.BPU_LOOP_ENTRIES),
+      .LOOP_TAG_BITS(Cfg.BPU_LOOP_TAG_BITS),
+      .LOOP_CONF_THRESH(Cfg.BPU_LOOP_CONF_THRESH),
+      .USE_ITTAGE(Cfg.BPU_USE_ITTAGE != 0),
+      .ITTAGE_ENTRIES(Cfg.BPU_ITTAGE_ENTRIES),
+      .ITTAGE_TAG_BITS(Cfg.BPU_ITTAGE_TAG_BITS),
+      .TAGE_OVERRIDE_MIN_PROVIDER(Cfg.BPU_TAGE_OVERRIDE_MIN_PROVIDER),
+      .TAGE_OVERRIDE_REQUIRE_LEGACY_WEAK(Cfg.BPU_TAGE_OVERRIDE_REQUIRE_LEGACY_WEAK != 0),
+      .TAGE_TAG_BITS(Cfg.BPU_TAGE_TAG_BITS),
+      .TAGE_HIST_LEN0(Cfg.BPU_TAGE_HIST_LEN0),
+      .TAGE_HIST_LEN1(Cfg.BPU_TAGE_HIST_LEN1),
+      .TAGE_HIST_LEN2(Cfg.BPU_TAGE_HIST_LEN2),
+      .TAGE_HIST_LEN3(Cfg.BPU_TAGE_HIST_LEN3),
+      .PATH_HIST_BITS(Cfg.BPU_PATH_HIST_BITS),
+      .TRACK_DEPTH(Cfg.BPU_TRACK_DEPTH)
   ) i_bpu (
       .clk_i(clk_i),
       .rst_i(~rst_ni), // 高电平复位
@@ -172,7 +206,8 @@ module frontend #(
   // 3. Instruction Cache (ICache)
   // -------------------
   icache #(
-      .Cfg(Cfg)
+      .Cfg(Cfg),
+      .HIT_PIPELINE_EN(Cfg.ICACHE_HIT_PIPELINE_EN != 0)
   ) i_icache (
       .clk_i (clk_i),
       .rst_ni(rst_ni), // 低电平复位

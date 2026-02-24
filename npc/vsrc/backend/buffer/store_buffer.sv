@@ -5,6 +5,7 @@ import decode_pkg::*;
 module store_buffer #(
     parameter int unsigned SB_DEPTH = 16,  // Store Buffer 深度
     parameter int unsigned ROB_IDX_WIDTH = 6,
+    parameter int unsigned DISPATCH_WIDTH = 4,
     parameter int unsigned COMMIT_WIDTH = 4
 ) (
     input logic clk_i,
@@ -13,9 +14,9 @@ module store_buffer #(
     // =======================================================
     // 1. Dispatch (From Rename) - 分配 SB 條目
     // =======================================================
-    input logic [3:0] alloc_req_i,
+    input logic [DISPATCH_WIDTH-1:0] alloc_req_i,
     output logic alloc_ready_o,  // SB 可接受本周期所有请求
-    output logic [3:0][$clog2(SB_DEPTH)-1:0] alloc_id_o,  // 分配到的 SB ID（每条store）
+    output logic [DISPATCH_WIDTH-1:0][$clog2(SB_DEPTH)-1:0] alloc_id_o,  // 分配到的 SB ID（每条store）
     input logic alloc_fire_i,  // 真正执行分配（由上游控制）
 
     // =======================================================
@@ -105,19 +106,19 @@ module store_buffer #(
     end
   end
 
-  // --- 分配接口邏輯 (最多 4 条/周期) ---
+  // --- 分配接口邏輯 ---
   logic [$clog2(SB_DEPTH):0] alloc_count;
 
   always_comb begin
     int off;
     alloc_count = 0;
-    for (int i = 0; i < 4; i++) begin
+    for (int i = 0; i < DISPATCH_WIDTH; i++) begin
       if (alloc_req_i[i]) alloc_count++;
     end
     alloc_ready_o = (count + alloc_count <= SB_DEPTH);
 
     off = 0;
-    for (int i = 0; i < 4; i++) begin
+    for (int i = 0; i < DISPATCH_WIDTH; i++) begin
       if (alloc_req_i[i]) begin
         alloc_id_o[i] = tail_ptr + $clog2(SB_DEPTH)'(off);
         off++;
@@ -210,7 +211,7 @@ module store_buffer #(
       if (alloc_fire_i && alloc_ready_o && alloc_count != 0) begin
         int off;
         off = 0;
-        for (int i = 0; i < 4; i++) begin
+        for (int i = 0; i < DISPATCH_WIDTH; i++) begin
           if (alloc_req_i[i]) begin
             logic [$clog2(SB_DEPTH)-1:0] idx;
             idx = tail_ptr + $clog2(SB_DEPTH)'(off);

@@ -4,7 +4,8 @@ import decode_pkg::*;
 
 module dcache #(
     parameter config_pkg::cfg_t Cfg = config_pkg::EmptyCfg,
-    parameter int unsigned      N_MSHR = 1
+    parameter int unsigned      N_MSHR = 1,
+    parameter int unsigned      LD_PORT_ID_WIDTH = 1
 ) (
     input logic clk_i,
     input logic rst_ni,
@@ -17,11 +18,13 @@ module dcache #(
     output logic                               ld_req_ready_o,
     input  logic                [Cfg.PLEN-1:0] ld_req_addr_i,
     input  decode_pkg::lsu_op_e                ld_req_op_i,
+    input  logic [LD_PORT_ID_WIDTH-1:0]        ld_req_id_i,
 
     output logic                ld_rsp_valid_o,
     input  logic                ld_rsp_ready_i,
     output logic [Cfg.XLEN-1:0] ld_rsp_data_o,
     output logic                ld_rsp_err_o,
+    output logic [LD_PORT_ID_WIDTH-1:0] ld_rsp_id_o,
 
     // =============================================================
     // 2) Committed store port (from Store Buffer)
@@ -72,7 +75,8 @@ module dcache #(
 
   // Tag meta bits: {dirty, valid}
   localparam int unsigned META_WIDTH = 2;
-  localparam int unsigned MSHR_ENTRIES = (N_MSHR < 1) ? 1 : N_MSHR;
+  localparam int unsigned MSHR_ENTRIES = (N_MSHR >= 1) ? N_MSHR :
+      ((Cfg.DC_MSHR_DEPTH >= 1) ? Cfg.DC_MSHR_DEPTH : 1);
   localparam int unsigned MSHR_IDX_WIDTH = (MSHR_ENTRIES <= 1) ? 1 : $clog2(MSHR_ENTRIES);
 
   // ---------------------------------------------------------------------------
@@ -184,35 +188,70 @@ module dcache #(
   endfunction
 
   // ---------------------------------------------------------------------------
-  // Request selection (load has priority over store)
+  // Request selection (load has priority over store).
+  // Note: some younger loads may be satisfied by LSU SQ forwarding before reaching D$.
   // ---------------------------------------------------------------------------
   logic sel_is_load;
   logic sel_is_store;
+  logic sel_use_pending_load;
   logic [Cfg.PLEN-1:0] sel_addr;
   decode_pkg::lsu_op_e sel_op;
   logic [Cfg.XLEN-1:0] sel_wdata;
+  logic [LD_PORT_ID_WIDTH-1:0] sel_id;
   logic ld_req_line_in_mshr;
   logic st_req_line_in_mshr;
+  logic rsp_fire_w;
+  logic rsp_handoff_use_pending_w;
+  logic rsp_handoff_use_live_req_w;
+  logic rsp_handoff_fire_w;
+
+  logic [Cfg.PLEN-1:0] rsp_handoff_addr_w;
+  decode_pkg::lsu_op_e rsp_handoff_op_w;
+  logic [LD_PORT_ID_WIDTH-1:0] rsp_handoff_id_w;
+  logic [LINE_ADDR_WIDTH-1:0] rsp_handoff_line_addr_w;
+  logic [INDEX_WIDTH-1:0] rsp_handoff_index_w;
+  logic [TAG_WIDTH-1:0] rsp_handoff_tag_w;
+  logic [OFFSET_WIDTH-1:0] rsp_handoff_byte_off_w;
+  logic [SETS_PER_BANK_WIDTH-1:0] rsp_handoff_bank_addr_w;
+  logic [BANK_SEL_WIDTH-1:0] rsp_handoff_bank_sel_w;
+  logic rsp_handoff_err_w;
 
   // Ready policy: serve requests in IDLE, but give refill handshake priority.
   always_comb begin
-    ld_req_ready_o = (state_q == S_IDLE) && !flush_i && !refill_valid_i &&
+    // Allow one buffered load request only when waiting on load response (S_RESP).
+    // This avoids accepting a same-line request during miss LOOKUP before MSHR is visible.
+    ld_req_ready_o = ((state_q == S_IDLE) || (state_q == S_RESP)) &&
+                     !pending_ld_valid_q && !flush_i && !refill_valid_i &&
                      (!ld_req_valid_i || !ld_req_line_in_mshr);
-    st_req_ready_o = (state_q == S_IDLE) && !ld_req_valid_i && !flush_i && !refill_valid_i &&
+    st_req_ready_o = (state_q == S_IDLE) && !pending_ld_valid_q && !ld_req_valid_i &&
+                     !flush_i && !refill_valid_i &&
                      (!st_req_valid_i || !st_req_line_in_mshr);
 
     sel_is_load    = 1'b0;
     sel_is_store   = 1'b0;
+    sel_use_pending_load = 1'b0;
     sel_addr       = '0;
     sel_op         = decode_pkg::LSU_LW;
     sel_wdata      = '0;
+    sel_id         = '0;
 
-    if (!flush_i) begin
-      if (ld_req_valid_i && ld_req_ready_o) begin
+    // Never start a new lookup in the same cycle that a refill request is
+    // presented. This prevents pending-load dequeue from racing with refill-side
+    // array access in banked single-port SRAM.
+    if (!flush_i && !refill_valid_i) begin
+      if ((state_q == S_IDLE) && pending_ld_valid_q) begin
+        sel_is_load = 1'b1;
+        sel_use_pending_load = 1'b1;
+        sel_addr = pending_ld_addr_q;
+        sel_op = pending_ld_op_q;
+        sel_wdata = '0;
+        sel_id = pending_ld_id_q;
+      end else if ((state_q == S_IDLE) && ld_req_valid_i && ld_req_ready_o) begin
         sel_is_load = 1'b1;
         sel_addr    = ld_req_addr_i;
         sel_op      = ld_req_op_i;
         sel_wdata   = '0;
+        sel_id      = ld_req_id_i;
       end else if (st_req_valid_i && st_req_ready_o) begin
         sel_is_store = 1'b1;
         sel_addr     = st_req_addr_i;
@@ -224,6 +263,23 @@ module dcache #(
 
   logic accept_req;
   assign accept_req = sel_is_load || sel_is_store;
+
+  assign rsp_fire_w = (state_q == S_RESP) && ld_rsp_valid_o && ld_rsp_ready_i;
+  assign rsp_handoff_use_pending_w = rsp_fire_w && pending_ld_valid_q && !flush_i && !refill_valid_i;
+  assign rsp_handoff_use_live_req_w = rsp_fire_w && !pending_ld_valid_q && ld_req_valid_i &&
+                                      ld_req_ready_o && !flush_i && !refill_valid_i;
+  assign rsp_handoff_fire_w = rsp_handoff_use_pending_w || rsp_handoff_use_live_req_w;
+
+  assign rsp_handoff_addr_w = rsp_handoff_use_pending_w ? pending_ld_addr_q : ld_req_addr_i;
+  assign rsp_handoff_op_w = rsp_handoff_use_pending_w ? pending_ld_op_q : ld_req_op_i;
+  assign rsp_handoff_id_w = rsp_handoff_use_pending_w ? pending_ld_id_q : ld_req_id_i;
+  assign rsp_handoff_line_addr_w = rsp_handoff_addr_w[Cfg.PLEN-1:OFFSET_WIDTH];
+  assign rsp_handoff_index_w = rsp_handoff_line_addr_w[INDEX_WIDTH-1:0];
+  assign rsp_handoff_tag_w = rsp_handoff_line_addr_w[INDEX_WIDTH+:TAG_WIDTH];
+  assign rsp_handoff_byte_off_w = rsp_handoff_addr_w[OFFSET_WIDTH-1:0];
+  assign rsp_handoff_bank_addr_w = rsp_handoff_index_w[INDEX_WIDTH-1:BANK_SEL_WIDTH];
+  assign rsp_handoff_bank_sel_w = rsp_handoff_index_w[BANK_SEL_WIDTH-1:0];
+  assign rsp_handoff_err_w = is_misaligned(rsp_handoff_op_w, rsp_handoff_addr_w);
 
   // ---------------------------------------------------------------------------
   // Address decode for the selected request (combinational)
@@ -293,6 +349,11 @@ module dcache #(
   logic                [                  Cfg.PLEN-1:0] req_addr_q;
   decode_pkg::lsu_op_e                                  req_op_q;
   logic                [                  Cfg.XLEN-1:0] req_wdata_q;
+  logic                [          LD_PORT_ID_WIDTH-1:0] req_id_q;
+  logic                                                 pending_ld_valid_q;
+  logic                [                  Cfg.PLEN-1:0] pending_ld_addr_q;
+  decode_pkg::lsu_op_e                                  pending_ld_op_q;
+  logic                [          LD_PORT_ID_WIDTH-1:0] pending_ld_id_q;
 
   logic                [           LINE_ADDR_WIDTH-1:0] req_line_addr_q;
   logic                [               INDEX_WIDTH-1:0] req_index_q;
@@ -331,6 +392,7 @@ module dcache #(
   // Load response regs
   logic                                                 rsp_err_q;
   logic                [                  Cfg.XLEN-1:0] rsp_data_q;
+  logic                [          LD_PORT_ID_WIDTH-1:0] rsp_id_q;
 
   // ---------------------------------------------------------------------------
   // MSHR (load-miss tracking, parameterized)
@@ -350,6 +412,7 @@ module dcache #(
     logic [OFFSET_WIDTH-1:0] byte_off;
     decode_pkg::lsu_op_e op;
     logic [Cfg.XLEN-1:0] store_wdata;
+    logic [LD_PORT_ID_WIDTH-1:0] id;
   } mshr_entry_t;
 
   localparam int unsigned MSHR_DATA_WIDTH = $bits(mshr_entry_t);
@@ -459,11 +522,13 @@ module dcache #(
 
       .bank_addr_ra_i (r_bank_addr),
       .bank_sel_ra_i  (r_bank_sel),
+      .bank_sel_ra_o_i(r_bank_sel),
       .rdata_tag_a_o  (tag_a),
       .rdata_valid_a_o(meta_a),
 
       .bank_addr_rb_i (r_bank_addr),
       .bank_sel_rb_i  (r_bank_sel),
+      .bank_sel_rb_o_i(r_bank_sel),
       .rdata_tag_b_o  (tag_b),
       .rdata_valid_b_o(meta_b),
 
@@ -485,10 +550,12 @@ module dcache #(
 
       .bank_addr_ra_i(r_bank_addr),
       .bank_sel_ra_i (r_bank_sel),
+      .bank_sel_ra_o_i(r_bank_sel),
       .rdata_a_o     (line_a_all),
 
       .bank_addr_rb_i(r_bank_addr),
       .bank_sel_rb_i (r_bank_sel),
+      .bank_sel_rb_o_i(r_bank_sel),
       .rdata_b_o     (line_b_all),
 
       .w_bank_addr_i(w_bank_addr),
@@ -626,6 +693,7 @@ module dcache #(
       mshr_alloc_entry_d.byte_off = req_byte_off_q;
       mshr_alloc_entry_d.op = req_op_q;
       mshr_alloc_entry_d.store_wdata = req_wdata_q;
+      mshr_alloc_entry_d.id = req_id_q;
 
       mshr_alloc_valid = 1'b1;
       mshr_alloc_key = req_line_addr_q;
@@ -678,6 +746,12 @@ module dcache #(
       r_bank_sel  = req_bank_sel_q;
     end
 
+    // Response handoff: predrive next lookup address because SRAM read is sync.
+    if ((state_q == S_RESP) && rsp_handoff_fire_w) begin
+      r_bank_addr = rsp_handoff_bank_addr_w;
+      r_bank_sel  = rsp_handoff_bank_sel_w;
+    end
+
     // During refill write, force read A to same bank/address as the write
     if (state_q == S_WAIT_REFILL) begin
       r_bank_addr = miss_bank_addr_q;
@@ -728,6 +802,7 @@ module dcache #(
     ld_rsp_valid_o        = (state_q == S_RESP);
     ld_rsp_data_o         = rsp_data_q;
     ld_rsp_err_o          = rsp_err_q;
+    ld_rsp_id_o           = rsp_id_q;
 
     unique case (state_q)
       S_STORE_WRITE: begin
@@ -816,6 +891,7 @@ module dcache #(
       ld_rsp_valid_o   = 1'b0;
       ld_rsp_data_o    = '0;
       ld_rsp_err_o     = 1'b0;
+      ld_rsp_id_o      = '0;
     end
   end
 
@@ -891,7 +967,11 @@ module dcache #(
 
       S_RESP: begin
         if (ld_rsp_valid_o && ld_rsp_ready_i) begin
-          state_d = S_IDLE;
+          if (rsp_handoff_fire_w) begin
+            state_d = S_LOOKUP;
+          end else begin
+            state_d = S_IDLE;
+          end
         end
       end
 
@@ -914,6 +994,11 @@ module dcache #(
       req_addr_q       <= '0;
       req_op_q         <= decode_pkg::LSU_LW;
       req_wdata_q      <= '0;
+      req_id_q         <= '0;
+      pending_ld_valid_q <= 1'b0;
+      pending_ld_addr_q  <= '0;
+      pending_ld_op_q    <= decode_pkg::LSU_LW;
+      pending_ld_id_q    <= '0;
       req_line_addr_q  <= '0;
       req_index_q      <= '0;
       req_tag_q        <= '0;
@@ -940,6 +1025,7 @@ module dcache #(
 
       rsp_err_q        <= 1'b0;
       rsp_data_q       <= '0;
+      rsp_id_q         <= '0;
 
       last_write_valid_q <= 1'b0;
       last_write_tag_q   <= '0;
@@ -954,6 +1040,11 @@ module dcache #(
       req_addr_q       <= '0;
       req_op_q         <= decode_pkg::LSU_LW;
       req_wdata_q      <= '0;
+      req_id_q         <= '0;
+      pending_ld_valid_q <= 1'b0;
+      pending_ld_addr_q  <= '0;
+      pending_ld_op_q    <= decode_pkg::LSU_LW;
+      pending_ld_id_q    <= '0;
       req_line_addr_q  <= '0;
       req_index_q      <= '0;
       req_tag_q        <= '0;
@@ -980,6 +1071,7 @@ module dcache #(
 
       rsp_err_q        <= 1'b0;
       rsp_data_q       <= '0;
+      rsp_id_q         <= '0;
 
       last_write_valid_q <= 1'b0;
       last_write_tag_q   <= '0;
@@ -993,11 +1085,42 @@ module dcache #(
       // ----------------------------------------------------------
       // Accept new request
       // ----------------------------------------------------------
+      if ((state_q == S_RESP) && ld_req_valid_i && ld_req_ready_o && !rsp_fire_w) begin
+        pending_ld_valid_q <= 1'b1;
+        pending_ld_addr_q  <= ld_req_addr_i;
+        pending_ld_op_q    <= ld_req_op_i;
+        pending_ld_id_q    <= ld_req_id_i;
+      end
+
+      if ((state_q == S_RESP) && rsp_handoff_fire_w) begin
+        req_is_store_q  <= 1'b0;
+        req_addr_q      <= rsp_handoff_addr_w;
+        req_op_q        <= rsp_handoff_op_w;
+        req_wdata_q     <= '0;
+        req_id_q        <= rsp_handoff_id_w;
+        req_line_addr_q <= rsp_handoff_line_addr_w;
+        req_index_q     <= rsp_handoff_index_w;
+        req_tag_q       <= rsp_handoff_tag_w;
+        req_byte_off_q  <= rsp_handoff_byte_off_w;
+        req_bank_addr_q <= rsp_handoff_bank_addr_w;
+        req_bank_sel_q  <= rsp_handoff_bank_sel_w;
+        req_err_q       <= rsp_handoff_err_w;
+
+        if (rsp_handoff_use_pending_w) begin
+          pending_ld_valid_q <= 1'b0;
+        end
+      end
+
       if (state_q == S_IDLE && accept_req) begin
         req_is_store_q  <= sel_is_store;
         req_addr_q      <= sel_addr;
         req_op_q        <= sel_op;
         req_wdata_q     <= sel_wdata;
+        req_id_q        <= sel_is_load ? sel_id : '0;
+
+        if (sel_use_pending_load) begin
+          pending_ld_valid_q <= 1'b0;
+        end
 
         req_line_addr_q <= sel_line_addr;
         req_index_q     <= sel_index;
@@ -1035,6 +1158,7 @@ module dcache #(
           if (!req_is_store_q) begin
             rsp_err_q  <= 1'b1;
             rsp_data_q <= '0;
+            rsp_id_q   <= req_id_q;
           end else begin
             // Misaligned store should never be committed; flag in simulation.
             $warning("[D$] Misaligned committed store at addr=%h op=%0d", req_addr_q, req_op_q);
@@ -1043,6 +1167,7 @@ module dcache #(
           if (!req_is_store_q) begin
             rsp_err_q  <= 1'b0;
             rsp_data_q <= extract_load(hit_line, req_byte_off_q, req_op_q);
+            rsp_id_q   <= req_id_q;
           end else begin
             // Store hit: compute merged line, write in next state.
             store_hit_way_q <= hit_way_idx;
@@ -1060,6 +1185,7 @@ module dcache #(
         if (!req_is_store_q) begin
           rsp_err_q  <= 1'b0;
           rsp_data_q <= extract_load(refill_data_i, req_byte_off_q, req_op_q);
+          rsp_id_q   <= req_id_q;
         end
       end
 
@@ -1070,6 +1196,7 @@ module dcache #(
             mshr_entry_data[mshr_refill_idx].byte_off,
             mshr_entry_data[mshr_refill_idx].op
         );
+        rsp_id_q <= mshr_entry_data[mshr_refill_idx].id;
       end
 
       // ----------------------------------------------------------

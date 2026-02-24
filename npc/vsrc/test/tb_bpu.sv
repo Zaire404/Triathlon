@@ -25,13 +25,14 @@ module tb_bpu (
     output logic [Cfg.XLEN-1:0] npc_o,
     output logic pred_slot_valid_o,
     output logic [$clog2(Cfg.INSTR_PER_FETCH)-1:0] pred_slot_idx_o,
-    output logic [Cfg.XLEN-1:0] pred_slot_target_o
+    output logic [Cfg.XLEN-1:0] pred_slot_target_o,
+    output logic [Cfg.BPU_GHR_BITS-1:0] dbg_ghr_o
 );
-`ifdef BPU_ENABLE_GSHARE
-  localparam bit TB_BPU_USE_GSHARE = 1'b1;
-`else
+  // Keep tb_bpu deterministic for legacy hysteresis tests.
+  // Frontend integration uses Cfg.BPU_USE_GSHARE.
   localparam bit TB_BPU_USE_GSHARE = 1'b0;
-`endif
+  localparam bit TB_BPU_USE_TAGE = 1'b0;
+  localparam bit TB_BPU_USE_ITTAGE = 1'b1;
   localparam int unsigned TB_BPU_BTB_ENTRIES = 128;
   localparam int unsigned TB_BPU_BHT_ENTRIES = 512;
   localparam bit TB_BPU_BTB_HASH_ENABLE = 1'b1;
@@ -50,7 +51,9 @@ module tb_bpu (
       .BHT_ENTRIES(TB_BPU_BHT_ENTRIES),
       .BTB_HASH_ENABLE(TB_BPU_BTB_HASH_ENABLE),
       .BHT_HASH_ENABLE(TB_BPU_BHT_HASH_ENABLE),
-      .USE_GSHARE(TB_BPU_USE_GSHARE)
+      .USE_GSHARE(TB_BPU_USE_GSHARE),
+      .USE_TAGE(TB_BPU_USE_TAGE),
+      .USE_ITTAGE(TB_BPU_USE_ITTAGE)
   ) i_BPU (
       .clk_i(clk_i),
       .rst_i(rst_i),
@@ -76,4 +79,5 @@ module tb_bpu (
   assign pred_slot_valid_o = bpu_to_ifu_o.pred_slot_valid;
   assign pred_slot_idx_o = bpu_to_ifu_o.pred_slot_idx;
   assign pred_slot_target_o = bpu_to_ifu_o.pred_slot_target;
+  assign dbg_ghr_o = i_BPU.ghr_q;
 endmodule

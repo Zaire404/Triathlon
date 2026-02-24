@@ -15,6 +15,8 @@ module tb_backend (
     input  logic [           Cfg.PLEN-1:0]               frontend_ibuf_pc,
     input  logic [Cfg.INSTR_PER_FETCH-1:0]               frontend_ibuf_slot_valid,
     input  logic [Cfg.INSTR_PER_FETCH-1:0][Cfg.PLEN-1:0] frontend_ibuf_pred_npc,
+    input  logic [Cfg.INSTR_PER_FETCH-1:0][((Cfg.IFU_INF_DEPTH >= 2) ? $clog2(Cfg.IFU_INF_DEPTH) : 1)-1:0] frontend_ibuf_ftq_id,
+    input  logic [Cfg.INSTR_PER_FETCH-1:0][2:0] frontend_ibuf_fetch_epoch,
 
     // D-Cache miss/refill/writeback interface
     output logic                                  dcache_miss_req_valid_o,
@@ -53,16 +55,33 @@ module tb_backend (
     output logic                               rob_flush_o,
     output logic [Cfg.PLEN-1:0]                rob_flush_pc_o,
     output logic                               dbg_dec_ready_o,
+    output logic                               dbg_dec_valid_o,
+    output logic                               dbg_ingress_dec_valid_o,
+    output logic [((Cfg.IFU_INF_DEPTH >= 2) ? $clog2(Cfg.IFU_INF_DEPTH) : 1)-1:0] dbg_dec_uop0_ftq_id_o,
+    output logic [2:0]                         dbg_dec_uop0_fetch_epoch_o,
+    output logic [((Cfg.IFU_INF_DEPTH >= 2) ? $clog2(Cfg.IFU_INF_DEPTH) : 1)-1:0] dbg_bpu_update_ftq_id_o,
+    output logic [2:0]                         dbg_bpu_update_fetch_epoch_o,
+    output logic [7:0]                         dbg_cfg_ftq_id_bits_o,
+    output logic [7:0]                         dbg_cfg_fetch_epoch_bits_o,
+    output logic [7:0]                         dbg_cfg_instr_per_fetch_o,
+    output logic [((Cfg.NRET > 1) ? $clog2(Cfg.NRET) : 1)-1:0] dbg_bpu_update_sel_idx_o,
     output logic                               dbg_ren_src_from_pending_o,
     output logic [2:0]                         dbg_ren_src_count_o,
     output logic                               dbg_lsu_req_ready_o,
     output logic                               dbg_lsu_issue_fire_o,
-    output logic [3:0]                         dbg_lsu_grp_lane_busy_o
+    output logic [3:0]                         dbg_lsu_grp_lane_busy_o,
+    output logic                               dbg_mem_dep_replay_o,
+    output logic [7:0]                         dbg_completion_q_count_o,
+    output logic                               dbg_rob_head_complete_o,
+    output logic                               dbg_alu_wb_head_hit_o,
+    output logic                               dbg_bru_wb_head_hit_o,
+    output logic                               dbg_bru_mispred_o,
+    output logic                               dbg_cond_branch_wb_head_non_mispred_o,
+    output logic [2:0]                         dbg_cond_branch_issue_count_o
 );
 
   logic backend_flush_unused;
   logic [Cfg.PLEN-1:0] backend_redirect_pc_unused;
-
   backend #(
       .Cfg(global_config_pkg::Cfg)
   ) dut (
@@ -75,6 +94,8 @@ module tb_backend (
       .frontend_ibuf_pc,
       .frontend_ibuf_slot_valid,
       .frontend_ibuf_pred_npc,
+      .frontend_ibuf_ftq_id(frontend_ibuf_ftq_id),
+      .frontend_ibuf_fetch_epoch(frontend_ibuf_fetch_epoch),
       .backend_flush_o(backend_flush_unused),
       .backend_redirect_pc_o(backend_redirect_pc_unused),
       .bpu_update_valid_o(bpu_update_valid_o),
@@ -115,6 +136,16 @@ module tb_backend (
   assign rob_flush_o    = dut.rob_flush;
   assign rob_flush_pc_o = dut.rob_flush_pc;
   assign dbg_dec_ready_o = dut.decode_backend_ready;
+  assign dbg_dec_valid_o = dut.dec_valid;
+  assign dbg_ingress_dec_valid_o = dut.ingress_dec_valid;
+  assign dbg_dec_uop0_ftq_id_o = dut.dec_uops[0].ftq_id;
+  assign dbg_dec_uop0_fetch_epoch_o = dut.dec_uops[0].fetch_epoch;
+  assign dbg_bpu_update_ftq_id_o = dut.bpu_update_ftq_id_dbg;
+  assign dbg_bpu_update_fetch_epoch_o = dut.bpu_update_fetch_epoch_dbg;
+  assign dbg_cfg_ftq_id_bits_o = 8'(((Cfg.IFU_INF_DEPTH >= 2) ? $clog2(Cfg.IFU_INF_DEPTH) : 1));
+  assign dbg_cfg_fetch_epoch_bits_o = 8'(3);
+  assign dbg_cfg_instr_per_fetch_o = 8'(Cfg.INSTR_PER_FETCH);
+  assign dbg_bpu_update_sel_idx_o = dut.bpu_update_sel_idx_dbg;
   assign dbg_ren_src_from_pending_o = dut.rename_src_from_pending;
   always_comb begin
     dbg_ren_src_count_o = '0;
@@ -127,5 +158,46 @@ module tb_backend (
   assign dbg_lsu_req_ready_o = dut.lsu_req_ready;
   assign dbg_lsu_issue_fire_o = dut.lsu_en & dut.lsu_req_ready;
   assign dbg_lsu_grp_lane_busy_o = {2'b0, dut.u_lsu_group.dbg_lane_busy};
+  assign dbg_mem_dep_replay_o = dut.mem_dep_replay_valid;
+  assign dbg_completion_q_count_o = dut.completion_q_count;
+  // Observe ROB's effective head-complete (includes same-cycle ALU fast-visible path).
+  assign dbg_rob_head_complete_o = dut.u_rob.head_fast_complete[0];
+  assign dbg_alu_wb_head_hit_o =
+      (dut.alu0_wb_valid && (dut.alu0_wb_tag == dut.rob_head_ptr)) ||
+      (dut.alu1_wb_valid && (dut.alu1_wb_tag == dut.rob_head_ptr)) ||
+      (dut.alu2_wb_valid && (dut.alu2_wb_tag == dut.rob_head_ptr)) ||
+      (dut.alu3_wb_valid && (dut.alu3_wb_tag == dut.rob_head_ptr));
+  assign dbg_bru_wb_head_hit_o =
+      dut.bru_wb_valid && (dut.bru_wb_tag == dut.rob_head_ptr);
+  assign dbg_bru_mispred_o = dut.bru_mispred;
+  assign dbg_cond_branch_wb_head_non_mispred_o =
+      (dut.bru_wb_valid && (dut.bru_wb_tag == dut.rob_head_ptr) &&
+       dut.bru_uop.is_branch && !dut.bru_uop.is_jump && !dut.bru_mispred) ||
+      (dut.alu0_wb_valid && (dut.alu0_wb_tag == dut.rob_head_ptr) &&
+       dut.alu0_uop.is_branch && !dut.alu0_uop.is_jump && !dut.alu0_mispred) ||
+      (dut.alu1_wb_valid && (dut.alu1_wb_tag == dut.rob_head_ptr) &&
+       dut.alu1_uop.is_branch && !dut.alu1_uop.is_jump && !dut.alu1_mispred) ||
+      (dut.alu2_wb_valid && (dut.alu2_wb_tag == dut.rob_head_ptr) &&
+       dut.alu2_uop.is_branch && !dut.alu2_uop.is_jump && !dut.alu2_mispred) ||
+      (dut.alu3_wb_valid && (dut.alu3_wb_tag == dut.rob_head_ptr) &&
+       dut.alu3_uop.is_branch && !dut.alu3_uop.is_jump && !dut.alu3_mispred);
+  always_comb begin
+    dbg_cond_branch_issue_count_o = '0;
+    if (dut.bru_en && dut.bru_uop.is_branch && !dut.bru_uop.is_jump) begin
+      dbg_cond_branch_issue_count_o++;
+    end
+    if (dut.alu0_en && dut.alu0_uop.is_branch && !dut.alu0_uop.is_jump) begin
+      dbg_cond_branch_issue_count_o++;
+    end
+    if (dut.alu1_en && dut.alu1_uop.is_branch && !dut.alu1_uop.is_jump) begin
+      dbg_cond_branch_issue_count_o++;
+    end
+    if (dut.alu2_en && dut.alu2_uop.is_branch && !dut.alu2_uop.is_jump) begin
+      dbg_cond_branch_issue_count_o++;
+    end
+    if (dut.alu3_en && dut.alu3_uop.is_branch && !dut.alu3_uop.is_jump) begin
+      dbg_cond_branch_issue_count_o++;
+    end
+  end
 
 endmodule

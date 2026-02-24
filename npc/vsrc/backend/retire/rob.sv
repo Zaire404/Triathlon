@@ -11,10 +11,14 @@ module rob #(
     parameter int unsigned QUERY_WIDTH = DISPATCH_WIDTH * 2,
     // [新增] Store Buffer 参数
     parameter int unsigned SB_DEPTH = 16,
-    parameter int unsigned SB_IDX_WIDTH = $clog2(SB_DEPTH)
+    parameter int unsigned SB_IDX_WIDTH = $clog2(SB_DEPTH),
+    parameter int unsigned MAX_COMMIT_BR = 1,
+    parameter int unsigned MAX_COMMIT_ST = 1,
+    parameter int unsigned MAX_COMMIT_LD = 2
 ) (
     input logic clk_i,
     input logic rst_ni,
+    input logic flush_i,
 
     // =========================================================
     // 1. Dispatch 阶段 (From Rename)
@@ -28,6 +32,8 @@ module rob #(
     input logic            [DISPATCH_WIDTH-1:0]               dispatch_is_jump_i,
     input logic            [DISPATCH_WIDTH-1:0]               dispatch_is_call_i,
     input logic            [DISPATCH_WIDTH-1:0]               dispatch_is_ret_i,
+    input logic [DISPATCH_WIDTH-1:0][decode_pkg::FTQ_ID_W-1:0] dispatch_ftq_id_i,
+    input logic [DISPATCH_WIDTH-1:0][decode_pkg::FETCH_EPOCH_W-1:0] dispatch_fetch_epoch_i,
 
     // [新增] 接收 Store Buffer ID
     // 只有当指令是 Store 时，这个信号才有效；否则忽略
@@ -38,7 +44,7 @@ module rob #(
     output logic [DISPATCH_WIDTH-1:0][$clog2(ROB_DEPTH)-1:0] dispatch_rob_index_o,
 
     // =========================================================
-    // 2. Writeback 阶段 (From ALU/LSU/Branch Unit)
+    // 2. Writeback 阶段 (From completion queue / CDB)
     // =========================================================
     input logic [WB_WIDTH-1:0] wb_valid_i,
     input logic [WB_WIDTH-1:0][$clog2(ROB_DEPTH)-1:0] wb_rob_index_i,
@@ -48,6 +54,17 @@ module rob #(
     input logic [WB_WIDTH-1:0][4:0] wb_ecause_i,
     input logic [WB_WIDTH-1:0] wb_is_mispred_i,
     input logic [WB_WIDTH-1:0][Cfg.PLEN-1:0] wb_redirect_pc_i,
+    // Fast-visible path for ALU completion (combinational assist only).
+    input logic [DISPATCH_WIDTH-1:0] fast_alu_valid_i,
+    input logic [DISPATCH_WIDTH-1:0][$clog2(ROB_DEPTH)-1:0] fast_alu_rob_idx_i,
+    input logic [DISPATCH_WIDTH-1:0][Cfg.XLEN-1:0] fast_alu_data_i,
+    input logic [DISPATCH_WIDTH-1:0] fast_alu_is_mispred_i,
+    input logic [DISPATCH_WIDTH-1:0][Cfg.PLEN-1:0] fast_alu_redirect_pc_i,
+    input logic fast_bru_valid_i,
+    input logic [$clog2(ROB_DEPTH)-1:0] fast_bru_rob_idx_i,
+    input logic [Cfg.XLEN-1:0] fast_bru_data_i,
+    input logic [Cfg.PLEN-1:0] fast_bru_redirect_pc_i,
+    input logic fast_bru_can_commit_i,
 
     // =========================================================
     // 3. Commit 阶段 (To ARF & Controller & RAT & SB)
@@ -72,6 +89,8 @@ module rob #(
     output logic [COMMIT_WIDTH-1:0]                    commit_is_call_o,
     output logic [COMMIT_WIDTH-1:0]                    commit_is_ret_o,
     output logic [COMMIT_WIDTH-1:0][Cfg.PLEN-1:0]      commit_actual_npc_o,
+    output logic [COMMIT_WIDTH-1:0][decode_pkg::FTQ_ID_W-1:0] commit_ftq_id_o,
+    output logic [COMMIT_WIDTH-1:0][decode_pkg::FETCH_EPOCH_W-1:0] commit_fetch_epoch_o,
 
     // Flush Interface
     output logic flush_o,
@@ -96,11 +115,6 @@ module rob #(
 );
   localparam int unsigned PTR_WIDTH = $clog2(ROB_DEPTH);
 
-  // 资源限制参数
-  localparam int unsigned MAX_COMMIT_BR = 1;
-  localparam int unsigned MAX_COMMIT_ST = 1;
-  localparam int unsigned MAX_COMMIT_LD = 2;
-
   typedef struct packed {
     logic complete;
     logic exception;
@@ -116,6 +130,8 @@ module rob #(
     logic is_ret;
     logic [Cfg.XLEN-1:0] data;
     logic [Cfg.PLEN-1:0] pc;
+    logic [decode_pkg::FTQ_ID_W-1:0] ftq_id;
+    logic [decode_pkg::FETCH_EPOCH_W-1:0] fetch_epoch;
 
     // [新增] 存储该指令对应的 Store Buffer ID
     logic is_store;
@@ -144,6 +160,48 @@ module rob #(
   logic stop_commit;
   logic [COMMIT_WIDTH-1:0] br_mask, st_mask, ld_mask;
   logic [COMMIT_WIDTH-1:0] commit_permitted_mask;
+  logic [COMMIT_WIDTH-1:0] head_fast_complete;
+  logic [COMMIT_WIDTH-1:0][Cfg.XLEN-1:0] head_fast_data;
+  logic [COMMIT_WIDTH-1:0][Cfg.PLEN-1:0] head_fast_redirect_pc;
+
+  always_comb begin
+    for (int i = 0; i < COMMIT_WIDTH; i++) begin
+      logic [PTR_WIDTH-1:0] idx;
+      idx = head_ptr_q + i[PTR_WIDTH-1:0];
+      head_fast_complete[i] = rob_ram[idx].complete;
+      head_fast_data[i] = rob_ram[idx].data;
+      head_fast_redirect_pc[i] = rob_ram[idx].redirect_pc;
+      if (rob_ram[idx].fu_type == decode_pkg::FU_ALU) begin
+        for (int a = 0; a < DISPATCH_WIDTH; a++) begin
+          if (fast_alu_valid_i[a] && (fast_alu_rob_idx_i[a] == idx)) begin
+            head_fast_complete[i] = 1'b1;
+            head_fast_data[i] = fast_alu_data_i[a];
+            head_fast_redirect_pc[i] = fast_alu_redirect_pc_i[a];
+          end
+        end
+      end else if ((rob_ram[idx].fu_type == decode_pkg::FU_BRANCH) && !rob_ram[idx].is_jump) begin
+        // Conditional branch may execute on ALU lanes. For correctness, only
+        // enable same-cycle visibility on non-mispred branch WB.
+        for (int a = 0; a < DISPATCH_WIDTH; a++) begin
+          if (fast_alu_valid_i[a] &&
+              !fast_alu_is_mispred_i[a] &&
+              (fast_alu_rob_idx_i[a] == idx)) begin
+            head_fast_complete[i] = 1'b1;
+            head_fast_data[i] = fast_alu_data_i[a];
+            head_fast_redirect_pc[i] = fast_alu_redirect_pc_i[a];
+          end
+        end
+      end else if ((rob_ram[idx].fu_type == decode_pkg::FU_BRANCH) && rob_ram[idx].is_jump) begin
+        if (fast_bru_valid_i &&
+            fast_bru_can_commit_i &&
+            (fast_bru_rob_idx_i == idx)) begin
+          head_fast_complete[i] = 1'b1;
+          head_fast_data[i] = fast_bru_data_i;
+          head_fast_redirect_pc[i] = fast_bru_redirect_pc_i;
+        end
+      end
+    end
+  end
 
   always_comb begin
     automatic int cnt_br = 0;
@@ -172,104 +230,114 @@ module rob #(
     commit_is_call_o = '0;
     commit_is_ret_o = '0;
     commit_actual_npc_o = '0;
+    commit_ftq_id_o = '0;
+    commit_fetch_epoch_o = '0;
     commit_rob_index_o = '0;
 
-    // --- 1. Resource Check ---
+    // External flush kills all in-flight state and suppresses same-cycle commit.
+    if (flush_i) begin
+      stop_commit = 1'b1;
+      br_mask = '0;
+      st_mask = '0;
+      ld_mask = '0;
+      commit_permitted_mask = '0;
+    end else begin
+      // --- 1. Resource Check ---
+      br_mask = '1;
+      st_mask = '1;
+      ld_mask = '1;
 
-    br_mask = '1;
-    st_mask = '1;
-    ld_mask = '1;
-
-    for (int i = 0; i < COMMIT_WIDTH; i++) begin
-      logic [PTR_WIDTH-1:0] check_idx;
-      check_idx = head_ptr_q + i[PTR_WIDTH-1:0];
-
-      if (count_q > i) begin
-        if (rob_ram[check_idx].fu_type == decode_pkg::FU_BRANCH) begin
-          if (cnt_br >= MAX_COMMIT_BR) br_mask[i] = 1'b0;
-          cnt_br++;
-        end
-        // 使用内部存储的 is_store 位判断
-        if (rob_ram[check_idx].is_store) begin
-          if (cnt_st >= MAX_COMMIT_ST) st_mask[i] = 1'b0;
-          cnt_st++;
-        end
-        if (rob_ram[check_idx].fu_type == decode_pkg::FU_LSU && !rob_ram[check_idx].is_store) begin
-          if (cnt_ld >= MAX_COMMIT_LD) ld_mask[i] = 1'b0;
-          cnt_ld++;
+      for (int i = 0; i < COMMIT_WIDTH; i++) begin
+        if (count_q > i) begin
+          if (rob_ram[head_ptr_q+i[PTR_WIDTH-1:0]].fu_type == decode_pkg::FU_BRANCH) begin
+            if (cnt_br >= MAX_COMMIT_BR) br_mask[i] = 1'b0;
+            cnt_br++;
+          end
+          if (rob_ram[head_ptr_q+i[PTR_WIDTH-1:0]].is_store) begin
+            if (cnt_st >= MAX_COMMIT_ST) st_mask[i] = 1'b0;
+            cnt_st++;
+          end
+          if (rob_ram[head_ptr_q+i[PTR_WIDTH-1:0]].fu_type == decode_pkg::FU_LSU &&
+              !rob_ram[head_ptr_q+i[PTR_WIDTH-1:0]].is_store) begin
+            if (cnt_ld >= MAX_COMMIT_LD) ld_mask[i] = 1'b0;
+            cnt_ld++;
+          end
         end
       end
-    end
-    commit_permitted_mask = br_mask & st_mask & ld_mask;
+      commit_permitted_mask = br_mask & st_mask & ld_mask;
 
-    // --- 2. Final Commit ---
-    for (int i = 0; i < COMMIT_WIDTH; i++) begin
-      logic [PTR_WIDTH-1:0] idx;
-      idx = head_ptr_q + i[PTR_WIDTH-1:0];
-      commit_rob_index_o[i] = idx;
+      // --- 2. Final Commit ---
+      for (int i = 0; i < COMMIT_WIDTH; i++) begin
+        commit_rob_index_o[i] = head_ptr_q + i[PTR_WIDTH-1:0];
 
-      if ((count_q > i) && !stop_commit && commit_permitted_mask[i]) begin
-        if (rob_ram[idx].complete) begin
-          if (rob_ram[idx].exception) begin
-            stop_commit   = 1'b1;
-            flush_o       = 1'b1;
-            flush_pc_o    = rob_ram[idx].pc;
-            flush_cause_o = rob_ram[idx].ecause;
-            flush_is_exception_o = 1'b1;
-            flush_is_branch_o = rob_ram[idx].is_branch;
-            flush_is_jump_o = rob_ram[idx].is_jump;
-            flush_src_pc_o = rob_ram[idx].pc;
-          end else if (rob_ram[idx].is_mispred) begin
-            // 分支/跳转误预测：先退休该指令，再触发 flush
-            commit_valid_o[i] = 1'b1;
-            commit_pc_o[i]    = rob_ram[idx].pc;
+        if ((count_q > i) && !stop_commit && commit_permitted_mask[i]) begin
+          if (head_fast_complete[i]) begin
+            if (rob_ram[commit_rob_index_o[i]].exception) begin
+              stop_commit   = 1'b1;
+              flush_o       = 1'b1;
+              flush_pc_o    = rob_ram[commit_rob_index_o[i]].pc;
+              flush_cause_o = rob_ram[commit_rob_index_o[i]].ecause;
+              flush_is_exception_o = 1'b1;
+              flush_is_branch_o = rob_ram[commit_rob_index_o[i]].is_branch;
+              flush_is_jump_o = rob_ram[commit_rob_index_o[i]].is_jump;
+              flush_src_pc_o = rob_ram[commit_rob_index_o[i]].pc;
+            end else if (rob_ram[commit_rob_index_o[i]].is_mispred) begin
+              // 分支/跳转误预测：先退休该指令，再触发 flush
+              commit_valid_o[i] = 1'b1;
+              commit_pc_o[i]    = rob_ram[commit_rob_index_o[i]].pc;
 
-            commit_areg_o[i]  = rob_ram[idx].areg;
-            commit_wdata_o[i] = rob_ram[idx].data;
-            if (rob_ram[idx].has_rd && rob_ram[idx].areg != 0) begin
-              commit_we_o[i] = 1'b1;
+              commit_areg_o[i]  = rob_ram[commit_rob_index_o[i]].areg;
+              commit_wdata_o[i] = head_fast_data[i];
+              if (rob_ram[commit_rob_index_o[i]].has_rd &&
+                  rob_ram[commit_rob_index_o[i]].areg != 0) begin
+                commit_we_o[i] = 1'b1;
+              end
+
+              commit_is_store_o[i] = rob_ram[commit_rob_index_o[i]].is_store;
+              commit_sb_id_o[i]    = rob_ram[commit_rob_index_o[i]].sb_id;
+              commit_is_branch_o[i] = rob_ram[commit_rob_index_o[i]].is_branch;
+              commit_is_jump_o[i] = rob_ram[commit_rob_index_o[i]].is_jump;
+              commit_is_call_o[i] = rob_ram[commit_rob_index_o[i]].is_call;
+              commit_is_ret_o[i] = rob_ram[commit_rob_index_o[i]].is_ret;
+              commit_actual_npc_o[i] = head_fast_redirect_pc[i];
+              commit_ftq_id_o[i] = rob_ram[commit_rob_index_o[i]].ftq_id;
+              commit_fetch_epoch_o[i] = rob_ram[commit_rob_index_o[i]].fetch_epoch;
+
+              stop_commit          = 1'b1;
+              flush_o              = 1'b1;
+              flush_pc_o           = head_fast_redirect_pc[i];
+              flush_is_mispred_o   = 1'b1;
+              flush_is_branch_o    = rob_ram[commit_rob_index_o[i]].is_branch;
+              flush_is_jump_o      = rob_ram[commit_rob_index_o[i]].is_jump;
+              flush_src_pc_o       = rob_ram[commit_rob_index_o[i]].pc;
+            end else begin
+              // 正常退休
+              commit_valid_o[i] = 1'b1;
+              commit_pc_o[i]    = rob_ram[commit_rob_index_o[i]].pc;
+
+              commit_areg_o[i]  = rob_ram[commit_rob_index_o[i]].areg;
+              commit_wdata_o[i] = head_fast_data[i];
+              if (rob_ram[commit_rob_index_o[i]].has_rd &&
+                  rob_ram[commit_rob_index_o[i]].areg != 0) begin
+                commit_we_o[i] = 1'b1;
+              end
+
+              commit_is_store_o[i] = rob_ram[commit_rob_index_o[i]].is_store;
+              commit_sb_id_o[i]    = rob_ram[commit_rob_index_o[i]].sb_id;
+              commit_is_branch_o[i] = rob_ram[commit_rob_index_o[i]].is_branch;
+              commit_is_jump_o[i] = rob_ram[commit_rob_index_o[i]].is_jump;
+              commit_is_call_o[i] = rob_ram[commit_rob_index_o[i]].is_call;
+              commit_is_ret_o[i] = rob_ram[commit_rob_index_o[i]].is_ret;
+              commit_actual_npc_o[i] = head_fast_redirect_pc[i];
+              commit_ftq_id_o[i] = rob_ram[commit_rob_index_o[i]].ftq_id;
+              commit_fetch_epoch_o[i] = rob_ram[commit_rob_index_o[i]].fetch_epoch;
             end
-
-            commit_is_store_o[i] = rob_ram[idx].is_store;
-            commit_sb_id_o[i]    = rob_ram[idx].sb_id;
-            commit_is_branch_o[i] = rob_ram[idx].is_branch;
-            commit_is_jump_o[i] = rob_ram[idx].is_jump;
-            commit_is_call_o[i] = rob_ram[idx].is_call;
-            commit_is_ret_o[i] = rob_ram[idx].is_ret;
-            commit_actual_npc_o[i] = rob_ram[idx].redirect_pc;
-
-            stop_commit          = 1'b1;
-            flush_o              = 1'b1;
-            flush_pc_o           = rob_ram[idx].redirect_pc;
-            flush_is_mispred_o   = 1'b1;
-            flush_is_branch_o    = rob_ram[idx].is_branch;
-            flush_is_jump_o      = rob_ram[idx].is_jump;
-            flush_src_pc_o       = rob_ram[idx].pc;
           end else begin
-            // 正常退休
-            commit_valid_o[i] = 1'b1;
-            commit_pc_o[i]    = rob_ram[idx].pc;
-
-            commit_areg_o[i]  = rob_ram[idx].areg;
-            commit_wdata_o[i] = rob_ram[idx].data;
-            if (rob_ram[idx].has_rd && rob_ram[idx].areg != 0) begin
-              commit_we_o[i] = 1'b1;
-            end
-
-            // [修复] 输出 Store Buffer ID
-            commit_is_store_o[i] = rob_ram[idx].is_store;
-            commit_sb_id_o[i]    = rob_ram[idx].sb_id;
-            commit_is_branch_o[i] = rob_ram[idx].is_branch;
-            commit_is_jump_o[i] = rob_ram[idx].is_jump;
-            commit_is_call_o[i] = rob_ram[idx].is_call;
-            commit_is_ret_o[i] = rob_ram[idx].is_ret;
-            commit_actual_npc_o[i] = rob_ram[idx].redirect_pc;
+            stop_commit = 1'b1;
           end
         end else begin
           stop_commit = 1'b1;
         end
-      end else begin
-        stop_commit = 1'b1;
       end
     end
   end
@@ -281,6 +349,16 @@ module rob #(
     for (int q = 0; q < QUERY_WIDTH; q++) begin
       query_ready_o[q] = rob_ram[query_rob_idx_i[q]].complete;
       query_data_o[q]  = rob_ram[query_rob_idx_i[q]].data;
+      for (int a = 0; a < DISPATCH_WIDTH; a++) begin
+        if (fast_alu_valid_i[a] && (fast_alu_rob_idx_i[a] == query_rob_idx_i[q])) begin
+          query_ready_o[q] = 1'b1;
+          query_data_o[q] = fast_alu_data_i[a];
+        end
+      end
+      if (fast_bru_valid_i && fast_bru_can_commit_i && (fast_bru_rob_idx_i == query_rob_idx_i[q])) begin
+        query_ready_o[q] = 1'b1;
+        query_data_o[q] = fast_bru_data_i;
+      end
     end
   end
 
@@ -311,7 +389,7 @@ module rob #(
       head_ptr_q <= '0;
       tail_ptr_q <= '0;
       count_q    <= '0;
-    end else if (flush_o) begin
+    end else if (flush_i || flush_o) begin
       head_ptr_q <= '0;
       tail_ptr_q <= '0;
       count_q    <= '0;
@@ -340,6 +418,8 @@ module rob #(
             rob_ram[w_idx].is_call     <= dispatch_is_call_i[i];
             rob_ram[w_idx].is_ret      <= dispatch_is_ret_i[i];
             rob_ram[w_idx].pc          <= dispatch_pc_i[i];
+            rob_ram[w_idx].ftq_id      <= dispatch_ftq_id_i[i];
+            rob_ram[w_idx].fetch_epoch <= dispatch_fetch_epoch_i[i];
 
             // [新增] 保存 SB ID
             rob_ram[w_idx].is_store    <= dispatch_is_store_i[i];

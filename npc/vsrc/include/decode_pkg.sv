@@ -1,5 +1,8 @@
 package decode_pkg;
   import config_pkg::*;
+  localparam int unsigned FTQ_DEPTH = (Cfg.FTQ_DEPTH >= 2) ? Cfg.FTQ_DEPTH : 2;
+  localparam int unsigned FTQ_ID_W = (Cfg.FTQ_ID_W >= 1) ? Cfg.FTQ_ID_W : 1;
+  localparam int unsigned FETCH_EPOCH_W = (Cfg.FETCH_EPOCH_W >= 1) ? Cfg.FETCH_EPOCH_W : 3;
 
   typedef enum logic [2:0] {
     FU_NONE,
@@ -86,6 +89,8 @@ package decode_pkg;
     // PC & 控制流信息
     logic [Cfg.PLEN-1:0] pc;
     logic [Cfg.PLEN-1:0] pred_npc;
+    logic [FTQ_ID_W-1:0] ftq_id;
+    logic [FETCH_EPOCH_W-1:0] fetch_epoch;
 
     // 其它 flag（后面可以扩展）
     logic is_word_op;

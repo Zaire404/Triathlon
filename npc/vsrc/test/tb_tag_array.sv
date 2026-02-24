@@ -43,12 +43,14 @@ module tb_tag_array #(
       // 读 A
       .bank_addr_ra_i (bank_addr_ra_i),
       .bank_sel_ra_i  (bank_sel_ra_i),
+      .bank_sel_ra_o_i(bank_sel_ra_i),
       .rdata_tag_a_o  (rdata_tag_a_o),
       .rdata_valid_a_o(rdata_valid_a_o),
 
       // 读 B
       .bank_addr_rb_i (bank_addr_rb_i),
       .bank_sel_rb_i  (bank_sel_rb_i),
+      .bank_sel_rb_o_i(bank_sel_rb_i),
       .rdata_tag_b_o  (rdata_tag_b_o),
       .rdata_valid_b_o(rdata_valid_b_o),
 

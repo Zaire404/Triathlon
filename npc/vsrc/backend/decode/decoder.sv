@@ -22,6 +22,8 @@ module decoder #(
     input  logic [DECODE_WIDTH-1:0][Cfg.PLEN-1:0] ibuf_pcs_i,
     input  logic [DECODE_WIDTH-1:0]               ibuf_slot_valid_i,
     input  logic [DECODE_WIDTH-1:0][Cfg.PLEN-1:0] ibuf_pred_npc_i,
+    input logic [DECODE_WIDTH-1:0][decode_pkg::FTQ_ID_W-1:0] ibuf_ftq_id_i,
+    input logic [DECODE_WIDTH-1:0][decode_pkg::FETCH_EPOCH_W-1:0] ibuf_fetch_epoch_i,
 
     // Decoded uops to Rename / Issue
     output logic                                dec2backend_valid_o,
@@ -197,6 +199,8 @@ module decoder #(
 
       uop_decoded.imm       = '0;
       uop_decoded.pc        = instr_pc;
+      uop_decoded.ftq_id    = '0;
+      uop_decoded.fetch_epoch = '0;
 
       uop_decoded.is_load   = 1'b0;
       uop_decoded.is_store  = 1'b0;
@@ -558,6 +562,8 @@ module decoder #(
       lane_uop = decode_one_instruction(ibuf_instrs_i[lane_index], ibuf_pcs_i[lane_index]);
       lane_uop.valid = ibuf2dec_valid_i && ibuf_slot_valid_i[lane_index];
       lane_uop.pred_npc = ibuf_pred_npc_i[lane_index];
+      lane_uop.ftq_id = ibuf_ftq_id_i[lane_index];
+      lane_uop.fetch_epoch = ibuf_fetch_epoch_i[lane_index];
       dec_uops_o[lane_index] = lane_uop;
     end
   end

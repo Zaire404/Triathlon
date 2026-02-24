@@ -19,10 +19,10 @@ module sram #(
   // 同步读写；这里写优先 (write-first)，你可以按需要改成 read-first
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (!rst_ni) begin
-      // 可选：做清零
-      // for (int i = 0; i < (1 << ADDR_WIDTH); i++) begin
-      //   mem[i] <= '0;
-      // end
+      // Reset must clear SRAM contents so cache valid/meta bits are deterministic.
+      for (int i = 0; i < (1 << ADDR_WIDTH); i++) begin
+        mem[i] = '0;
+      end
       rdata_o <= '0;
     end else begin
       if (we_i) begin

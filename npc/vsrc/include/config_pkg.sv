@@ -21,6 +21,69 @@ package config_pkg;
     int unsigned VLEN;
     // Instruction Length (in bits)
     int unsigned ILEN;
+    // Branch predictor mode: 1 enables gshare, 0 uses PC-only index
+    int unsigned BPU_USE_GSHARE;
+    // Branch predictor mode: 1 enables TAGE conditional predictor
+    int unsigned BPU_USE_TAGE;
+    // Branch predictor mode: 1 enables tournament chooser
+    int unsigned BPU_USE_TOURNAMENT;
+    // Branch predictor index hash controls
+    int unsigned BPU_BTB_HASH_ENABLE;
+    int unsigned BPU_BHT_HASH_ENABLE;
+    // Branch predictor geometry controls
+    int unsigned BPU_BTB_ENTRIES;
+    int unsigned BPU_BHT_ENTRIES;
+    int unsigned BPU_RAS_DEPTH;
+    int unsigned BPU_GHR_BITS;
+    // Statistical Corrector controls
+    int unsigned BPU_USE_SC_L;
+    int unsigned BPU_SC_L_ENTRIES;
+    int unsigned BPU_SC_L_CONF_THRESH;
+    int unsigned BPU_SC_L_REQUIRE_DISAGREE;
+    int unsigned BPU_SC_L_REQUIRE_BOTH_WEAK;
+    int unsigned BPU_SC_L_BLOCK_ON_TAGE_HIT;
+    // Loop predictor controls
+    int unsigned BPU_USE_LOOP;
+    int unsigned BPU_LOOP_ENTRIES;
+    int unsigned BPU_LOOP_TAG_BITS;
+    int unsigned BPU_LOOP_CONF_THRESH;
+    // ITTAGE indirect target predictor controls
+    int unsigned BPU_USE_ITTAGE;
+    int unsigned BPU_ITTAGE_ENTRIES;
+    int unsigned BPU_ITTAGE_TAG_BITS;
+    // TAGE override policy controls
+    int unsigned BPU_TAGE_OVERRIDE_MIN_PROVIDER;
+    int unsigned BPU_TAGE_OVERRIDE_REQUIRE_LEGACY_WEAK;
+
+    // Frontend micro-architecture toggles
+    int unsigned ICACHE_HIT_PIPELINE_EN;
+    int unsigned IFU_FETCHQ_BYPASS_EN;
+    int unsigned IFU_REQ_DEPTH;
+    int unsigned IFU_INF_DEPTH;
+    int unsigned IFU_FQ_DEPTH;
+
+    // Backend micro-architecture toggles
+    int unsigned ENABLE_COMMIT_RAS_UPDATE;
+    int unsigned DC_BANKS;
+    int unsigned DC_MSHR_DEPTH;
+    int unsigned DCACHE_MSHR_SIZE;
+    int unsigned RENAME_PENDING_DEPTH;
+    int unsigned ROB_DEPTH;
+    int unsigned LSU_GROUP_SIZE;
+    int unsigned SB_DEPTH;
+    int unsigned IBUFFER_DEPTH;
+    int unsigned ROB_MAX_COMMIT_BR;
+    int unsigned ROB_MAX_COMMIT_ST;
+    int unsigned ROB_MAX_COMMIT_LD;
+
+    // BPU internal geometry controls
+    int unsigned BPU_TAGE_TAG_BITS;
+    int unsigned BPU_TAGE_HIST_LEN0;
+    int unsigned BPU_TAGE_HIST_LEN1;
+    int unsigned BPU_TAGE_HIST_LEN2;
+    int unsigned BPU_TAGE_HIST_LEN3;
+    int unsigned BPU_PATH_HIST_BITS;
+    int unsigned BPU_TRACK_DEPTH;
 
     // ICache configuration
     // Instruction cache size (in bytes)
@@ -61,6 +124,72 @@ package config_pkg;
     int unsigned INSTR_PER_FETCH;
     // Fetch width (in bits)
     int unsigned FETCH_WIDTH;
+    // Branch predictor mode: 1 enables gshare, 0 uses PC-only index
+    int unsigned BPU_USE_GSHARE;
+    // Branch predictor mode: 1 enables TAGE conditional predictor
+    int unsigned BPU_USE_TAGE;
+    // Branch predictor mode: 1 enables tournament chooser
+    int unsigned BPU_USE_TOURNAMENT;
+    // Branch predictor index hash controls
+    int unsigned BPU_BTB_HASH_ENABLE;
+    int unsigned BPU_BHT_HASH_ENABLE;
+    // Branch predictor geometry controls
+    int unsigned BPU_BTB_ENTRIES;
+    int unsigned BPU_BHT_ENTRIES;
+    int unsigned BPU_RAS_DEPTH;
+    int unsigned BPU_GHR_BITS;
+    // Statistical Corrector controls
+    int unsigned BPU_USE_SC_L;
+    int unsigned BPU_SC_L_ENTRIES;
+    int unsigned BPU_SC_L_CONF_THRESH;
+    int unsigned BPU_SC_L_REQUIRE_DISAGREE;
+    int unsigned BPU_SC_L_REQUIRE_BOTH_WEAK;
+    int unsigned BPU_SC_L_BLOCK_ON_TAGE_HIT;
+    // Loop predictor controls
+    int unsigned BPU_USE_LOOP;
+    int unsigned BPU_LOOP_ENTRIES;
+    int unsigned BPU_LOOP_TAG_BITS;
+    int unsigned BPU_LOOP_CONF_THRESH;
+    // ITTAGE indirect target predictor controls
+    int unsigned BPU_USE_ITTAGE;
+    int unsigned BPU_ITTAGE_ENTRIES;
+    int unsigned BPU_ITTAGE_TAG_BITS;
+    // TAGE override policy controls
+    int unsigned BPU_TAGE_OVERRIDE_MIN_PROVIDER;
+    int unsigned BPU_TAGE_OVERRIDE_REQUIRE_LEGACY_WEAK;
+
+    // Frontend micro-architecture toggles
+    int unsigned ICACHE_HIT_PIPELINE_EN;
+    int unsigned IFU_FETCHQ_BYPASS_EN;
+    int unsigned IFU_REQ_DEPTH;
+    int unsigned IFU_INF_DEPTH;
+    int unsigned IFU_FQ_DEPTH;
+    int unsigned FTQ_DEPTH;
+    int unsigned FTQ_ID_W;
+    int unsigned FETCH_EPOCH_W;
+
+    // Backend micro-architecture toggles
+    int unsigned ENABLE_COMMIT_RAS_UPDATE;
+    int unsigned DC_BANKS;
+    int unsigned DC_MSHR_DEPTH;
+    int unsigned DCACHE_MSHR_SIZE;
+    int unsigned RENAME_PENDING_DEPTH;
+    int unsigned ROB_DEPTH;
+    int unsigned LSU_GROUP_SIZE;
+    int unsigned SB_DEPTH;
+    int unsigned IBUFFER_DEPTH;
+    int unsigned ROB_MAX_COMMIT_BR;
+    int unsigned ROB_MAX_COMMIT_ST;
+    int unsigned ROB_MAX_COMMIT_LD;
+
+    // BPU internal geometry controls
+    int unsigned BPU_TAGE_TAG_BITS;
+    int unsigned BPU_TAGE_HIST_LEN0;
+    int unsigned BPU_TAGE_HIST_LEN1;
+    int unsigned BPU_TAGE_HIST_LEN2;
+    int unsigned BPU_TAGE_HIST_LEN3;
+    int unsigned BPU_PATH_HIST_BITS;
+    int unsigned BPU_TRACK_DEPTH;
 
     // ICache configuration
     int unsigned ICACHE_BYTE_SIZE;

@@ -8,6 +8,7 @@
 !*.sv
 !*.cc
 !*.cpp
+!CMakeLists.txt
 !.gitignore
 !README.md
 !ref/*
@@ -21,4 +22,5 @@
 !tools/profiler/tests/
 !tools/profiler/tests/*.py
 build/
+build-cmake/
 .history/

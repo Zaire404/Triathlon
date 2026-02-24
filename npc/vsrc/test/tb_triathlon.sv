@@ -2,6 +2,8 @@
 import config_pkg::*;
 import decode_pkg::*;
 import global_config_pkg::*;
+import core_contract_pkg::*;
+import debug_bus_pkg::*;
 
 module tb_triathlon #(
     parameter int unsigned ROB_DEPTH = 64,
@@ -55,6 +57,7 @@ module tb_triathlon #(
     output logic [Cfg.XLEN-1:0]                dbg_csr_mcause_o,
     output logic                               backend_flush_o,
     output logic [Cfg.PLEN-1:0]                backend_redirect_pc_o,
+    output logic [Cfg.PLEN-1:0]                dbg_retire_redirect_pc_o,
     output logic                               dbg_rob_flush_o,
     output logic [4:0]                         dbg_rob_flush_cause_o,
     output logic                               dbg_rob_flush_is_mispred_o,
@@ -70,9 +73,41 @@ module tb_triathlon #(
     output logic [Cfg.INSTR_PER_FETCH-1:0][Cfg.ILEN-1:0] dbg_fe_instrs_o,
     output logic [Cfg.INSTR_PER_FETCH-1:0]     dbg_fe_slot_valid_o,
     output logic [Cfg.INSTR_PER_FETCH-1:0][Cfg.PLEN-1:0] dbg_fe_pred_npc_o,
+    output logic                               dbg_ifu_req_valid_o,
+    output logic                               dbg_ifu_req_ready_o,
+    output logic                               dbg_ifu_req_fire_o,
+    output logic                               dbg_ifu_req_inflight_o,
+    output logic                               dbg_ifu_rsp_valid_o,
+    output logic                               dbg_ifu_rsp_capture_o,
+    output logic                               dbg_ifu_drop_stale_rsp_o,
+    output logic [2:0]                         dbg_icache_state_o,
+    output logic [3:0]                         dbg_ifu_fq_count_o,
+    output logic                               dbg_ifu_fq_full_o,
+    output logic                               dbg_ifu_fq_empty_o,
+    output logic                               dbg_ifu_fq_enq_fire_o,
+    output logic                               dbg_ifu_fq_deq_fire_o,
+    output logic                               dbg_ifu_fq_bypass_fire_o,
+    output logic                               dbg_ifu_fq_enq_blocked_o,
+    output logic                               dbg_ifu_ibuf_pop_o,
+    output logic                               dbg_ifu_reqq_empty_o,
+    output logic                               dbg_ifu_inf_full_o,
+    output logic                               dbg_ifu_block_flush_o,
+    output logic                               dbg_ifu_block_reqq_empty_o,
+    output logic                               dbg_ifu_block_inf_full_o,
+    output logic                               dbg_ifu_block_storage_budget_o,
     output logic                               dbg_dec_valid_o,
     output logic                               dbg_dec_ready_o,
     output logic                               dbg_rob_ready_o,
+    output logic                               dbg_pipe_bus_valid_o,
+    output logic                               dbg_pipe_bus_fe_valid_o,
+    output logic                               dbg_pipe_bus_dec_valid_o,
+    output logic                               dbg_pipe_bus_dec_ready_o,
+    output logic                               dbg_pipe_bus_rob_ready_o,
+    output logic                               dbg_mem_bus_valid_o,
+    output logic                               dbg_mem_bus_lsu_issue_valid_o,
+    output logic                               dbg_mem_bus_lsu_req_ready_o,
+    output logic [7:0]                         dbg_cfg_instr_per_fetch_o,
+    output logic [7:0]                         dbg_cfg_nret_o,
     output logic                               dbg_ren_src_from_pending_o,
     output logic [$clog2(Cfg.INSTR_PER_FETCH+1)-1:0] dbg_ren_src_count_o,
     output logic [$clog2(Cfg.INSTR_PER_FETCH+1)-1:0] dbg_ren_sel_count_o,
@@ -93,6 +128,14 @@ module tb_triathlon #(
     output logic [$clog2(Cfg.RS_DEPTH+1)-1:0]  dbg_free_bru_o,
     output logic [$clog2(Cfg.RS_DEPTH+1)-1:0]  dbg_free_lsu_o,
     output logic [$clog2(Cfg.RS_DEPTH+1)-1:0]  dbg_free_csr_o,
+    output logic                               dbg_alu_rs_ready_any_o,
+    output logic                               dbg_alu_issue_any_o,
+    output logic                               dbg_alu_ready_not_issued_o,
+    output logic                               dbg_alu_wb_any_o,
+    output logic                               dbg_alu_wb_head_hit_o,
+    output logic                               dbg_bru_rs_ready_any_o,
+    output logic                               dbg_bru_ready_not_issued_o,
+    output logic                               dbg_bru_wb_head_hit_o,
 
     // Debug (LSU load path)
     output logic                               dbg_lsu_ld_req_valid_o,
@@ -178,6 +221,38 @@ module tb_triathlon #(
     output logic [7:0]                         dbg_bpu_spec_ras_count_o,
     output logic [Cfg.PLEN-1:0]                dbg_bpu_arch_ras_top_o,
     output logic [Cfg.PLEN-1:0]                dbg_bpu_spec_ras_top_o,
+    output logic [63:0]                        dbg_bpu_cond_update_total_o,
+    output logic [63:0]                        dbg_bpu_cond_local_correct_o,
+    output logic [63:0]                        dbg_bpu_cond_global_correct_o,
+    output logic [63:0]                        dbg_bpu_cond_selected_correct_o,
+    output logic [63:0]                        dbg_bpu_cond_choose_local_o,
+    output logic [63:0]                        dbg_bpu_cond_choose_global_o,
+    output logic [63:0]                        dbg_bpu_tage_lookup_total_o,
+    output logic [63:0]                        dbg_bpu_tage_hit_total_o,
+    output logic [63:0]                        dbg_bpu_tage_override_total_o,
+    output logic [63:0]                        dbg_bpu_tage_override_correct_o,
+    output logic [63:0]                        dbg_bpu_sc_lookup_total_o,
+    output logic [63:0]                        dbg_bpu_sc_confident_total_o,
+    output logic [63:0]                        dbg_bpu_sc_override_total_o,
+    output logic [63:0]                        dbg_bpu_sc_override_correct_o,
+    output logic [63:0]                        dbg_bpu_loop_lookup_total_o,
+    output logic [63:0]                        dbg_bpu_loop_hit_total_o,
+    output logic [63:0]                        dbg_bpu_loop_confident_total_o,
+    output logic [63:0]                        dbg_bpu_loop_override_total_o,
+    output logic [63:0]                        dbg_bpu_loop_override_correct_o,
+    output logic [63:0]                        dbg_bpu_cond_provider_legacy_selected_o,
+    output logic [63:0]                        dbg_bpu_cond_provider_tage_selected_o,
+    output logic [63:0]                        dbg_bpu_cond_provider_sc_selected_o,
+    output logic [63:0]                        dbg_bpu_cond_provider_loop_selected_o,
+    output logic [63:0]                        dbg_bpu_cond_provider_legacy_correct_o,
+    output logic [63:0]                        dbg_bpu_cond_provider_tage_correct_o,
+    output logic [63:0]                        dbg_bpu_cond_provider_sc_correct_o,
+    output logic [63:0]                        dbg_bpu_cond_provider_loop_correct_o,
+    output logic [63:0]                        dbg_bpu_cond_selected_wrong_alt_legacy_correct_o,
+    output logic [63:0]                        dbg_bpu_cond_selected_wrong_alt_tage_correct_o,
+    output logic [63:0]                        dbg_bpu_cond_selected_wrong_alt_sc_correct_o,
+    output logic [63:0]                        dbg_bpu_cond_selected_wrong_alt_loop_correct_o,
+    output logic [63:0]                        dbg_bpu_cond_selected_wrong_alt_any_correct_o,
     // Debug (BRU mispred info)
     output logic                               dbg_bru_mispred_o,
     output logic [Cfg.PLEN-1:0]                dbg_bru_pc_o,
@@ -242,6 +317,7 @@ module tb_triathlon #(
   assign dbg_csr_mcause_o  = dut.u_backend.u_csr.csr_mcause;
   assign backend_flush_o = dut.u_backend.backend_flush_o;
   assign backend_redirect_pc_o = dut.u_backend.backend_redirect_pc_o;
+  assign dbg_retire_redirect_pc_o = dut.u_backend.retire_redirect_pc_dbg;
   assign dbg_rob_flush_o = dut.u_backend.rob_flush;
   assign dbg_rob_flush_cause_o = dut.u_backend.rob_flush_cause;
   assign dbg_rob_flush_is_mispred_o = dut.u_backend.rob_flush_is_mispred;
@@ -257,9 +333,53 @@ module tb_triathlon #(
   assign dbg_fe_instrs_o = dut.fe_ibuf_instrs;
   assign dbg_fe_slot_valid_o = dut.fe_ibuf_slot_valid;
   assign dbg_fe_pred_npc_o = dut.fe_ibuf_pred_npc;
+  assign dbg_ifu_req_valid_o = dut.u_frontend.i_ifu.req_issue_valid_w;
+  assign dbg_ifu_req_ready_o = dut.u_frontend.icache2ifu_rsp_handshake.ready;
+  assign dbg_ifu_req_fire_o = dut.u_frontend.i_ifu.req_issue_fire_w;
+  assign dbg_ifu_req_inflight_o = (dut.u_frontend.i_ifu.inf_count_q != '0);
+  assign dbg_ifu_rsp_valid_o = dut.u_frontend.icache2ifu_rsp_handshake.valid;
+  assign dbg_ifu_rsp_capture_o = dut.u_frontend.i_ifu.rsp_capture_w;
+  assign dbg_ifu_drop_stale_rsp_o = dut.u_frontend.i_ifu.drop_stale_rsp_w;
+  assign dbg_icache_state_o = dut.u_frontend.i_icache.state_q;
+  assign dbg_ifu_fq_count_o = dut.u_frontend.i_ifu.fq_count_q;
+  assign dbg_ifu_fq_full_o = dut.u_frontend.i_ifu.fq_full_w;
+  assign dbg_ifu_fq_empty_o = dut.u_frontend.i_ifu.fq_empty_w;
+  assign dbg_ifu_fq_enq_fire_o = dut.u_frontend.i_ifu.rsp_push_fq_w;
+  assign dbg_ifu_fq_deq_fire_o = dut.u_frontend.i_ifu.fq_deq_valid_w & dut.u_frontend.i_ifu.fq_deq_ready_w;
+  assign dbg_ifu_fq_bypass_fire_o = dut.u_frontend.i_ifu.fq_empty_w &
+                                     dut.u_frontend.i_ifu.fq_enq_valid_w &
+                                     dut.u_frontend.i_ifu.fq_deq_ready_w;
+  assign dbg_ifu_fq_enq_blocked_o = dut.u_frontend.i_ifu.fq_enq_valid_w & ~dut.u_frontend.i_ifu.fq_enq_ready_w;
+  assign dbg_ifu_ibuf_pop_o = dut.u_frontend.i_ifu.ibuf_pop_w;
+  assign dbg_ifu_reqq_empty_o = dut.u_frontend.i_ifu.req_fifo_empty_w;
+  assign dbg_ifu_inf_full_o = dut.u_frontend.i_ifu.inf_fifo_full_w;
+  assign dbg_ifu_block_flush_o = dut.u_frontend.i_ifu.req_block_flush_w;
+  assign dbg_ifu_block_reqq_empty_o = dut.u_frontend.i_ifu.req_block_reqq_empty_w;
+  assign dbg_ifu_block_inf_full_o = dut.u_frontend.i_ifu.req_block_inf_full_w;
+  assign dbg_ifu_block_storage_budget_o = dut.u_frontend.i_ifu.req_block_storage_budget_w;
   assign dbg_dec_valid_o = dut.u_backend.decode_ibuf_valid;
   assign dbg_dec_ready_o = dut.u_backend.decode_ibuf_ready;
   assign dbg_rob_ready_o = dut.u_backend.rob_ready;
+  pipe_dbg_t pipe_bus;
+  mem_dbg_t mem_bus;
+  assign pipe_bus.valid = 1'b1;
+  assign pipe_bus.fe_valid = dbg_fe_valid_o;
+  assign pipe_bus.dec_valid = dbg_dec_valid_o;
+  assign pipe_bus.dec_ready = dbg_dec_ready_o;
+  assign pipe_bus.rob_ready = dbg_rob_ready_o;
+  assign mem_bus.valid = 1'b1;
+  assign mem_bus.lsu_issue_valid = dut.u_backend.lsu_en;
+  assign mem_bus.lsu_req_ready = dut.u_backend.lsu_req_ready;
+  assign dbg_pipe_bus_valid_o = pipe_bus.valid;
+  assign dbg_pipe_bus_fe_valid_o = pipe_bus.fe_valid;
+  assign dbg_pipe_bus_dec_valid_o = pipe_bus.dec_valid;
+  assign dbg_pipe_bus_dec_ready_o = pipe_bus.dec_ready;
+  assign dbg_pipe_bus_rob_ready_o = pipe_bus.rob_ready;
+  assign dbg_mem_bus_valid_o = mem_bus.valid;
+  assign dbg_mem_bus_lsu_issue_valid_o = mem_bus.lsu_issue_valid;
+  assign dbg_mem_bus_lsu_req_ready_o = mem_bus.lsu_req_ready;
+  assign dbg_cfg_instr_per_fetch_o = 8'(Cfg.INSTR_PER_FETCH);
+  assign dbg_cfg_nret_o = 8'(Cfg.NRET);
   assign dbg_ren_src_from_pending_o = dut.u_backend.rename_src_from_pending;
   assign dbg_ren_sel_count_o = dut.u_backend.rename_sel_count;
   assign dbg_ren_fire_o = dut.u_backend.rename_fire;
@@ -288,6 +408,37 @@ module tb_triathlon #(
   assign dbg_free_bru_o = dut.u_backend.bru_free_count;
   assign dbg_free_lsu_o = dut.u_backend.lsu_free_count;
   assign dbg_free_csr_o = dut.u_backend.csr_free_count;
+
+  logic alu_rs_ready_any;
+  logic alu_issue_any;
+  logic alu_wb_any;
+  logic alu_wb_head_hit;
+  logic bru_rs_ready_any;
+  logic bru_wb_head_hit;
+
+  assign alu_rs_ready_any = |dut.u_backend.u_issue_alu.rs_ready_wires;
+  assign alu_issue_any = dut.u_backend.alu0_en | dut.u_backend.alu1_en |
+                         dut.u_backend.alu2_en | dut.u_backend.alu3_en;
+  assign alu_wb_any = dut.u_backend.alu0_wb_valid | dut.u_backend.alu1_wb_valid |
+                      dut.u_backend.alu2_wb_valid | dut.u_backend.alu3_wb_valid;
+  assign alu_wb_head_hit =
+      (dut.u_backend.alu0_wb_valid && (dut.u_backend.alu0_wb_tag == dut.u_backend.rob_head_ptr)) ||
+      (dut.u_backend.alu1_wb_valid && (dut.u_backend.alu1_wb_tag == dut.u_backend.rob_head_ptr)) ||
+      (dut.u_backend.alu2_wb_valid && (dut.u_backend.alu2_wb_tag == dut.u_backend.rob_head_ptr)) ||
+      (dut.u_backend.alu3_wb_valid && (dut.u_backend.alu3_wb_tag == dut.u_backend.rob_head_ptr));
+
+  assign bru_rs_ready_any = |dut.u_backend.u_issue_bru.rs_ready_wires;
+  assign bru_wb_head_hit = dut.u_backend.bru_wb_valid &&
+                           (dut.u_backend.bru_wb_tag == dut.u_backend.rob_head_ptr);
+
+  assign dbg_alu_rs_ready_any_o = alu_rs_ready_any;
+  assign dbg_alu_issue_any_o = alu_issue_any;
+  assign dbg_alu_ready_not_issued_o = alu_rs_ready_any && !alu_issue_any;
+  assign dbg_alu_wb_any_o = alu_wb_any;
+  assign dbg_alu_wb_head_hit_o = alu_wb_head_hit;
+  assign dbg_bru_rs_ready_any_o = bru_rs_ready_any;
+  assign dbg_bru_ready_not_issued_o = bru_rs_ready_any && !dut.u_backend.bru_en;
+  assign dbg_bru_wb_head_hit_o = bru_wb_head_hit;
 
   // Debug: LSU load path
   assign dbg_lsu_ld_req_valid_o = dut.u_backend.lsu_ld_req_valid;
@@ -441,6 +592,51 @@ module tb_triathlon #(
   assign dbg_bpu_spec_ras_count_o = {3'b0, dut.u_frontend.i_bpu.spec_ras_count_q};
   assign dbg_bpu_arch_ras_top_o = dut.u_frontend.i_bpu.arch_ras_top_w;
   assign dbg_bpu_spec_ras_top_o = dut.u_frontend.i_bpu.spec_ras_top_w;
+  assign dbg_bpu_cond_update_total_o = dut.u_frontend.i_bpu.dbg_cond_update_total_q;
+  assign dbg_bpu_cond_local_correct_o = dut.u_frontend.i_bpu.dbg_cond_local_correct_q;
+  assign dbg_bpu_cond_global_correct_o = dut.u_frontend.i_bpu.dbg_cond_global_correct_q;
+  assign dbg_bpu_cond_selected_correct_o = dut.u_frontend.i_bpu.dbg_cond_selected_correct_q;
+  assign dbg_bpu_cond_choose_local_o = dut.u_frontend.i_bpu.dbg_cond_choose_local_q;
+  assign dbg_bpu_cond_choose_global_o = dut.u_frontend.i_bpu.dbg_cond_choose_global_q;
+  assign dbg_bpu_tage_lookup_total_o = dut.u_frontend.i_bpu.dbg_tage_lookup_total_q;
+  assign dbg_bpu_tage_hit_total_o = dut.u_frontend.i_bpu.dbg_tage_hit_total_q;
+  assign dbg_bpu_tage_override_total_o = dut.u_frontend.i_bpu.dbg_tage_override_total_q;
+  assign dbg_bpu_tage_override_correct_o = dut.u_frontend.i_bpu.dbg_tage_override_correct_q;
+  assign dbg_bpu_sc_lookup_total_o = dut.u_frontend.i_bpu.dbg_sc_lookup_total_q;
+  assign dbg_bpu_sc_confident_total_o = dut.u_frontend.i_bpu.dbg_sc_confident_total_q;
+  assign dbg_bpu_sc_override_total_o = dut.u_frontend.i_bpu.dbg_sc_override_total_q;
+  assign dbg_bpu_sc_override_correct_o = dut.u_frontend.i_bpu.dbg_sc_override_correct_q;
+  assign dbg_bpu_loop_lookup_total_o = dut.u_frontend.i_bpu.dbg_loop_lookup_total_q;
+  assign dbg_bpu_loop_hit_total_o = dut.u_frontend.i_bpu.dbg_loop_hit_total_q;
+  assign dbg_bpu_loop_confident_total_o = dut.u_frontend.i_bpu.dbg_loop_confident_total_q;
+  assign dbg_bpu_loop_override_total_o = dut.u_frontend.i_bpu.dbg_loop_override_total_q;
+  assign dbg_bpu_loop_override_correct_o = dut.u_frontend.i_bpu.dbg_loop_override_correct_q;
+  assign dbg_bpu_cond_provider_legacy_selected_o =
+      dut.u_frontend.i_bpu.dbg_cond_provider_legacy_selected_q;
+  assign dbg_bpu_cond_provider_tage_selected_o =
+      dut.u_frontend.i_bpu.dbg_cond_provider_tage_selected_q;
+  assign dbg_bpu_cond_provider_sc_selected_o =
+      dut.u_frontend.i_bpu.dbg_cond_provider_sc_selected_q;
+  assign dbg_bpu_cond_provider_loop_selected_o =
+      dut.u_frontend.i_bpu.dbg_cond_provider_loop_selected_q;
+  assign dbg_bpu_cond_provider_legacy_correct_o =
+      dut.u_frontend.i_bpu.dbg_cond_provider_legacy_correct_q;
+  assign dbg_bpu_cond_provider_tage_correct_o =
+      dut.u_frontend.i_bpu.dbg_cond_provider_tage_correct_q;
+  assign dbg_bpu_cond_provider_sc_correct_o =
+      dut.u_frontend.i_bpu.dbg_cond_provider_sc_correct_q;
+  assign dbg_bpu_cond_provider_loop_correct_o =
+      dut.u_frontend.i_bpu.dbg_cond_provider_loop_correct_q;
+  assign dbg_bpu_cond_selected_wrong_alt_legacy_correct_o =
+      dut.u_frontend.i_bpu.dbg_cond_selected_wrong_alt_legacy_correct_q;
+  assign dbg_bpu_cond_selected_wrong_alt_tage_correct_o =
+      dut.u_frontend.i_bpu.dbg_cond_selected_wrong_alt_tage_correct_q;
+  assign dbg_bpu_cond_selected_wrong_alt_sc_correct_o =
+      dut.u_frontend.i_bpu.dbg_cond_selected_wrong_alt_sc_correct_q;
+  assign dbg_bpu_cond_selected_wrong_alt_loop_correct_o =
+      dut.u_frontend.i_bpu.dbg_cond_selected_wrong_alt_loop_correct_q;
+  assign dbg_bpu_cond_selected_wrong_alt_any_correct_o =
+      dut.u_frontend.i_bpu.dbg_cond_selected_wrong_alt_any_correct_q;
 
   // Debug: BRU info (from backend execute)
   assign dbg_bru_mispred_o  = dut.u_backend.bru_mispred;

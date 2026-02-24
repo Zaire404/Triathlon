@@ -123,6 +123,64 @@ static void test_backward_cond_bias(Vtb_bpu *top) {
   expect_not_taken(top, forward_pc);
 }
 
+static void test_spec_ghr_advances_on_predicted_conditional(Vtb_bpu *top) {
+  reset(top);
+
+  const uint32_t cond_pc = 0x80000c00;
+  const uint32_t cond_target = 0x80000c40;
+
+  // Train to strongly-taken so prediction will fire a conditional-taken event.
+  train(top, cond_pc, true, true, cond_target);
+  train(top, cond_pc, true, true, cond_target);
+
+  uint32_t ghr_before = top->dbg_ghr_o;
+  top->pc_i = cond_pc;
+  top->ifu_valid_i = 1;
+  top->ifu_ready_i = 1;
+  tick(top, 1);  // prediction consumed
+  tick(top, 1);  // allow speculative event to update history
+  uint32_t ghr_after = top->dbg_ghr_o;
+
+  // Without speculative GHR update, ghr_before==ghr_after.
+  assert(ghr_after != ghr_before);
+}
+
+static void test_indirect_multitarget_context_switch(Vtb_bpu *top) {
+  reset(top);
+
+  const uint32_t cond1_pc = 0x80000100;
+  const uint32_t cond1_tgt = 0x80000120;
+  const uint32_t cond2_pc = 0x80000140;
+  const uint32_t cond2_tgt = 0x80000160;
+  const uint32_t indir_pc = 0x80000200;
+  const uint32_t indir_tgt_a = 0x80008000;
+  const uint32_t indir_tgt_b = 0x80009000;
+
+  train(top, cond1_pc, true, true, cond1_tgt);
+  train(top, cond1_pc, true, true, cond1_tgt);
+  train(top, cond2_pc, true, true, cond2_tgt);
+  train(top, cond2_pc, true, true, cond2_tgt);
+
+  for (int i = 0; i < 8; i++) {
+    top->pc_i = cond1_pc;
+    tick(top, 1);
+    train(top, indir_pc, false, true, indir_tgt_a);
+
+    top->pc_i = cond1_pc;
+    tick(top, 1);
+    top->pc_i = cond2_pc;
+    tick(top, 1);
+    train(top, indir_pc, false, true, indir_tgt_b);
+  }
+
+  top->pc_i = cond1_pc;
+  tick(top, 1);
+  top->pc_i = indir_pc;
+  tick(top, 1);
+  assert(top->pred_slot_valid_o == 1);
+  assert(top->pred_slot_target_o == indir_tgt_a);
+}
+
 int main(int argc, char **argv) {
   Verilated::commandArgs(argc, argv);
   Vtb_bpu *top = new Vtb_bpu;
@@ -500,6 +558,13 @@ int main(int argc, char **argv) {
 
   // 15) Backward-branch bias should rescue weak-NT loops only.
   test_backward_cond_bias(top);
+
+  // 16) Global history should advance on predicted conditional branches
+  // even before commit update returns from backend.
+  test_spec_ghr_advances_on_predicted_conditional(top);
+
+  // 17) Indirect branch target should be selected by path context.
+  test_indirect_multitarget_context_switch(top);
 
   std::cout << "--- [PASSED] All checks passed successfully! ---" << std::endl;
   delete top;

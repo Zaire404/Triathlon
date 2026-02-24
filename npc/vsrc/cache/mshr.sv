@@ -37,12 +37,19 @@ module mshr #(
   logic [ENTRY_COUNT-1:0] entry_valid_q;
   logic [ENTRY_COUNT-1:0][KEY_WIDTH-1:0] entry_key_q;
   logic [ENTRY_COUNT-1:0][DATA_WIDTH-1:0] entry_data_q;
+  logic [ENTRY_COUNT-1:0] entry_free_w;
+
+  always_comb begin
+    for (int i = 0; i < ENTRY_COUNT; i++) begin
+      entry_free_w[i] = !entry_valid_q[i] || (dealloc_valid_i && (dealloc_idx_i == IDX_WIDTH'(i)));
+    end
+  end
 
   always_comb begin
     alloc_ready_o = 1'b0;
     alloc_idx_o = '0;
     for (int i = 0; i < ENTRY_COUNT; i++) begin
-      if (!alloc_ready_o && !entry_valid_q[i]) begin
+      if (!alloc_ready_o && entry_free_w[i]) begin
         alloc_ready_o = 1'b1;
         alloc_idx_o = IDX_WIDTH'(i);
       end

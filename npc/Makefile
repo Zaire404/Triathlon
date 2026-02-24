@@ -33,6 +33,8 @@ PKG_VSRCS = \
 	$(abspath ./vsrc/include/test_config_pkg.sv) \
 	$(abspath ./vsrc/include/build_config_pkg.sv) \
 	$(abspath ./vsrc/include/global_config_pkg.sv) \
+	$(abspath ./vsrc/include/debug_bus_pkg.sv) \
+	$(abspath ./vsrc/include/core_contract_pkg.sv) \
 	$(abspath ./vsrc/include/riscv_pkg.sv) \
 	$(abspath ./vsrc/include/decode_pkg.sv)
 
@@ -55,7 +57,7 @@ SIM_MAIN ?= $(firstword $(wildcard \
 	$(abspath ./csrc/main.cpp) \
 	$(abspath ./csrc/main.cc) \
 	$(abspath ./csrc/main.c)))
-SIM_SRCS ?=
+SIM_SRCS ?= $(sort $(wildcard $(abspath ./csrc/lib/*.cpp)))
 
 VSRCS = $(PKG_VSRCS) $(DESIGN_VSRCS) $(TOP_SV)
 CSRCS = $(SIM_MAIN) $(SIM_SRCS) $(SRC_AUTO_BIND)
@@ -70,7 +72,7 @@ IMG ?=
 ARGS ?=
 NPC_EXE := $(strip $(ARGS) $(DIFFTEST) $(IMG))
 INCFLAGS = $(addprefix -I, $(INC_PATH))
-CXXFLAGS += $(INCFLAGS) -I$(abspath ./include) -DTOP_NAME="\"V$(TOPNAME)\"" -g -std=c++17
+CXXFLAGS += $(INCFLAGS) -I$(abspath ./include) -I$(abspath ./csrc/include) -DTOP_NAME="\"V$(TOPNAME)\"" -g -std=c++17
 LDFLAGS += -lreadline -ldl -pie $(LLVM_LIBS)
 
 NEED_CHECKS := $(filter-out clean clean-all help,$(MAKECMDGOALS))
@@ -109,21 +111,37 @@ gdb: $(BIN)
 	$(call git_commit, "debug RTL") # DO NOT REMOVE THIS LINE!!!
 	gdb -s $(BIN) --args $(BIN) $(NPC_EXE)
 
-.PHONY: profile-report profile-parse
+.PHONY: profile-report profile-parse profile-task profile-baseline
 
 PROFILE_TOOL_DIR := $(abspath ./tools/profiler)
-PROFILE_OUT_DIR ?= $(abspath ./build/profile/latest)
+PROFILE_OUT_DIR ?=
+PROFILE_PARSE_DIR ?= $(if $(strip $(PROFILE_OUT_DIR)),$(PROFILE_OUT_DIR),$(abspath ./build/profile/latest))
+PROFILE_TAG ?= latest
+PROFILE_TAG_DIR ?= $(abspath ./build/profile/$(PROFILE_TAG))
 
 profile-report:
-	OUT_DIR=$(PROFILE_OUT_DIR) ARCH=$(ARCH) CROSS_COMPILE=$(CROSS_COMPILE) \
-		$(PROFILE_TOOL_DIR)/run_profile.sh
+	@if [ -n "$(PROFILE_OUT_DIR)" ]; then \
+		OUT_DIR=$(PROFILE_OUT_DIR) ARCH=$(ARCH) CROSS_COMPILE=$(CROSS_COMPILE) \
+			$(PROFILE_TOOL_DIR)/run_profile.sh; \
+	else \
+		ARCH=$(ARCH) CROSS_COMPILE=$(CROSS_COMPILE) \
+			$(PROFILE_TOOL_DIR)/run_profile.sh; \
+	fi
 
 profile-parse:
 	python3 $(PROFILE_TOOL_DIR)/parse_profile.py \
-		--log-dir $(PROFILE_OUT_DIR) \
+		--log-dir $(PROFILE_PARSE_DIR) \
 		--template $(PROFILE_TOOL_DIR)/report_template.md \
-		--out-json $(PROFILE_OUT_DIR)/summary.json \
-		--out-md $(PROFILE_OUT_DIR)/report.md
+		--out-json $(PROFILE_PARSE_DIR)/summary.json \
+		--out-md $(PROFILE_PARSE_DIR)/report.md
+
+profile-task:
+	$(MAKE) profile-report ARCH=$(ARCH) CROSS_COMPILE=$(CROSS_COMPILE) \
+		PROFILE_OUT_DIR=$(PROFILE_TAG_DIR)
+	$(MAKE) profile-parse PROFILE_PARSE_DIR=$(PROFILE_TAG_DIR)
+
+profile-baseline:
+	$(MAKE) profile-task ARCH=$(ARCH) CROSS_COMPILE=$(CROSS_COMPILE) PROFILE_TAG=baseline
 
 clean:
 	rm -rf $(BUILD_DIR)

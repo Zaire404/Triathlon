@@ -2,6 +2,7 @@
 #include "Vtb_icache.h"
 #include "verilated.h"
 #include <cassert>
+#include <deque>
 #include <iomanip>
 #include <iostream>
 #include <map>
@@ -41,6 +42,7 @@ private:
   // 暂存当前的 Miss 请求信息
   uint64_t pending_addr;
   uint32_t pending_victim_way;
+  int miss_req_count = 0;
 
 public:
   SimulatedMemory()
@@ -115,6 +117,7 @@ public:
     // 处理新的 Miss 请求
     // 只有当 ICache 发送 Miss 且模拟器处于 IDLE 时处理
     if (top->miss_req_valid_o && top->miss_req_ready_i && state == IDLE) {
+      miss_req_count++;
       pending_addr = top->miss_req_paddr_o;
       pending_victim_way = top->miss_req_victim_way_o;
 
@@ -138,6 +141,9 @@ public:
     uint64_t line_addr = addr & ~((uint64_t)LINE_WIDTH_BYTES - 1);
     memory_data[line_addr] = data;
   }
+
+  void reset_miss_req_count() { miss_req_count = 0; }
+  int get_miss_req_count() const { return miss_req_count; }
 };
 
 /**
@@ -161,6 +167,37 @@ void tick(Vtb_icache *top, SimulatedMemory *memory) {
   top->clk_i = 1;
   top->eval();
   main_time++;
+}
+
+struct CycleObs {
+  bool req_ready = false;
+  bool rsp_valid = false;
+  uint32_t rsp_instr0 = 0;
+};
+
+CycleObs cycle_step_with_req(Vtb_icache *top, SimulatedMemory *memory,
+                             bool req_valid, uint32_t req_pc) {
+  top->ifu_req_valid_i = req_valid ? 1 : 0;
+  top->ifu_req_pc_i = req_pc;
+
+  memory->provide_refill(top);
+
+  top->clk_i = 0;
+  top->eval();
+
+  CycleObs obs{};
+  obs.req_ready = (top->ifu_rsp_ready_o != 0);
+  obs.rsp_valid = (top->ifu_rsp_valid_o != 0);
+  obs.rsp_instr0 = top->ifu_rsp_instrs_o[0];
+
+  memory->capture_miss_req(top);
+  main_time++;
+
+  top->clk_i = 1;
+  top->eval();
+  main_time++;
+
+  return obs;
 }
 
 // =================================================================
@@ -228,6 +265,55 @@ bool run_test_case(Vtb_icache *top, SimulatedMemory *memory,
   }
 
   return done;
+}
+
+bool run_back_to_back_hit_throughput_test(Vtb_icache *top, SimulatedMemory *memory) {
+  std::cout << "\n--- Test Case: 6: Back-to-Back Hit Throughput ---" << std::endl;
+  std::deque<uint32_t> reqs = {0x80000000, 0x80000010};
+  std::vector<uint32_t> expected = {0x80000000, 0x80000010};
+  std::vector<int> rsp_cycles;
+
+  int max_cycles = 40;
+  int logical_cycle = 0;
+  int rsp_idx = 0;
+
+  for (int i = 0; i < max_cycles; i++) {
+    bool req_valid = !reqs.empty();
+    uint32_t req_pc = req_valid ? reqs.front() : 0;
+    CycleObs obs = cycle_step_with_req(top, memory, req_valid, req_pc);
+
+    if (req_valid && obs.req_ready) {
+      reqs.pop_front();
+    }
+
+    if (obs.rsp_valid && rsp_idx < static_cast<int>(expected.size()) &&
+        obs.rsp_instr0 == expected[rsp_idx]) {
+      rsp_cycles.push_back(logical_cycle);
+      rsp_idx++;
+    }
+
+    logical_cycle++;
+    if (rsp_idx == static_cast<int>(expected.size())) {
+      break;
+    }
+  }
+
+  if (rsp_cycles.size() != expected.size()) {
+    std::cout << "    [ERROR] back-to-back hit response count mismatch. got="
+              << rsp_cycles.size() << " expected=" << expected.size() << std::endl;
+    assert(false);
+  }
+
+  int gap = rsp_cycles[1] - rsp_cycles[0];
+  if (gap != 1) {
+    std::cout << "    [ERROR] expected back-to-back responses (gap=1), got gap="
+              << gap << " (rsp0_cycle=" << rsp_cycles[0]
+              << ", rsp1_cycle=" << rsp_cycles[1] << ")" << std::endl;
+    assert(false);
+  }
+
+  std::cout << "--- Test 6 PASSED ---" << std::endl;
+  return true;
 }
 
 // =================================================================
@@ -308,10 +394,16 @@ int main(int argc, char **argv) {
   // =================================================================
   //  Test 1: 单行 Miss (Addr 0x80000000)
   // =================================================================
+  memory.reset_miss_req_count();
   bool test1_passed = run_test_case(
       top, &memory, "1: Single Line Miss (0x80000000)", 0x80000000,
       {0x80000000, 0x80000004, 0x80000008, 0x8000000C});
   assert(test1_passed);
+  if (memory.get_miss_req_count() != 1) {
+    std::cout << "    [ERROR] expected single miss request, got "
+              << memory.get_miss_req_count() << std::endl;
+    assert(false);
+  }
   std::cout << "--- Test 1 PASSED ---" << std::endl;
 
   // 清理: 运行一个周期，清除状态
@@ -397,6 +489,15 @@ int main(int argc, char **argv) {
       {0x80000020, 0x80000024, 0x80000028, 0x8000002C});
   assert(test5_passed);
   std::cout << "--- Test 5 PASSED ---" << std::endl;
+
+  // 清理: 运行一个周期，清除状态
+  tick(top, &memory);
+
+  // =================================================================
+  //  Test 6: Back-to-Back Hit Throughput
+  // =================================================================
+  bool test6_passed = run_back_to_back_hit_throughput_test(top, &memory);
+  assert(test6_passed);
 
   std::cout << "\n--- [END] All tests PASSED for ICache ---" << std::endl;
   delete top;

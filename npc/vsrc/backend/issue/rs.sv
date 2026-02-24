@@ -27,6 +27,8 @@ module reservation_station #(
     input wire [ CDB_W-1:0] cdb_valid,
     input wire [ TAG_W-1:0] cdb_tag  [0:CDB_W-1],
     input wire [DATA_W-1:0] cdb_value[0:CDB_W-1],
+    input wire              comb_wakeup_en,
+    input wire [ CDB_W-1:0] cdb_wakeup_mask,
 
     // 握手信号
     output wire [RS_DEPTH-1:0] ready_mask,
@@ -62,6 +64,19 @@ module reservation_station #(
     output logic [  DATA_W-1:0] out_v1_3,
     output logic [  DATA_W-1:0] out_v2_3
 );
+
+  function automatic logic cdb_hit(input logic [TAG_W-1:0] tag);
+    logic hit;
+    begin
+      hit = 1'b0;
+      for (int k = 0; k < CDB_W; k++) begin
+        if (cdb_wakeup_mask[k] && cdb_valid[k] && (tag == cdb_tag[k])) begin
+          hit = 1'b1;
+        end
+      end
+      return hit;
+    end
+  endfunction
 
   // RS 存储阵列
   reg               [RS_DEPTH-1:0] busy;
@@ -171,8 +186,8 @@ module reservation_station #(
   genvar g;
   generate
     for (g = 0; g < RS_DEPTH; g = g + 1) begin : gen_ready
-      wire r1_ready = op_arr[g].has_rs1 ? r1_arr[g] : 1'b1;
-      wire r2_ready = op_arr[g].has_rs2 ? r2_arr[g] : 1'b1;
+      wire r1_ready = op_arr[g].has_rs1 ? (r1_arr[g] || (comb_wakeup_en && cdb_hit(q1_arr[g]))) : 1'b1;
+      wire r2_ready = op_arr[g].has_rs2 ? (r2_arr[g] || (comb_wakeup_en && cdb_hit(q2_arr[g]))) : 1'b1;
       assign ready_mask[g] = busy[g] && r1_ready && r2_ready &&
           (!head_en_i || (dst_arr[g] == head_tag_i));
     end
@@ -182,26 +197,82 @@ module reservation_station #(
   // Port 0 (给 ALU 0)
   assign out_op_0      = op_arr[sel_idx_0];
   assign out_dst_tag_0 = dst_arr[sel_idx_0];
-  assign out_v1_0      = v1_arr[sel_idx_0];
-  assign out_v2_0      = v2_arr[sel_idx_0];
+  always_comb begin
+    out_v1_0 = v1_arr[sel_idx_0];
+    if (comb_wakeup_en && !r1_arr[sel_idx_0]) begin
+      for (int k = 0; k < CDB_W; k++) begin
+        if (cdb_wakeup_mask[k] && cdb_valid[k] && (q1_arr[sel_idx_0] == cdb_tag[k])) out_v1_0 = cdb_value[k];
+      end
+    end
+  end
+  always_comb begin
+    out_v2_0 = v2_arr[sel_idx_0];
+    if (comb_wakeup_en && !r2_arr[sel_idx_0]) begin
+      for (int k = 0; k < CDB_W; k++) begin
+        if (cdb_wakeup_mask[k] && cdb_valid[k] && (q2_arr[sel_idx_0] == cdb_tag[k])) out_v2_0 = cdb_value[k];
+      end
+    end
+  end
 
   // Port 1 (给 ALU 1)
   assign out_op_1      = op_arr[sel_idx_1];
   assign out_dst_tag_1 = dst_arr[sel_idx_1];
-  assign out_v1_1      = v1_arr[sel_idx_1];
-  assign out_v2_1      = v2_arr[sel_idx_1];
+  always_comb begin
+    out_v1_1 = v1_arr[sel_idx_1];
+    if (comb_wakeup_en && !r1_arr[sel_idx_1]) begin
+      for (int k = 0; k < CDB_W; k++) begin
+        if (cdb_wakeup_mask[k] && cdb_valid[k] && (q1_arr[sel_idx_1] == cdb_tag[k])) out_v1_1 = cdb_value[k];
+      end
+    end
+  end
+  always_comb begin
+    out_v2_1 = v2_arr[sel_idx_1];
+    if (comb_wakeup_en && !r2_arr[sel_idx_1]) begin
+      for (int k = 0; k < CDB_W; k++) begin
+        if (cdb_wakeup_mask[k] && cdb_valid[k] && (q2_arr[sel_idx_1] == cdb_tag[k])) out_v2_1 = cdb_value[k];
+      end
+    end
+  end
 
   // Port 2 (给 ALU 2)
   assign out_op_2      = op_arr[sel_idx_2];
   assign out_dst_tag_2 = dst_arr[sel_idx_2];
-  assign out_v1_2      = v1_arr[sel_idx_2];
-  assign out_v2_2      = v2_arr[sel_idx_2];
+  always_comb begin
+    out_v1_2 = v1_arr[sel_idx_2];
+    if (comb_wakeup_en && !r1_arr[sel_idx_2]) begin
+      for (int k = 0; k < CDB_W; k++) begin
+        if (cdb_wakeup_mask[k] && cdb_valid[k] && (q1_arr[sel_idx_2] == cdb_tag[k])) out_v1_2 = cdb_value[k];
+      end
+    end
+  end
+  always_comb begin
+    out_v2_2 = v2_arr[sel_idx_2];
+    if (comb_wakeup_en && !r2_arr[sel_idx_2]) begin
+      for (int k = 0; k < CDB_W; k++) begin
+        if (cdb_wakeup_mask[k] && cdb_valid[k] && (q2_arr[sel_idx_2] == cdb_tag[k])) out_v2_2 = cdb_value[k];
+      end
+    end
+  end
 
   // Port 3 (给 ALU 3)
   assign out_op_3      = op_arr[sel_idx_3];
   assign out_dst_tag_3 = dst_arr[sel_idx_3];
-  assign out_v1_3      = v1_arr[sel_idx_3];
-  assign out_v2_3      = v2_arr[sel_idx_3];
+  always_comb begin
+    out_v1_3 = v1_arr[sel_idx_3];
+    if (comb_wakeup_en && !r1_arr[sel_idx_3]) begin
+      for (int k = 0; k < CDB_W; k++) begin
+        if (cdb_wakeup_mask[k] && cdb_valid[k] && (q1_arr[sel_idx_3] == cdb_tag[k])) out_v1_3 = cdb_value[k];
+      end
+    end
+  end
+  always_comb begin
+    out_v2_3 = v2_arr[sel_idx_3];
+    if (comb_wakeup_en && !r2_arr[sel_idx_3]) begin
+      for (int k = 0; k < CDB_W; k++) begin
+        if (cdb_wakeup_mask[k] && cdb_valid[k] && (q2_arr[sel_idx_3] == cdb_tag[k])) out_v2_3 = cdb_value[k];
+      end
+    end
+  end
 
   assign busy_vector   = busy;
 

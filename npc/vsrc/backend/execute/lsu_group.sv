@@ -7,6 +7,8 @@ module lsu_group #(
     parameter int unsigned      ROB_IDX_WIDTH = 6,
     parameter int unsigned      SB_DEPTH      = 16,
     parameter int unsigned      SB_IDX_WIDTH  = $clog2(SB_DEPTH),
+    parameter int unsigned      LQ_DEPTH      = 16,
+    parameter int unsigned      SQ_DEPTH      = 16,
     parameter int unsigned      N_LSU         = 1,
     parameter int unsigned      ECAUSE_WIDTH  = 5
 ) (
@@ -23,6 +25,7 @@ module lsu_group #(
     input  logic             [     Cfg.XLEN-1:0] rs1_data_i,
     input  logic             [     Cfg.XLEN-1:0] rs2_data_i,
     input  logic             [ROB_IDX_WIDTH-1:0] rob_tag_i,
+    input  logic             [ROB_IDX_WIDTH-1:0] rob_head_i,
     input  logic             [ SB_IDX_WIDTH-1:0] sb_id_i,
 
     // =========================================================
@@ -48,8 +51,10 @@ module lsu_group #(
     input  logic                               ld_req_ready_i,
     output logic                [Cfg.PLEN-1:0] ld_req_addr_o,
     output decode_pkg::lsu_op_e                ld_req_op_o,
+    output logic [((N_LSU <= 1) ? 1 : $clog2(N_LSU))-1:0] ld_req_id_o,
 
     input  logic                ld_rsp_valid_i,
+    input  logic [((N_LSU <= 1) ? 1 : $clog2(N_LSU))-1:0] ld_rsp_id_i,
     output logic                ld_rsp_ready_o,
     input  logic [Cfg.XLEN-1:0] ld_rsp_data_i,
     input  logic                ld_rsp_err_i,
@@ -64,11 +69,27 @@ module lsu_group #(
     output logic [ECAUSE_WIDTH-1:0]  wb_ecause_o,
     output logic                     wb_is_mispred_o,
     output logic [     Cfg.PLEN-1:0] wb_redirect_pc_o,
-    input  logic                     wb_ready_i
+    input  logic                     wb_ready_i,
+
+    // =========================================================
+    // 5) Debug visibility for queue skeleton
+    // =========================================================
+    output logic [$clog2(LQ_DEPTH + 1)-1:0] dbg_lq_count_o,
+    output logic                            dbg_lq_head_valid_o,
+    output logic [       ROB_IDX_WIDTH-1:0] dbg_lq_head_rob_tag_o,
+    output logic [$clog2(SQ_DEPTH + 1)-1:0] dbg_sq_count_o,
+    output logic                            dbg_sq_head_valid_o,
+    output logic [       ROB_IDX_WIDTH-1:0] dbg_sq_head_rob_tag_o
 );
 
   localparam int unsigned LANE_SEL_WIDTH = (N_LSU <= 1) ? 1 : $clog2(N_LSU);
+  localparam int unsigned LD_ID_WIDTH = (N_LSU <= 1) ? 1 : $clog2(N_LSU);
   localparam int unsigned DBG_SEL_WIDTH = (N_LSU <= 1) ? 1 : $clog2(N_LSU + 1);
+  localparam int unsigned SQ_BE_WIDTH = Cfg.XLEN / 8;
+  localparam int unsigned SQ_BYTE_OFF_W = (SQ_BE_WIDTH <= 1) ? 1 : $clog2(SQ_BE_WIDTH);
+  localparam int unsigned STORE_WB_Q_DEPTH = (N_LSU < 2) ? 2 : N_LSU;
+  localparam int unsigned STORE_WB_Q_IDX_W = (STORE_WB_Q_DEPTH <= 1) ? 1 : $clog2(STORE_WB_Q_DEPTH);
+  localparam logic [ECAUSE_WIDTH-1:0] EXC_ST_ADDR_MISALIGNED = ECAUSE_WIDTH'(6);
 
   // Keep these debug names for existing testbench hierarchical probes.
   logic                [               1:0]                    state_q;
@@ -111,19 +132,230 @@ module lsu_group #(
 
   logic                [         N_LSU-1:0]                    alloc_grant;
   logic                [LANE_SEL_WIDTH-1:0]                    alloc_lane_idx;
-  logic                                                        alloc_block_new_req;
-  logic                                                        alloc_fire;
+  logic                                                        load_alloc_fire;
+  logic                                                        store_req_fire;
 
   logic                [         N_LSU-1:0]                    ld_req_grant;
   logic                [LANE_SEL_WIDTH-1:0]                    ld_req_lane_idx;
   logic                                                        ld_req_grant_valid;
+  logic                                                        ld_req_fire;
+  logic                [LANE_SEL_WIDTH-1:0]                    ld_req_rr_q;
 
   logic                [         N_LSU-1:0]                    wb_grant;
   logic                [LANE_SEL_WIDTH-1:0]                    wb_lane_idx;
   logic                                                        wb_grant_valid;
+  logic                                                        wb_fire;
+  logic                                                        wb_sel_store;
+  logic                [LANE_SEL_WIDTH-1:0]                    wb_rr_q;
 
-  logic ld_owner_valid_q, ld_owner_valid_d;
-  logic [LANE_SEL_WIDTH-1:0] ld_owner_q, ld_owner_d;
+  logic                                                        lq_alloc_valid;
+  logic                                                        lq_alloc_ready;
+  logic                                                        lq_pop_valid;
+  logic                                                        lq_pop_ready;
+  logic                                                        lq_full;
+  logic                                                        lq_empty;
+
+  logic                                                        sq_alloc_valid;
+  logic                                                        sq_alloc_ready;
+  logic                                                        sq_pop_valid;
+  logic                                                        sq_pop_ready;
+  logic                                                        sq_full;
+  logic                                                        sq_empty;
+  logic                                                        sq_fwd_query_valid;
+  logic                                                        sq_fwd_query_hit;
+  logic                [     Cfg.XLEN-1:0]                    sq_fwd_query_data;
+  logic                [      Cfg.PLEN-1:0]                   sq_req_word_addr;
+  logic                [      Cfg.XLEN-1:0]                   sq_store_data_aligned;
+  logic                [     SQ_BE_WIDTH-1:0]                 sq_store_be;
+  logic                [     SQ_BE_WIDTH-1:0]                 sq_load_be;
+  logic                                                        sb_load_hit_mux;
+  logic                [     Cfg.XLEN-1:0]                    sb_load_data_mux;
+  logic                [     Cfg.XLEN-1:0]                    sq_fwd_data_rshift;
+  logic                [      Cfg.XLEN-1:0]                   req_eff_addr_xlen;
+  logic                [      Cfg.PLEN-1:0]                   req_eff_addr;
+
+  logic                                                        req_is_load;
+  logic                                                        req_is_store;
+  logic                                                        store_misaligned;
+  logic                                                        store_need_sq;
+  logic                                                        store_req_ready;
+  logic                                                        load_req_ready;
+
+  logic [STORE_WB_Q_DEPTH-1:0] store_wb_valid_q;
+  logic [STORE_WB_Q_DEPTH-1:0][ROB_IDX_WIDTH-1:0] store_wb_rob_idx_q;
+  logic [STORE_WB_Q_DEPTH-1:0][Cfg.XLEN-1:0] store_wb_data_q;
+  logic [STORE_WB_Q_DEPTH-1:0] store_wb_exception_q;
+  logic [STORE_WB_Q_DEPTH-1:0][ECAUSE_WIDTH-1:0] store_wb_ecause_q;
+  logic [STORE_WB_Q_DEPTH-1:0] store_wb_is_mispred_q;
+  logic [STORE_WB_Q_DEPTH-1:0][Cfg.PLEN-1:0] store_wb_redirect_pc_q;
+  logic [STORE_WB_Q_DEPTH-1:0] store_wb_has_sq_q;
+  logic [STORE_WB_Q_IDX_W-1:0] store_wb_head_q, store_wb_tail_q;
+  logic [$clog2(STORE_WB_Q_DEPTH+1)-1:0] store_wb_count_q;
+  logic store_wb_head_valid;
+  logic [ROB_IDX_WIDTH-1:0] store_wb_head_rob_idx;
+  logic [Cfg.XLEN-1:0] store_wb_head_data;
+  logic store_wb_head_exception;
+  logic [ECAUSE_WIDTH-1:0] store_wb_head_ecause;
+  logic store_wb_head_is_mispred;
+  logic [Cfg.PLEN-1:0] store_wb_head_redirect_pc;
+  logic store_wb_head_has_sq;
+
+  logic rsp_id_in_range;
+  logic [LANE_SEL_WIDTH-1:0] rsp_lane_idx;
+
+  function automatic logic [LANE_SEL_WIDTH-1:0] rr_next_idx(
+      input logic [LANE_SEL_WIDTH-1:0] idx
+  );
+    begin
+      if (N_LSU <= 1) begin
+        rr_next_idx = '0;
+      end else if (idx == LANE_SEL_WIDTH'(N_LSU - 1)) begin
+        rr_next_idx = '0;
+      end else begin
+        rr_next_idx = idx + LANE_SEL_WIDTH'(1);
+      end
+    end
+  endfunction
+
+  function automatic logic [STORE_WB_Q_IDX_W-1:0] store_wbq_next_idx(
+      input logic [STORE_WB_Q_IDX_W-1:0] idx
+  );
+    begin
+      if (STORE_WB_Q_DEPTH <= 1) begin
+        store_wbq_next_idx = '0;
+      end else if (idx == STORE_WB_Q_IDX_W'(STORE_WB_Q_DEPTH - 1)) begin
+        store_wbq_next_idx = '0;
+      end else begin
+        store_wbq_next_idx = idx + STORE_WB_Q_IDX_W'(1);
+      end
+    end
+  endfunction
+
+  function automatic logic [SQ_BE_WIDTH-1:0] store_be_mask(input decode_pkg::lsu_op_e op,
+                                                            input logic [Cfg.PLEN-1:0] addr);
+    logic [SQ_BE_WIDTH-1:0] mask;
+    logic [SQ_BYTE_OFF_W-1:0] off;
+    begin
+      mask = '0;
+      off = addr[SQ_BYTE_OFF_W-1:0];
+      unique case (op)
+        decode_pkg::LSU_SB: begin
+          mask[off] = 1'b1;
+        end
+        decode_pkg::LSU_SH: begin
+          for (int i = 0; i < 2; i++) begin
+            if ((off + i) < SQ_BE_WIDTH) begin
+              mask[off+i] = 1'b1;
+            end
+          end
+        end
+        decode_pkg::LSU_SW: begin
+          for (int i = 0; i < 4; i++) begin
+            if ((off + i) < SQ_BE_WIDTH) begin
+              mask[off+i] = 1'b1;
+            end
+          end
+        end
+        decode_pkg::LSU_SD: begin
+          for (int i = 0; i < SQ_BE_WIDTH; i++) begin
+            mask[i] = 1'b1;
+          end
+        end
+        default: begin
+          mask = '0;
+        end
+      endcase
+      store_be_mask = mask;
+    end
+  endfunction
+
+  function automatic logic [SQ_BE_WIDTH-1:0] load_be_mask(input decode_pkg::lsu_op_e op,
+                                                           input logic [Cfg.PLEN-1:0] addr);
+    logic [SQ_BE_WIDTH-1:0] mask;
+    logic [SQ_BYTE_OFF_W-1:0] off;
+    begin
+      mask = '0;
+      off = addr[SQ_BYTE_OFF_W-1:0];
+      unique case (op)
+        decode_pkg::LSU_LB, decode_pkg::LSU_LBU: begin
+          mask[off] = 1'b1;
+        end
+        decode_pkg::LSU_LH, decode_pkg::LSU_LHU: begin
+          for (int i = 0; i < 2; i++) begin
+            if ((off + i) < SQ_BE_WIDTH) begin
+              mask[off+i] = 1'b1;
+            end
+          end
+        end
+        decode_pkg::LSU_LW, decode_pkg::LSU_LWU: begin
+          for (int i = 0; i < 4; i++) begin
+            if ((off + i) < SQ_BE_WIDTH) begin
+              mask[off+i] = 1'b1;
+            end
+          end
+        end
+        decode_pkg::LSU_LD: begin
+          for (int i = 0; i < SQ_BE_WIDTH; i++) begin
+            mask[i] = 1'b1;
+          end
+        end
+        default: begin
+          mask = '0;
+        end
+      endcase
+      load_be_mask = mask;
+    end
+  endfunction
+
+  function automatic logic is_store_misaligned(input decode_pkg::lsu_op_e op,
+                                                input logic [Cfg.PLEN-1:0] addr);
+    begin
+      unique case (op)
+        decode_pkg::LSU_SB: is_store_misaligned = 1'b0;
+        decode_pkg::LSU_SH: is_store_misaligned = addr[0];
+        decode_pkg::LSU_SW: is_store_misaligned = |addr[1:0];
+        decode_pkg::LSU_SD: is_store_misaligned = |addr[2:0];
+        default:            is_store_misaligned = 1'b0;
+      endcase
+    end
+  endfunction
+
+  function automatic logic [Cfg.XLEN-1:0] store_aligned_data(
+      input decode_pkg::lsu_op_e op,
+      input logic [Cfg.XLEN-1:0] data,
+      input logic [Cfg.PLEN-1:0] addr
+  );
+    logic [Cfg.XLEN-1:0] aligned;
+    logic [SQ_BYTE_OFF_W-1:0] off;
+    begin
+      aligned = '0;
+      off = addr[SQ_BYTE_OFF_W-1:0];
+      unique case (op)
+        decode_pkg::LSU_SB: begin
+          if (off < SQ_BE_WIDTH) begin
+            aligned[(8*off)+:8] = data[7:0];
+          end
+        end
+        decode_pkg::LSU_SH: begin
+          if ((off + 1) < SQ_BE_WIDTH) begin
+            aligned[(8*off)+:16] = data[15:0];
+          end
+        end
+        decode_pkg::LSU_SW: begin
+          if ((off + 3) < SQ_BE_WIDTH) begin
+            aligned[(8*off)+:32] = data[31:0];
+          end
+        end
+        decode_pkg::LSU_SD: begin
+          aligned = data;
+        end
+        default: begin
+          aligned = data;
+        end
+      endcase
+      store_aligned_data = aligned;
+    end
+  endfunction
 
   generate
     for (genvar gi = 0; gi < N_LSU; gi++) begin : g_lanes
@@ -155,8 +387,8 @@ module lsu_group #(
 
           .sb_load_addr_o(lane_sb_load_addr[gi]),
           .sb_load_rob_idx_o(lane_sb_load_rob_idx[gi]),
-          .sb_load_hit_i,
-          .sb_load_data_i,
+          .sb_load_hit_i(sb_load_hit_mux),
+          .sb_load_data_i(sb_load_data_mux),
 
           .ld_req_valid_o(lane_ld_req_valid[gi]),
           .ld_req_ready_i(lane_ld_req_ready[gi]),
@@ -185,58 +417,76 @@ module lsu_group #(
   assign state_q    = g_lanes[0].u_lane.state_q;
   assign req_tag_q  = g_lanes[0].u_lane.req_tag_q;
   assign req_addr_q = g_lanes[0].u_lane.req_addr_q;
+  assign req_eff_addr_xlen = rs1_data_i + uop_i.imm;
+  assign req_eff_addr = req_eff_addr_xlen[Cfg.PLEN-1:0];
+  assign req_is_load = uop_i.is_load;
+  assign req_is_store = uop_i.is_store;
+  assign store_misaligned = is_store_misaligned(uop_i.lsu_op, req_eff_addr);
+  assign store_need_sq = req_is_store && !store_misaligned;
+  assign store_wb_head_valid = (store_wb_count_q != 0);
+  assign store_wb_head_rob_idx = store_wb_rob_idx_q[store_wb_head_q];
+  assign store_wb_head_data = store_wb_data_q[store_wb_head_q];
+  assign store_wb_head_exception = store_wb_exception_q[store_wb_head_q];
+  assign store_wb_head_ecause = store_wb_ecause_q[store_wb_head_q];
+  assign store_wb_head_is_mispred = store_wb_is_mispred_q[store_wb_head_q];
+  assign store_wb_head_redirect_pc = store_wb_redirect_pc_q[store_wb_head_q];
+  assign store_wb_head_has_sq = store_wb_has_sq_q[store_wb_head_q];
+  assign sq_req_word_addr = {req_eff_addr[Cfg.PLEN-1:SQ_BYTE_OFF_W], {SQ_BYTE_OFF_W{1'b0}}};
+  assign sq_store_be = store_be_mask(uop_i.lsu_op, req_eff_addr);
+  assign sq_load_be = load_be_mask(uop_i.lsu_op, req_eff_addr);
+  assign sq_store_data_aligned = store_aligned_data(uop_i.lsu_op, rs2_data_i, req_eff_addr);
+  assign sq_fwd_query_valid = load_alloc_fire && req_is_load;
+  assign sq_fwd_data_rshift = sq_fwd_query_data >> (8 * req_eff_addr[SQ_BYTE_OFF_W-1:0]);
+  assign sb_load_hit_mux = sb_load_hit_i || sq_fwd_query_hit;
+  assign sb_load_data_mux = sq_fwd_query_hit ? sq_fwd_data_rshift : sb_load_data_i;
+
+  assign lq_alloc_valid = load_alloc_fire && req_is_load;
+  assign sq_alloc_valid = store_req_fire && store_need_sq;
 
   always_comb begin
-    req_ready_o = 1'b0;
+    load_req_ready = 1'b0;
     alloc_grant = '0;
     alloc_lane_idx = '0;
-    alloc_block_new_req = 1'b0;
     for (int i = 0; i < N_LSU; i++) begin
-      if (!req_ready_o && lane_req_ready[i]) begin
-        req_ready_o = 1'b1;
+      if (!load_req_ready && lane_req_ready[i] && lq_alloc_ready) begin
+        load_req_ready = 1'b1;
         alloc_grant[i] = 1'b1;
         alloc_lane_idx = LANE_SEL_WIDTH'(i);
       end
     end
+  end
 
-    // Keep per-lane request order monotonic:
-    // if an older request is already waiting in a higher-index lane,
-    // do not place a newer request into a lower-index free lane.
-    if (req_ready_o) begin
-      for (int older = 0; older < N_LSU; older++) begin
-        if (lane_ld_req_valid[older]) begin
-          for (int younger = 0; younger < older; younger++) begin
-            if (alloc_grant[younger]) begin
-              alloc_block_new_req = 1'b1;
-            end
-          end
-        end
-      end
-      if (alloc_block_new_req) begin
-        req_ready_o = 1'b0;
-        alloc_grant = '0;
-        alloc_lane_idx = '0;
-      end
+  // Keep store admission independent from selected-uop decode details to avoid
+  // combinational feedback with issue selection.
+  assign store_req_ready = ((store_wb_count_q < STORE_WB_Q_DEPTH) || (store_wb_head_valid && wb_ready_i)) &&
+                           sq_alloc_ready;
+  always_comb begin
+    req_ready_o = 1'b0;
+    if (req_is_load) begin
+      req_ready_o = load_req_ready;
+    end else if (req_is_store) begin
+      req_ready_o = store_req_ready;
     end
   end
 
-  assign alloc_fire = req_valid_i && req_ready_o;
-  assign dbg_alloc_fire = alloc_fire;
+  assign load_alloc_fire = req_valid_i && req_ready_o && req_is_load;
+  assign store_req_fire = req_valid_i && req_ready_o && req_is_store;
+  assign dbg_alloc_fire = load_alloc_fire | store_req_fire;
 
   always_comb begin
     lane_req_valid = '0;
     for (int i = 0; i < N_LSU; i++) begin
-      lane_req_valid[i] = alloc_fire && alloc_grant[i];
+      lane_req_valid[i] = load_alloc_fire && alloc_grant[i];
     end
   end
 
   always_comb begin
-    sb_ex_valid_o = 1'b0;
-    sb_ex_sb_id_o = '0;
-    sb_ex_addr_o = '0;
-    sb_ex_data_o = '0;
-    sb_ex_op_o = decode_pkg::LSU_LW;
-    sb_ex_rob_idx_o = '0;
+    sb_ex_valid_o = store_req_fire && !store_misaligned;
+    sb_ex_sb_id_o = sb_id_i;
+    sb_ex_addr_o = req_eff_addr;
+    sb_ex_data_o = rs2_data_i;
+    sb_ex_op_o = uop_i.lsu_op;
+    sb_ex_rob_idx_o = rob_tag_i;
     sb_load_addr_o = '0;
     sb_load_rob_idx_o = '0;
     for (int i = 0; i < N_LSU; i++) begin
@@ -259,23 +509,31 @@ module lsu_group #(
     ld_req_grant = '0;
     ld_req_lane_idx = '0;
     ld_req_grant_valid = 1'b0;
-    for (int i = 0; i < N_LSU; i++) begin
-      if (!ld_req_grant_valid && lane_ld_req_valid[i]) begin
+    for (int off = 0; off < N_LSU; off++) begin
+      int unsigned idx;
+      idx = $unsigned(ld_req_rr_q) + off;
+      if (idx >= N_LSU) begin
+        idx -= N_LSU;
+      end
+      if (!ld_req_grant_valid && lane_ld_req_valid[idx]) begin
         ld_req_grant_valid = 1'b1;
-        ld_req_grant[i] = 1'b1;
-        ld_req_lane_idx = LANE_SEL_WIDTH'(i);
+        ld_req_grant[idx] = 1'b1;
+        ld_req_lane_idx = LANE_SEL_WIDTH'(idx);
       end
     end
   end
 
-  assign ld_req_valid_o = (!ld_owner_valid_q) && ld_req_grant_valid;
+  assign ld_req_valid_o = ld_req_grant_valid;
+  assign ld_req_id_o = LD_ID_WIDTH'(ld_req_lane_idx);
+  assign rsp_lane_idx = LANE_SEL_WIDTH'(ld_rsp_id_i);
+  assign rsp_id_in_range = ($unsigned(ld_rsp_id_i) < N_LSU);
 
   always_comb begin
     ld_req_addr_o = '0;
     ld_req_op_o = decode_pkg::LSU_LW;
     lane_ld_req_ready = '0;
 
-    if (!ld_owner_valid_q && ld_req_grant_valid) begin
+    if (ld_req_grant_valid) begin
       ld_req_addr_o = lane_ld_req_addr[ld_req_lane_idx];
       ld_req_op_o = lane_ld_req_op[ld_req_lane_idx];
       lane_ld_req_ready[ld_req_lane_idx] = ld_req_ready_i;
@@ -284,37 +542,10 @@ module lsu_group #(
 
   always_comb begin
     lane_ld_rsp_valid = '0;
-    if (ld_owner_valid_q && ld_rsp_valid_i) begin
-      lane_ld_rsp_valid[ld_owner_q] = 1'b1;
-    end
-  end
-
-  assign ld_rsp_ready_o = ld_owner_valid_q ? lane_ld_rsp_ready[ld_owner_q] : 1'b0;
-
-  always_comb begin
-    ld_owner_valid_d = ld_owner_valid_q;
-    ld_owner_d = ld_owner_q;
-
-    if (flush_i) begin
-      ld_owner_valid_d = 1'b0;
-      ld_owner_d = '0;
-    end else begin
-      if (!ld_owner_valid_q && ld_req_grant_valid && ld_req_ready_i) begin
-        ld_owner_valid_d = 1'b1;
-        ld_owner_d = ld_req_lane_idx;
-      end else if (ld_owner_valid_q && ld_rsp_valid_i && ld_rsp_ready_o) begin
-        ld_owner_valid_d = 1'b0;
-      end
-    end
-  end
-
-  always_ff @(posedge clk_i or negedge rst_ni) begin
-    if (!rst_ni) begin
-      ld_owner_valid_q <= 1'b0;
-      ld_owner_q <= '0;
-    end else begin
-      ld_owner_valid_q <= ld_owner_valid_d;
-      ld_owner_q <= ld_owner_d;
+    ld_rsp_ready_o = 1'b0;
+    if (ld_rsp_valid_i && rsp_id_in_range) begin
+      lane_ld_rsp_valid[rsp_lane_idx] = 1'b1;
+      ld_rsp_ready_o = lane_ld_rsp_ready[rsp_lane_idx];
     end
   end
 
@@ -322,17 +553,23 @@ module lsu_group #(
     wb_grant = '0;
     wb_lane_idx = '0;
     wb_grant_valid = 1'b0;
-    for (int i = 0; i < N_LSU; i++) begin
-      if (!wb_grant_valid && lane_wb_valid[i]) begin
+    for (int off = 0; off < N_LSU; off++) begin
+      int unsigned idx;
+      idx = $unsigned(wb_rr_q) + off;
+      if (idx >= N_LSU) begin
+        idx -= N_LSU;
+      end
+      if (!wb_grant_valid && lane_wb_valid[idx]) begin
         wb_grant_valid = 1'b1;
-        wb_grant[i] = 1'b1;
-        wb_lane_idx = LANE_SEL_WIDTH'(i);
+        wb_grant[idx] = 1'b1;
+        wb_lane_idx = LANE_SEL_WIDTH'(idx);
       end
     end
   end
 
   always_comb begin
-    wb_valid_o = wb_grant_valid;
+    wb_sel_store = store_wb_head_valid;
+    wb_valid_o = store_wb_head_valid || wb_grant_valid;
     wb_rob_idx_o = '0;
     wb_data_o = '0;
     wb_exception_o = 1'b0;
@@ -341,7 +578,15 @@ module lsu_group #(
     wb_redirect_pc_o = '0;
     lane_wb_ready = '0;
 
-    if (wb_grant_valid) begin
+    if (store_wb_head_valid) begin
+      wb_rob_idx_o = store_wb_head_rob_idx;
+      wb_data_o = store_wb_head_data;
+      wb_exception_o = store_wb_head_exception;
+      wb_ecause_o = store_wb_head_ecause;
+      wb_is_mispred_o = store_wb_head_is_mispred;
+      wb_redirect_pc_o = store_wb_head_redirect_pc;
+    end else if (wb_grant_valid) begin
+      wb_sel_store = 1'b0;
       wb_rob_idx_o = lane_wb_rob_idx[wb_lane_idx];
       wb_data_o = lane_wb_data[wb_lane_idx];
       wb_exception_o = lane_wb_exception[wb_lane_idx];
@@ -352,15 +597,138 @@ module lsu_group #(
     end
   end
 
-  generate
-    if (N_LSU == 1) begin : g_dbg_single
-      assign dbg_alloc_lane = '0;
-      assign dbg_ld_owner = (lane_ld_req_valid[0] || lane_ld_rsp_ready[0]) ? '0 : '1;
-    end else begin : g_dbg_multi
-      assign dbg_alloc_lane = alloc_fire ? DBG_SEL_WIDTH'(alloc_lane_idx + 1'b1) : '0;
-      assign dbg_ld_owner   = ld_owner_valid_q ? DBG_SEL_WIDTH'(ld_owner_q + 1'b1) : '0;
+  assign wb_fire = wb_valid_o && wb_ready_i;
+  assign ld_req_fire = ld_req_grant_valid && ld_req_ready_i;
+  assign lq_pop_valid = wb_fire && !wb_sel_store;
+  assign sq_pop_valid = wb_fire && wb_sel_store && store_wb_head_has_sq;
+
+  always_ff @(posedge clk_i or negedge rst_ni) begin
+    if (!rst_ni) begin
+      store_wb_valid_q <= '0;
+      store_wb_rob_idx_q <= '0;
+      store_wb_data_q <= '0;
+      store_wb_exception_q <= '0;
+      store_wb_ecause_q <= '0;
+      store_wb_is_mispred_q <= '0;
+      store_wb_redirect_pc_q <= '0;
+      store_wb_has_sq_q <= '0;
+      store_wb_head_q <= '0;
+      store_wb_tail_q <= '0;
+      store_wb_count_q <= '0;
+      wb_rr_q <= '0;
+      ld_req_rr_q <= '0;
+    end else if (flush_i) begin
+      store_wb_valid_q <= '0;
+      store_wb_rob_idx_q <= '0;
+      store_wb_data_q <= '0;
+      store_wb_exception_q <= '0;
+      store_wb_ecause_q <= '0;
+      store_wb_is_mispred_q <= '0;
+      store_wb_redirect_pc_q <= '0;
+      store_wb_has_sq_q <= '0;
+      store_wb_head_q <= '0;
+      store_wb_tail_q <= '0;
+      store_wb_count_q <= '0;
+      wb_rr_q <= '0;
+      ld_req_rr_q <= '0;
+    end else begin
+      if (store_req_fire) begin
+        store_wb_valid_q[store_wb_tail_q] <= 1'b1;
+        store_wb_rob_idx_q[store_wb_tail_q] <= rob_tag_i;
+        store_wb_data_q[store_wb_tail_q] <= '0;
+        store_wb_exception_q[store_wb_tail_q] <= store_misaligned;
+        store_wb_ecause_q[store_wb_tail_q] <= store_misaligned ? EXC_ST_ADDR_MISALIGNED : '0;
+        store_wb_is_mispred_q[store_wb_tail_q] <= 1'b0;
+        store_wb_redirect_pc_q[store_wb_tail_q] <= '0;
+        store_wb_has_sq_q[store_wb_tail_q] <= !store_misaligned;
+        store_wb_tail_q <= store_wbq_next_idx(store_wb_tail_q);
+      end
+      if (wb_fire && wb_sel_store) begin
+        store_wb_valid_q[store_wb_head_q] <= 1'b0;
+        store_wb_head_q <= store_wbq_next_idx(store_wb_head_q);
+      end
+      if (store_req_fire && !(wb_fire && wb_sel_store)) begin
+        store_wb_count_q <= store_wb_count_q + 1'b1;
+      end else if (!store_req_fire && (wb_fire && wb_sel_store)) begin
+        store_wb_count_q <= store_wb_count_q - 1'b1;
+      end
+      if (wb_fire && !wb_sel_store && wb_grant_valid) begin
+        wb_rr_q <= rr_next_idx(wb_lane_idx);
+      end
+      if (ld_req_fire) begin
+        ld_req_rr_q <= rr_next_idx(ld_req_lane_idx);
+      end
     end
-  endgenerate
+  end
+
+  lq #(
+      .ROB_IDX_WIDTH(ROB_IDX_WIDTH),
+      .DEPTH(LQ_DEPTH)
+  ) u_lq (
+      .clk_i,
+      .rst_ni,
+      .flush_i,
+      .alloc_valid_i(lq_alloc_valid),
+      .alloc_ready_o(lq_alloc_ready),
+      .alloc_rob_tag_i(rob_tag_i),
+      .pop_valid_i(lq_pop_valid),
+      .pop_ready_o(lq_pop_ready),
+      .head_valid_o(dbg_lq_head_valid_o),
+      .head_rob_tag_o(dbg_lq_head_rob_tag_o),
+      .count_o(dbg_lq_count_o),
+      .full_o(lq_full),
+      .empty_o(lq_empty)
+  );
+
+  sq #(
+      .ROB_IDX_WIDTH(ROB_IDX_WIDTH),
+      .ADDR_WIDTH(Cfg.PLEN),
+      .DATA_WIDTH(Cfg.XLEN),
+      .DEPTH(SQ_DEPTH)
+  ) u_sq (
+      .clk_i,
+      .rst_ni,
+      .flush_i,
+      .alloc_valid_i(sq_alloc_valid),
+      .alloc_ready_o(sq_alloc_ready),
+      .alloc_rob_tag_i(rob_tag_i),
+      .alloc_addr_i(sq_req_word_addr),
+      .alloc_data_i(sq_store_data_aligned),
+      .alloc_be_i(sq_store_be),
+      .pop_valid_i(sq_pop_valid),
+      .pop_ready_o(sq_pop_ready),
+      .fwd_query_valid_i(sq_fwd_query_valid),
+      .fwd_query_addr_i(sq_req_word_addr),
+      .fwd_query_be_i(sq_load_be),
+      .fwd_query_rob_tag_i(rob_tag_i),
+      .rob_head_i(rob_head_i),
+      .fwd_query_hit_o(sq_fwd_query_hit),
+      .fwd_query_data_o(sq_fwd_query_data),
+      .head_valid_o(dbg_sq_head_valid_o),
+      .head_rob_tag_o(dbg_sq_head_rob_tag_o),
+      .head_addr_o(),
+      .head_data_o(),
+      .head_be_o(),
+      .count_o(dbg_sq_count_o),
+      .full_o(sq_full),
+      .empty_o(sq_empty)
+  );
+
+  always_comb begin
+    dbg_alloc_lane = load_alloc_fire ? DBG_SEL_WIDTH'(alloc_lane_idx + 1'b1) : '0;
+    dbg_ld_owner = '0;
+
+    // Prefer the response lane in current cycle; fallback to first lane waiting response.
+    if (ld_rsp_valid_i && rsp_id_in_range) begin
+      dbg_ld_owner = DBG_SEL_WIDTH'(ld_rsp_id_i + 1'b1);
+    end else begin
+      for (int i = 0; i < N_LSU; i++) begin
+        if (dbg_ld_owner == '0 && lane_ld_rsp_ready[i]) begin
+          dbg_ld_owner = DBG_SEL_WIDTH'(i + 1);
+        end
+      end
+    end
+  end
 
   initial begin
     if (N_LSU < 1) begin
