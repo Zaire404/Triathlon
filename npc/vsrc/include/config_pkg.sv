@@ -164,6 +164,9 @@ package config_pkg;
     int unsigned IFU_REQ_DEPTH;
     int unsigned IFU_INF_DEPTH;
     int unsigned IFU_FQ_DEPTH;
+    int unsigned FTQ_DEPTH;
+    int unsigned FTQ_ID_W;
+    int unsigned FETCH_EPOCH_W;
 
     // Backend micro-architecture toggles
     int unsigned ENABLE_COMMIT_RAS_UPDATE;

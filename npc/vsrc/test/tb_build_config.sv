@@ -92,6 +92,9 @@ module tb_build_config (
     output int unsigned o_ICACHE_TAG_WIDTH,
     output int unsigned o_ICACHE_LINE_WIDTH,
     output int unsigned o_ICACHE_OFFSET_WIDTH,
+    output int unsigned o_FTQ_DEPTH,
+    output int unsigned o_FTQ_ID_W,
+    output int unsigned o_FETCH_EPOCH_W,
 
     // Metadata field existence checks
     output logic [31:0] o_UOP_PRED_NPC,
@@ -196,6 +199,9 @@ module tb_build_config (
   assign o_ICACHE_TAG_WIDTH       = cfg_out.ICACHE_TAG_WIDTH;
   assign o_ICACHE_LINE_WIDTH      = cfg_out.ICACHE_LINE_WIDTH;
   assign o_ICACHE_OFFSET_WIDTH    = cfg_out.ICACHE_OFFSET_WIDTH;
+  assign o_FTQ_DEPTH              = cfg_out.FTQ_DEPTH;
+  assign o_FTQ_ID_W               = cfg_out.FTQ_ID_W;
+  assign o_FETCH_EPOCH_W          = cfg_out.FETCH_EPOCH_W;
   assign o_UOP_PRED_NPC           = uop_probe.pred_npc;
   assign o_IBUF_SLOT_VALID        = ibuf_probe.slot_valid;
   assign o_IBUF_PRED_NPC          = ibuf_probe.pred_npc;

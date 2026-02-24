@@ -1,5 +1,6 @@
 // vsrc/frontend/frontend.sv
 import global_config_pkg::*;
+import core_contract_pkg::*;
 
 module frontend #(
     parameter config_pkg::cfg_t Cfg = config_pkg::EmptyCfg
@@ -76,6 +77,7 @@ module frontend #(
   logic [Cfg.VLEN-1:0] ifu2icache_req_addr;
   logic [Cfg.INSTR_PER_FETCH-1:0][Cfg.ILEN-1:0] icache2ifu_rsp_data;
   logic flush_icache;
+  fe_be_bundle_t fe_be_view;
 
   // =================================================================
   // 逻辑连接与适配
@@ -89,6 +91,14 @@ module frontend #(
   assign bpu2ifu_pred_slot_valid = bpu_to_ifu_struct.pred_slot_valid;
   assign bpu2ifu_pred_slot_idx = bpu_to_ifu_struct.pred_slot_idx;
   assign bpu2ifu_pred_target = bpu_to_ifu_struct.pred_slot_target;
+  assign fe_be_view.valid = ibuffer_valid_o;
+  assign fe_be_view.ready = ibuffer_ready_i;
+  assign fe_be_view.pc = ibuffer_pc_o;
+  assign fe_be_view.instrs = ibuffer_data_o;
+  assign fe_be_view.slot_valid = ibuffer_slot_valid_o;
+  assign fe_be_view.pred_npc = ibuffer_pred_npc_o;
+  assign fe_be_view.ftq_id = ibuffer_ftq_id_o;
+  assign fe_be_view.fetch_epoch = ibuffer_fetch_epoch_o;
 
   // =================================================================
   // 模块实例化

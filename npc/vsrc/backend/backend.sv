@@ -1,5 +1,6 @@
 import config_pkg::*;
 import decode_pkg::*;
+import core_contract_pkg::*;
 
 module backend #(
     parameter config_pkg::cfg_t Cfg = config_pkg::EmptyCfg
@@ -79,6 +80,16 @@ module backend #(
   localparam int unsigned COMPLETION_Q_DEPTH = 32;
   // A2.2: 开启 commit-time call/ret 更新，配合 BPU speculative RAS 降低 return miss。
   localparam bit ENABLE_COMMIT_RAS_UPDATE = (Cfg.ENABLE_COMMIT_RAS_UPDATE != 0);
+  fe_be_bundle_t frontend_ibuf_bus;
+
+  assign frontend_ibuf_bus.valid = frontend_ibuf_valid;
+  assign frontend_ibuf_bus.ready = frontend_ibuf_ready;
+  assign frontend_ibuf_bus.pc = frontend_ibuf_pc;
+  assign frontend_ibuf_bus.instrs = frontend_ibuf_instrs;
+  assign frontend_ibuf_bus.slot_valid = frontend_ibuf_slot_valid;
+  assign frontend_ibuf_bus.pred_npc = frontend_ibuf_pred_npc;
+  assign frontend_ibuf_bus.ftq_id = frontend_ibuf_ftq_id;
+  assign frontend_ibuf_bus.fetch_epoch = frontend_ibuf_fetch_epoch;
 
   generate
     if (Cfg.ROB_DEPTH < DISPATCH_WIDTH) begin : g_cfg_invalid_rob_depth
@@ -107,76 +118,43 @@ module backend #(
   endgenerate
 
   // =========================================================
-  // IBuffer
+  // Frontend ingress (IBuffer + Decoder)
   // =========================================================
+  logic backend_flush;
+  logic dec_valid;
+  logic ingress_dec_valid;
   logic decode_ibuf_valid;
   logic decode_ibuf_ready;
-  logic [Cfg.INSTR_PER_FETCH-1:0][Cfg.ILEN-1:0] decode_ibuf_instrs;
-  logic [Cfg.INSTR_PER_FETCH-1:0][Cfg.PLEN-1:0] decode_ibuf_pcs;
-  logic [Cfg.INSTR_PER_FETCH-1:0] decode_ibuf_slot_valid;
-  logic [Cfg.INSTR_PER_FETCH-1:0][Cfg.PLEN-1:0] decode_ibuf_pred_npc;
-  logic [Cfg.INSTR_PER_FETCH-1:0][((Cfg.IFU_INF_DEPTH >= 2) ? $clog2(Cfg.IFU_INF_DEPTH) : 1)-1:0] decode_ibuf_ftq_id;
-  logic [Cfg.INSTR_PER_FETCH-1:0][2:0] decode_ibuf_fetch_epoch;
-
-  logic backend_flush;
-
-  ibuffer #(
-      .Cfg         (Cfg),
-      .IB_DEPTH    (IBUFFER_DEPTH),
-      .DECODE_WIDTH(Cfg.INSTR_PER_FETCH)
-  ) u_ibuffer (
-      .clk_i (clk_i),
-      .rst_ni(rst_ni),
-
-      .fe_valid_i     (frontend_ibuf_valid),
-      .fe_ready_o     (frontend_ibuf_ready),
-      .fe_instrs_i    (frontend_ibuf_instrs),
-      .fe_pc_i        (frontend_ibuf_pc),
-      .fe_slot_valid_i(frontend_ibuf_slot_valid),
-      .fe_pred_npc_i  (frontend_ibuf_pred_npc),
-      .fe_ftq_id_i(frontend_ibuf_ftq_id),
-      .fe_fetch_epoch_i(frontend_ibuf_fetch_epoch),
-
-      .ibuf_valid_o (decode_ibuf_valid),
-      .ibuf_ready_i (decode_ibuf_ready),
-      .ibuf_instrs_o(decode_ibuf_instrs),
-      .ibuf_pcs_o   (decode_ibuf_pcs),
-      .ibuf_slot_valid_o(decode_ibuf_slot_valid),
-      .ibuf_pred_npc_o(decode_ibuf_pred_npc),
-      .ibuf_ftq_id_o(decode_ibuf_ftq_id),
-      .ibuf_fetch_epoch_o(decode_ibuf_fetch_epoch),
-
-      .flush_i(backend_flush)
-  );
-
-  // =========================================================
-  // Decoder
-  // =========================================================
-  logic dec_valid;
   logic [DISPATCH_WIDTH-1:0] dec_slot_valid;
   decode_pkg::uop_t [DISPATCH_WIDTH-1:0] dec_uops;
   logic decode_backend_ready;
 
-  decoder #(
+  frontend_ingress_cluster #(
       .Cfg(Cfg),
-      .DECODE_WIDTH(DISPATCH_WIDTH)
-  ) u_decoder (
-      .clk_i (clk_i),
-      .rst_ni(rst_ni),
+      .DISPATCH_WIDTH(DISPATCH_WIDTH),
+      .IBUFFER_DEPTH(IBUFFER_DEPTH)
+  ) u_frontend_ingress (
+      .clk_i,
+      .rst_ni,
+      .flush_i(backend_flush),
 
-      .ibuf2dec_valid_i (decode_ibuf_valid),
-      .dec2ibuf_ready_o (decode_ibuf_ready),
-      .ibuf_instrs_i    (decode_ibuf_instrs),
-      .ibuf_pcs_i       (decode_ibuf_pcs),
-      .ibuf_slot_valid_i(decode_ibuf_slot_valid),
-      .ibuf_pred_npc_i  (decode_ibuf_pred_npc),
-      .ibuf_ftq_id_i(decode_ibuf_ftq_id),
-      .ibuf_fetch_epoch_i(decode_ibuf_fetch_epoch),
+      .fe_valid_i(frontend_ibuf_valid),
+      .fe_ready_o(frontend_ibuf_ready),
+      .fe_instrs_i(frontend_ibuf_instrs),
+      .fe_pc_i(frontend_ibuf_pc),
+      .fe_slot_valid_i(frontend_ibuf_slot_valid),
+      .fe_pred_npc_i(frontend_ibuf_pred_npc),
+      .fe_ftq_id_i(frontend_ibuf_ftq_id),
+      .fe_fetch_epoch_i(frontend_ibuf_fetch_epoch),
 
-      .dec2backend_valid_o(dec_valid),
-      .backend2dec_ready_i(decode_backend_ready),
-      .dec_slot_valid_o   (dec_slot_valid),
-      .dec_uops_o         (dec_uops)
+      .dec_valid_o(dec_valid),
+      .dec_slot_valid_o(dec_slot_valid),
+      .dec_uops_o(dec_uops),
+      .decode_ready_i(decode_backend_ready),
+
+      .ingress_dec_valid_o(ingress_dec_valid),
+      .decode_ibuf_valid_o(decode_ibuf_valid),
+      .decode_ibuf_ready_o(decode_ibuf_ready)
   );
 
   // =========================================================
@@ -212,6 +190,7 @@ module backend #(
   logic [            FTQ_ID_W-1:0]                bpu_update_ftq_id_dbg;
   logic [       FETCH_EPOCH_W-1:0]                bpu_update_fetch_epoch_dbg;
   logic [         COMMIT_SEL_W-1:0]               bpu_update_sel_idx_dbg;
+  logic [        Cfg.PLEN-1:0]                    retire_redirect_pc_dbg;
 
   // ROB operand query (late subscription fix)
   logic [DISPATCH_WIDTH*2-1:0][ROB_IDX_WIDTH-1:0] rob_query_idx;
@@ -304,65 +283,56 @@ module backend #(
       .rob_head_o (rob_head_ptr)
   );
 
-  assign backend_flush = flush_from_backend | rob_flush;
+  retire_redirect_ctrl #(
+      .Cfg(Cfg),
+      .COMMIT_WIDTH(COMMIT_WIDTH),
+      .FTQ_ID_W(FTQ_ID_W),
+      .FETCH_EPOCH_W(FETCH_EPOCH_W),
+      .COMMIT_SEL_W(COMMIT_SEL_W),
+      .ENABLE_COMMIT_RAS_UPDATE(ENABLE_COMMIT_RAS_UPDATE)
+  ) u_retire_redirect_ctrl (
+      .flush_from_backend_i(flush_from_backend),
+      .rob_flush_i(rob_flush),
+      .rob_flush_pc_i(rob_flush_pc),
+
+      .commit_valid_i(commit_valid),
+      .commit_pc_i(commit_pc),
+      .commit_is_branch_i(commit_is_branch),
+      .commit_is_jump_i(commit_is_jump),
+      .commit_is_call_i(commit_is_call),
+      .commit_is_ret_i(commit_is_ret),
+      .commit_actual_npc_i(commit_actual_npc),
+      .commit_ftq_id_i(commit_ftq_id),
+      .commit_fetch_epoch_i(commit_fetch_epoch),
+
+      .backend_flush_o(backend_flush),
+      .backend_redirect_pc_o(backend_redirect_pc_o),
+      .retire_redirect_pc_dbg_o(retire_redirect_pc_dbg),
+
+      .bpu_update_valid_o(bpu_update_valid_o),
+      .bpu_update_pc_o(bpu_update_pc_o),
+      .bpu_update_is_cond_o(bpu_update_is_cond_o),
+      .bpu_update_taken_o(bpu_update_taken_o),
+      .bpu_update_target_o(bpu_update_target_o),
+      .bpu_update_is_call_o(bpu_update_is_call_o),
+      .bpu_update_is_ret_o(bpu_update_is_ret_o),
+      .bpu_update_ftq_id_dbg_o(bpu_update_ftq_id_dbg),
+      .bpu_update_fetch_epoch_dbg_o(bpu_update_fetch_epoch_dbg),
+      .bpu_update_sel_idx_dbg_o(bpu_update_sel_idx_dbg),
+
+      .bpu_ras_update_valid_o(bpu_ras_update_valid_o),
+      .bpu_ras_update_is_call_o(bpu_ras_update_is_call_o),
+      .bpu_ras_update_is_ret_o(bpu_ras_update_is_ret_o),
+      .bpu_ras_update_pc_o(bpu_ras_update_pc_o)
+  );
   assign backend_flush_o = backend_flush;
-  assign backend_redirect_pc_o = rob_flush_pc;
-
-  always_comb begin
-    int sel_idx;
-    logic [Cfg.PLEN-1:0] fallthrough_pc;
-    bpu_update_valid_o = 1'b0;
-    bpu_update_pc_o = '0;
-    bpu_update_is_cond_o = 1'b0;
-    bpu_update_taken_o = 1'b0;
-    bpu_update_target_o = '0;
-    bpu_update_is_call_o = 1'b0;
-    bpu_update_is_ret_o = 1'b0;
-    bpu_update_ftq_id_dbg = '0;
-    bpu_update_fetch_epoch_dbg = '0;
-    bpu_update_sel_idx_dbg = '0;
-    fallthrough_pc = '0;
-    sel_idx = -1;
-    for (int i = 0; i < COMMIT_WIDTH; i++) begin
-      if (commit_valid[i] && commit_is_branch[i]) begin
-        sel_idx = i;
-        break;
-      end
-    end
-
-    if (sel_idx >= 0) begin
-      fallthrough_pc = commit_pc[sel_idx] + Cfg.PLEN'(4);
-      bpu_update_valid_o = 1'b1;
-      bpu_update_pc_o = commit_pc[sel_idx];
-      bpu_update_is_cond_o = !commit_is_jump[sel_idx];
-      bpu_update_taken_o = commit_is_jump[sel_idx] ? 1'b1 : (commit_actual_npc[sel_idx] != fallthrough_pc);
-      bpu_update_target_o = commit_actual_npc[sel_idx];
-      bpu_update_is_call_o = ENABLE_COMMIT_RAS_UPDATE ? commit_is_call[sel_idx] : 1'b0;
-      bpu_update_is_ret_o = ENABLE_COMMIT_RAS_UPDATE ? commit_is_ret[sel_idx] : 1'b0;
-      bpu_update_ftq_id_dbg = commit_ftq_id[sel_idx];
-      bpu_update_fetch_epoch_dbg = commit_fetch_epoch[sel_idx];
-      bpu_update_sel_idx_dbg = COMMIT_SEL_W'(sel_idx);
-    end
-  end
-
-  always_comb begin
-    for (int i = 0; i < COMMIT_WIDTH; i++) begin
-      bpu_ras_update_valid_o[i] = ENABLE_COMMIT_RAS_UPDATE &&
-                                  commit_valid[i] &&
-                                  commit_is_branch[i] &&
-                                  (commit_is_call[i] || commit_is_ret[i]);
-      bpu_ras_update_is_call_o[i] = commit_is_call[i];
-      bpu_ras_update_is_ret_o[i] = commit_is_ret[i];
-      bpu_ras_update_pc_o[i] = commit_pc[i];
-    end
-  end
 
   // =========================================================
   // Store Buffer (allocation + commit + forwarding)
   // =========================================================
-  logic [3:0] sb_alloc_req;
+  logic [DISPATCH_WIDTH-1:0] sb_alloc_req;
   logic sb_alloc_ready;
-  logic [3:0][SB_IDX_WIDTH-1:0] sb_alloc_id;
+  logic [DISPATCH_WIDTH-1:0][SB_IDX_WIDTH-1:0] sb_alloc_id;
   logic sb_alloc_fire;
 
   // Store buffer -> D$ store port
@@ -398,6 +368,7 @@ module backend #(
   store_buffer #(
       .SB_DEPTH     (SB_DEPTH),
       .ROB_IDX_WIDTH(ROB_IDX_WIDTH),
+      .DISPATCH_WIDTH(DISPATCH_WIDTH),
       .COMMIT_WIDTH (COMMIT_WIDTH)
   ) u_sb (
       .clk_i (clk_i),

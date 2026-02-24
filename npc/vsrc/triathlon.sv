@@ -1,4 +1,5 @@
 import global_config_pkg::*;
+import core_contract_pkg::*;
 
 module triathlon #(
     // Config
@@ -56,6 +57,7 @@ module triathlon #(
   logic [Cfg.INSTR_PER_FETCH-1:0][Cfg.PLEN-1:0] fe_ibuf_pred_npc;
   logic [Cfg.INSTR_PER_FETCH-1:0][((Cfg.IFU_INF_DEPTH >= 2) ? $clog2(Cfg.IFU_INF_DEPTH) : 1)-1:0] fe_ibuf_ftq_id;
   logic [Cfg.INSTR_PER_FETCH-1:0][2:0] fe_ibuf_fetch_epoch;
+  fe_be_bundle_t fe_be_bus;
 
   logic backend_flush;
   logic [Cfg.PLEN-1:0] backend_redirect_pc;
@@ -71,6 +73,15 @@ module triathlon #(
   logic [Cfg.NRET-1:0] bpu_ras_update_is_ret;
   logic [Cfg.NRET-1:0][Cfg.PLEN-1:0] bpu_ras_update_pc;
 
+  assign fe_ibuf_ready = fe_be_bus.ready;
+  assign fe_be_bus.valid = fe_ibuf_valid;
+  assign fe_be_bus.pc = fe_ibuf_pc;
+  assign fe_be_bus.instrs = fe_ibuf_instrs;
+  assign fe_be_bus.slot_valid = fe_ibuf_slot_valid;
+  assign fe_be_bus.pred_npc = fe_ibuf_pred_npc;
+  assign fe_be_bus.ftq_id = fe_ibuf_ftq_id;
+  assign fe_be_bus.fetch_epoch = fe_ibuf_fetch_epoch;
+
   frontend #(
       .Cfg(Cfg)
   ) u_frontend (
@@ -78,7 +89,7 @@ module triathlon #(
       .rst_ni,
 
       .ibuffer_valid_o(fe_ibuf_valid),
-      .ibuffer_ready_i(fe_ibuf_ready),
+      .ibuffer_ready_i(fe_be_bus.ready),
       .ibuffer_data_o (fe_ibuf_instrs),
       .ibuffer_pc_o   (fe_ibuf_pc),
       .ibuffer_slot_valid_o(fe_ibuf_slot_valid),
@@ -123,14 +134,14 @@ module triathlon #(
       .rst_ni,
       .flush_from_backend(1'b0),
 
-      .frontend_ibuf_valid (fe_ibuf_valid),
-      .frontend_ibuf_ready (fe_ibuf_ready),
-      .frontend_ibuf_instrs(fe_ibuf_instrs),
-      .frontend_ibuf_pc    (fe_ibuf_pc),
-      .frontend_ibuf_slot_valid(fe_ibuf_slot_valid),
-      .frontend_ibuf_pred_npc(fe_ibuf_pred_npc),
-      .frontend_ibuf_ftq_id(fe_ibuf_ftq_id),
-      .frontend_ibuf_fetch_epoch(fe_ibuf_fetch_epoch),
+      .frontend_ibuf_valid (fe_be_bus.valid),
+      .frontend_ibuf_ready (fe_be_bus.ready),
+      .frontend_ibuf_instrs(fe_be_bus.instrs),
+      .frontend_ibuf_pc    (fe_be_bus.pc),
+      .frontend_ibuf_slot_valid(fe_be_bus.slot_valid),
+      .frontend_ibuf_pred_npc(fe_be_bus.pred_npc),
+      .frontend_ibuf_ftq_id(fe_be_bus.ftq_id),
+      .frontend_ibuf_fetch_epoch(fe_be_bus.fetch_epoch),
 
       .backend_flush_o      (backend_flush),
       .backend_redirect_pc_o(backend_redirect_pc),

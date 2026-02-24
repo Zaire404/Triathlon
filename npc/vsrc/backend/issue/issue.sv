@@ -75,7 +75,7 @@ module issue #(
   wire [$clog2(RS_DEPTH)-1:0] alu1_sel;
   wire [$clog2(RS_DEPTH)-1:0] alu2_sel;
   wire [$clog2(RS_DEPTH)-1:0] alu3_sel;
-  localparam int ISSUE_WIDTH = 4;
+  localparam int ISSUE_WIDTH = Cfg.INSTR_PER_FETCH;
   localparam int RS_IDX_W = $clog2(RS_DEPTH);
   logic [ISSUE_WIDTH-1:0] issue_valid;
   logic [$clog2(RS_DEPTH)-1:0] issue_rs_idx[0:ISSUE_WIDTH-1];
@@ -152,49 +152,17 @@ module issue #(
       rs_in_r2[k]  = 0;
     end
 
-    if (dispatch_valid[0]) begin
-      rs_in_op[routing_idx[0]]  = dispatch_op[0];
-      rs_in_dst[routing_idx[0]] = dispatch_dst[0];
-      rs_in_v1[routing_idx[0]]  = dispatch_v1[0];
-      rs_in_q1[routing_idx[0]]  = dispatch_q1[0];
-      rs_in_r1[routing_idx[0]]  = dispatch_r1[0];
-      rs_in_v2[routing_idx[0]]  = dispatch_v2[0];
-      rs_in_q2[routing_idx[0]]  = dispatch_q2[0];
-      rs_in_r2[routing_idx[0]]  = dispatch_r2[0];
-    end
-
-    // 指令 1
-    if (dispatch_valid[1]) begin
-      rs_in_op[routing_idx[1]]  = dispatch_op[1];
-      rs_in_dst[routing_idx[1]] = dispatch_dst[1];
-      rs_in_v1[routing_idx[1]]  = dispatch_v1[1];
-      rs_in_q1[routing_idx[1]]  = dispatch_q1[1];
-      rs_in_r1[routing_idx[1]]  = dispatch_r1[1];
-      rs_in_v2[routing_idx[1]]  = dispatch_v2[1];
-      rs_in_q2[routing_idx[1]]  = dispatch_q2[1];
-      rs_in_r2[routing_idx[1]]  = dispatch_r2[1];
-    end
-
-    if (dispatch_valid[2]) begin
-      rs_in_op[routing_idx[2]]  = dispatch_op[2];
-      rs_in_dst[routing_idx[2]] = dispatch_dst[2];
-      rs_in_v1[routing_idx[2]]  = dispatch_v1[2];
-      rs_in_q1[routing_idx[2]]  = dispatch_q1[2];
-      rs_in_r1[routing_idx[2]]  = dispatch_r1[2];
-      rs_in_v2[routing_idx[2]]  = dispatch_v2[2];
-      rs_in_q2[routing_idx[2]]  = dispatch_q2[2];
-      rs_in_r2[routing_idx[2]]  = dispatch_r2[2];
-    end
-
-    if (dispatch_valid[3]) begin
-      rs_in_q1[routing_idx[3]]  = dispatch_q1[3];
-      rs_in_r1[routing_idx[3]]  = dispatch_r1[3];
-      rs_in_v2[routing_idx[3]]  = dispatch_v2[3];
-      rs_in_q2[routing_idx[3]]  = dispatch_q2[3];
-      rs_in_r2[routing_idx[3]]  = dispatch_r2[3];
-      rs_in_op[routing_idx[3]]  = dispatch_op[3];
-      rs_in_dst[routing_idx[3]] = dispatch_dst[3];
-      rs_in_v1[routing_idx[3]]  = dispatch_v1[3];
+    for (int slot = 0; slot < ISSUE_WIDTH; slot++) begin
+      if (dispatch_valid[slot]) begin
+        rs_in_op[routing_idx[slot]]  = dispatch_op[slot];
+        rs_in_dst[routing_idx[slot]] = dispatch_dst[slot];
+        rs_in_v1[routing_idx[slot]]  = dispatch_v1[slot];
+        rs_in_q1[routing_idx[slot]]  = dispatch_q1[slot];
+        rs_in_r1[routing_idx[slot]]  = dispatch_r1[slot];
+        rs_in_v2[routing_idx[slot]]  = dispatch_v2[slot];
+        rs_in_q2[routing_idx[slot]]  = dispatch_q2[slot];
+        rs_in_r2[routing_idx[slot]]  = dispatch_r2[slot];
+      end
     end
   end
 

@@ -33,6 +33,8 @@ PKG_VSRCS = \
 	$(abspath ./vsrc/include/test_config_pkg.sv) \
 	$(abspath ./vsrc/include/build_config_pkg.sv) \
 	$(abspath ./vsrc/include/global_config_pkg.sv) \
+	$(abspath ./vsrc/include/debug_bus_pkg.sv) \
+	$(abspath ./vsrc/include/core_contract_pkg.sv) \
 	$(abspath ./vsrc/include/riscv_pkg.sv) \
 	$(abspath ./vsrc/include/decode_pkg.sv)
 
@@ -109,11 +111,13 @@ gdb: $(BIN)
 	$(call git_commit, "debug RTL") # DO NOT REMOVE THIS LINE!!!
 	gdb -s $(BIN) --args $(BIN) $(NPC_EXE)
 
-.PHONY: profile-report profile-parse
+.PHONY: profile-report profile-parse profile-task profile-baseline
 
 PROFILE_TOOL_DIR := $(abspath ./tools/profiler)
 PROFILE_OUT_DIR ?=
 PROFILE_PARSE_DIR ?= $(if $(strip $(PROFILE_OUT_DIR)),$(PROFILE_OUT_DIR),$(abspath ./build/profile/latest))
+PROFILE_TAG ?= latest
+PROFILE_TAG_DIR ?= $(abspath ./build/profile/$(PROFILE_TAG))
 
 profile-report:
 	@if [ -n "$(PROFILE_OUT_DIR)" ]; then \
@@ -130,6 +134,14 @@ profile-parse:
 		--template $(PROFILE_TOOL_DIR)/report_template.md \
 		--out-json $(PROFILE_PARSE_DIR)/summary.json \
 		--out-md $(PROFILE_PARSE_DIR)/report.md
+
+profile-task:
+	$(MAKE) profile-report ARCH=$(ARCH) CROSS_COMPILE=$(CROSS_COMPILE) \
+		PROFILE_OUT_DIR=$(PROFILE_TAG_DIR)
+	$(MAKE) profile-parse PROFILE_PARSE_DIR=$(PROFILE_TAG_DIR)
+
+profile-baseline:
+	$(MAKE) profile-task ARCH=$(ARCH) CROSS_COMPILE=$(CROSS_COMPILE) PROFILE_TAG=baseline
 
 clean:
 	rm -rf $(BUILD_DIR)

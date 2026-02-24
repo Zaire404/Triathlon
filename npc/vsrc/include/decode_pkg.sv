@@ -1,8 +1,8 @@
 package decode_pkg;
   import config_pkg::*;
-  localparam int unsigned FTQ_DEPTH = (Cfg.IFU_INF_DEPTH >= 2) ? Cfg.IFU_INF_DEPTH : 2;
-  localparam int unsigned FTQ_ID_W = (FTQ_DEPTH > 1) ? $clog2(FTQ_DEPTH) : 1;
-  localparam int unsigned FETCH_EPOCH_W = 3;
+  localparam int unsigned FTQ_DEPTH = (Cfg.FTQ_DEPTH >= 2) ? Cfg.FTQ_DEPTH : 2;
+  localparam int unsigned FTQ_ID_W = (Cfg.FTQ_ID_W >= 1) ? Cfg.FTQ_ID_W : 1;
+  localparam int unsigned FETCH_EPOCH_W = (Cfg.FETCH_EPOCH_W >= 1) ? Cfg.FETCH_EPOCH_W : 3;
 
   typedef enum logic [2:0] {
     FU_NONE,

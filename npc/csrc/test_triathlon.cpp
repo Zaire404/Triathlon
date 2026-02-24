@@ -350,6 +350,14 @@ int main(int argc, char **argv) {
   for (int i = 0; i < 2000; i++) {
     tick(top, mem);
     update_commits(top, rf);
+    expect((top->dbg_pipe_bus_valid_o == 0) || (top->dbg_pipe_bus_valid_o == 1),
+           "Debug pipe bus valid is boolean");
+    expect((top->dbg_mem_bus_valid_o == 0) || (top->dbg_mem_bus_valid_o == 1),
+           "Debug mem bus valid is boolean");
+    if (top->backend_flush_o) {
+      expect(top->backend_redirect_pc_o == top->dbg_retire_redirect_pc_o,
+             "Retire redirect ctrl keeps backend redirect pc aligned");
+    }
 #if TRIATHLON_TRACE
     if (i < 50) {
       std::cout << "[trace] cycle=" << i << " commit_valid=0x" << std::hex

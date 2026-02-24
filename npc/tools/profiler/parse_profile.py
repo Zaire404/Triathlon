@@ -21,6 +21,7 @@ BRU_RE = re.compile(r"^\[bru\s+\]\s+cycle=(\d+)")
 COMMIT_RE = re.compile(r"^\[commit\]\s+cycle=(\d+)\s+slot=(\d+)\s+pc=0x([0-9a-fA-F]+)\s+inst=0x([0-9a-fA-F]+)")
 STALL_RE = re.compile(r"^\[stall \]")
 KV_RE = re.compile(r"([a-zA-Z_][a-zA-Z0-9_]*)=([^\s]+)")
+COMMIT_WIDTH_KEY_RE = re.compile(r"^width(\d+)$")
 
 FLUSH_REASON_ALLOWLIST = {"branch_mispredict", "exception", "rob_other", "external", "unknown"}
 FLUSH_SOURCE_ALLOWLIST = {"rob", "external", "unknown"}
@@ -602,7 +603,9 @@ def _commit_histogram(cycles: int, commit_by_cycle: dict[int, int]) -> dict[int,
     hist = Counter(commit_by_cycle.values())
     if cycles > 0:
         hist[0] = max(0, cycles - len(commit_by_cycle))
-    for width in range(5):
+    max_width = max(hist.keys(), default=0)
+    max_width = max(max_width, 4)
+    for width in range(max_width + 1):
         hist.setdefault(width, 0)
     return {k: hist[k] for k in sorted(hist)}
 
@@ -979,8 +982,12 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
         if commitm_pos >= 0:
             kv = _parse_kv_pairs(raw[commitm_pos:])
             has_commit_summary = True
-            for i in range(5):
-                commit_summary_hist[i] = _parse_int(kv.get(f"width{i}"), commit_summary_hist.get(i, 0))
+            for key, value in kv.items():
+                m = COMMIT_WIDTH_KEY_RE.match(key)
+                if not m:
+                    continue
+                idx = int(m.group(1))
+                commit_summary_hist[idx] = _parse_int(value, commit_summary_hist.get(idx, 0))
             continue
 
         controlm_pos = raw.find("[controlm]")
@@ -1426,7 +1433,9 @@ def parse_single_log(path: str | Path) -> dict[str, Any]:
     has_commit_detail = len(commit_seq) > 0
 
     if has_commit_summary:
-        commit_width_hist = {k: commit_summary_hist.get(k, 0) for k in range(5)}
+        max_summary_width = max(commit_summary_hist.keys(), default=0)
+        max_summary_width = max(max_summary_width, 4)
+        commit_width_hist = {k: commit_summary_hist.get(k, 0) for k in range(max_summary_width + 1)}
 
     if control_summary:
         control["branch_count"] = int(control_summary.get("branch_count", control.get("branch_count", 0)))
@@ -1643,7 +1652,16 @@ def _fmt_pct(part: int, total: int) -> str:
 
 
 def _bench_markdown(name: str, data: dict[str, Any]) -> str:
-    hist = data.get("commit_width_hist", {})
+    raw_hist = data.get("commit_width_hist", {})
+    hist: dict[int, int] = {}
+    for key, value in raw_hist.items():
+        try:
+            idx = int(key)
+        except (TypeError, ValueError):
+            continue
+        hist[idx] = int(value)
+    if not hist:
+        hist = {i: 0 for i in range(5)}
     stall = data.get("stall_category", {})
     stall_total = data.get("stall_total", 0)
     stall_post_flush_window = data.get("stall_post_flush_window_cycles", STALL_POST_FLUSH_WINDOW_CYCLES)
@@ -1707,14 +1725,13 @@ def _bench_markdown(name: str, data: dict[str, Any]) -> str:
         f"- stall_source: `{stall_metrics_source}`",
         "",
         "Commit Width Histogram:",
-        f"- width0: `{hist.get(0, 0)}`",
-        f"- width1: `{hist.get(1, 0)}`",
-        f"- width2: `{hist.get(2, 0)}`",
-        f"- width3: `{hist.get(3, 0)}`",
-        f"- width4: `{hist.get(4, 0)}`",
-        "",
-        "Stall Categories:",
     ]
+    max_width_idx = max(hist.keys(), default=0)
+    max_width_idx = max(max_width_idx, 4)
+    for i in range(max_width_idx + 1):
+        lines.append(f"- width{i}: `{hist.get(i, 0)}`")
+    lines.append("")
+    lines.append("Stall Categories:")
 
     if stall_total == 0:
         lines.append("- (no stall samples)")

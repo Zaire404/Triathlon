@@ -250,6 +250,46 @@ static void send_group(Vtb_backend *top, MemModel &mem,
                        std::vector<uint32_t> &commit_log,
                        uint32_t base_pc,
                        const std::array<uint32_t, 4> &instrs,
+                       uint32_t ftq_id,
+                       uint32_t fetch_epoch);
+static void expect(bool cond, const char *msg);
+
+static void test_ingress_cluster_dec_valid_matches_backend_dec_valid(Vtb_backend *top,
+                                                                     MemModel &mem) {
+  std::array<uint32_t, 32> rf{};
+  std::vector<uint32_t> commits;
+
+  reset(top, mem);
+  send_group(top, mem, rf, commits, 0x80001000,
+             {insn_addi(1, 0, 1), insn_addi(2, 0, 2), insn_addi(3, 0, 3), insn_addi(4, 0, 4)}, 0, 0);
+
+  bool mismatch = false;
+  for (int cyc = 0; cyc < 64; cyc++) {
+    tick(top, mem);
+    update_commits(top, rf, commits);
+    bool dec_valid = top->dbg_dec_valid_o != 0;
+    bool ingress_dec_valid = top->dbg_ingress_dec_valid_o != 0;
+    if (dec_valid != ingress_dec_valid) {
+      mismatch = true;
+      break;
+    }
+  }
+
+  expect(!mismatch, "Ingress cluster: dbg_dec_valid matches dbg_ingress_dec_valid");
+}
+
+static void test_cfg_instr_per_fetch_matches_backend_width(Vtb_backend *top, MemModel &mem) {
+  reset(top, mem);
+  expect(static_cast<uint32_t>(top->dbg_cfg_instr_per_fetch_o) ==
+             static_cast<uint32_t>(INSTR_PER_FETCH),
+         "Cfg: dbg_cfg_instr_per_fetch matches backend test width");
+}
+
+static void send_group(Vtb_backend *top, MemModel &mem,
+                       std::array<uint32_t, 32> &rf,
+                       std::vector<uint32_t> &commit_log,
+                       uint32_t base_pc,
+                       const std::array<uint32_t, 4> &instrs,
                        uint32_t ftq_id = 0,
                        uint32_t fetch_epoch = 0) {
   bool sent = false;
@@ -1285,6 +1325,8 @@ int main(int argc, char **argv) {
 
   std::cout << "--- [START] Backend Verification ---" << std::endl;
 
+  test_cfg_instr_per_fetch_matches_backend_width(top, mem);
+  test_ingress_cluster_dec_valid_matches_backend_dec_valid(top, mem);
   test_alu_and_deps(top, mem);
   test_branch_flush(top, mem);
   test_manual_flush_blocks_stale_branch_update_with_metadata(top, mem);

@@ -1291,6 +1291,82 @@ class ParseProfileTest(unittest.TestCase):
         self.assertEqual(result["top_inst"][0]["inst"], "0x00100073")
         self.assertEqual(result["top_inst"][0]["count"], 40)
 
+    def test_commit_summary_accepts_dynamic_width_keys(self):
+        mod = load_parser_module()
+        with tempfile.TemporaryDirectory() as td:
+            log = Path(td) / "coremark.log"
+            log.write_text(
+                "\n".join(
+                    [
+                        "[commitm] cycles=100 commits=70 width0=30 width1=20 width2=10 width5=7 width6=3",
+                        "IPC=0.700000 CPI=1.428571 cycles=100 commits=70",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            result = mod.parse_single_log(log)
+
+        self.assertTrue(result["has_commit_summary"])
+        self.assertEqual(result["commit_width_hist"][0], 30)
+        self.assertEqual(result["commit_width_hist"][5], 7)
+        self.assertEqual(result["commit_width_hist"][6], 3)
+        self.assertEqual(result["commit_width_hist"][4], 0)
+
+    def test_report_renders_dynamic_commit_width_histogram(self):
+        mod = load_parser_module()
+        with tempfile.TemporaryDirectory() as td:
+            tdir = Path(td)
+            template = Path(__file__).resolve().parents[1] / "report_template.md"
+            summary = {
+                "coremark": {
+                    "log_path": str(tdir / "coremark.log"),
+                    "ipc": 0.7,
+                    "cpi": 1.4,
+                    "cycles": 100,
+                    "commits": 70,
+                    "flush_per_kinst": 0.0,
+                    "bru_per_kinst": 0.0,
+                    "mispredict_flush_count": 0,
+                    "branch_penalty_cycles": 0,
+                    "wrong_path_kill_uops": 0,
+                    "redirect_distance_avg": 0.0,
+                    "redirect_distance_max": 0,
+                    "benchmark_time_source": "self",
+                    "bench_reported_time_ms": 1.0,
+                    "host_time_ms": 1.0,
+                    "effective_benchmark_time_ms": 1.0,
+                    "commit_width_hist": {0: 30, 1: 20, 2: 10, 5: 7, 6: 3},
+                    "stall_category": {},
+                    "stall_total": 0,
+                    "stall_frontend_empty_total": 0,
+                    "stall_frontend_empty_detail": {},
+                    "stall_decode_blocked_total": 0,
+                    "stall_decode_blocked_detail": {},
+                    "stall_rob_backpressure_total": 0,
+                    "stall_rob_backpressure_detail": {},
+                    "stall_other_total": 0,
+                    "stall_other_detail": {},
+                    "stall_other_aux": {},
+                    "control": {"control_ratio": 0.0, "est_misp_per_kinst": 0.0},
+                    "top_pc": [],
+                    "top_inst": [],
+                    "flush_reason_histogram": {},
+                    "flush_source_histogram": {},
+                    "predict": {},
+                    "has_commit_detail": False,
+                    "has_commit_summary": True,
+                    "stall_mode": "none",
+                    "quality_warnings": [],
+                    "commit_metrics_source": "summary",
+                    "stall_metrics_source": "none",
+                }
+            }
+            report = mod.build_markdown_report(summary, template)
+
+        self.assertIn("- width5: `7`", report)
+        self.assertIn("- width6: `3`", report)
+
     def test_quality_warning_for_sampled_stall_and_missing_commit(self):
         mod = load_parser_module()
         with tempfile.TemporaryDirectory() as td:

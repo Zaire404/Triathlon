@@ -56,12 +56,14 @@ module tb_backend (
     output logic [Cfg.PLEN-1:0]                rob_flush_pc_o,
     output logic                               dbg_dec_ready_o,
     output logic                               dbg_dec_valid_o,
+    output logic                               dbg_ingress_dec_valid_o,
     output logic [((Cfg.IFU_INF_DEPTH >= 2) ? $clog2(Cfg.IFU_INF_DEPTH) : 1)-1:0] dbg_dec_uop0_ftq_id_o,
     output logic [2:0]                         dbg_dec_uop0_fetch_epoch_o,
     output logic [((Cfg.IFU_INF_DEPTH >= 2) ? $clog2(Cfg.IFU_INF_DEPTH) : 1)-1:0] dbg_bpu_update_ftq_id_o,
     output logic [2:0]                         dbg_bpu_update_fetch_epoch_o,
     output logic [7:0]                         dbg_cfg_ftq_id_bits_o,
     output logic [7:0]                         dbg_cfg_fetch_epoch_bits_o,
+    output logic [7:0]                         dbg_cfg_instr_per_fetch_o,
     output logic [((Cfg.NRET > 1) ? $clog2(Cfg.NRET) : 1)-1:0] dbg_bpu_update_sel_idx_o,
     output logic                               dbg_ren_src_from_pending_o,
     output logic [2:0]                         dbg_ren_src_count_o,
@@ -135,12 +137,14 @@ module tb_backend (
   assign rob_flush_pc_o = dut.rob_flush_pc;
   assign dbg_dec_ready_o = dut.decode_backend_ready;
   assign dbg_dec_valid_o = dut.dec_valid;
+  assign dbg_ingress_dec_valid_o = dut.ingress_dec_valid;
   assign dbg_dec_uop0_ftq_id_o = dut.dec_uops[0].ftq_id;
   assign dbg_dec_uop0_fetch_epoch_o = dut.dec_uops[0].fetch_epoch;
   assign dbg_bpu_update_ftq_id_o = dut.bpu_update_ftq_id_dbg;
   assign dbg_bpu_update_fetch_epoch_o = dut.bpu_update_fetch_epoch_dbg;
   assign dbg_cfg_ftq_id_bits_o = 8'(((Cfg.IFU_INF_DEPTH >= 2) ? $clog2(Cfg.IFU_INF_DEPTH) : 1));
   assign dbg_cfg_fetch_epoch_bits_o = 8'(3);
+  assign dbg_cfg_instr_per_fetch_o = 8'(Cfg.INSTR_PER_FETCH);
   assign dbg_bpu_update_sel_idx_o = dut.bpu_update_sel_idx_dbg;
   assign dbg_ren_src_from_pending_o = dut.rename_src_from_pending;
   always_comb begin

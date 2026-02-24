@@ -691,6 +691,21 @@ int main(int argc, char **argv) {
   }
 
   reset(top, mem, tfp, sim_time);
+  auto make_low_mask = [](uint32_t width) -> uint32_t {
+    if (width == 0u) return 0u;
+    if (width >= 32u) return 0xFFFFFFFFu;
+    return (1u << width) - 1u;
+  };
+  uint32_t cfg_instr_per_fetch = static_cast<uint32_t>(top->dbg_cfg_instr_per_fetch_o);
+  if (cfg_instr_per_fetch == 0u || cfg_instr_per_fetch > 32u) {
+    cfg_instr_per_fetch = 4u;
+  }
+  uint32_t cfg_commit_width = static_cast<uint32_t>(top->dbg_cfg_nret_o);
+  if (cfg_commit_width == 0u || cfg_commit_width > 32u) {
+    cfg_commit_width = 4u;
+  }
+  const uint32_t cfg_instr_mask = make_low_mask(cfg_instr_per_fetch);
+  const uint32_t cfg_commit_mask = make_low_mask(cfg_commit_width);
 
   std::array<uint32_t, 32> rf{};
   uint64_t no_commit_cycles = 0;
@@ -723,7 +738,7 @@ int main(int argc, char **argv) {
   uint64_t wrong_path_killed_uops = 0;
   std::unordered_map<uint32_t, uint64_t> commit_pc_hist;
   std::unordered_map<uint32_t, uint64_t> commit_inst_hist;
-  std::array<uint64_t, 5> commit_width_hist = {};
+  std::vector<uint64_t> commit_width_hist(std::max<uint32_t>(5u, cfg_commit_width + 1u), 0);
   std::array<uint64_t, 8> stall_cycle_hist = {};
   std::array<uint64_t, 19> stall_frontend_empty_hist = {};
   std::unordered_map<std::string, uint64_t> stall_decode_blocked_detail_hist;
@@ -746,9 +761,9 @@ int main(int argc, char **argv) {
   uint32_t prev_commit_pc = 0;
   uint32_t prev_commit_inst = 0;
 
-  auto popcount4 = [](uint32_t v) -> uint32_t {
-    v &= 0xFu;
-    return ((v >> 0) & 1u) + ((v >> 1) & 1u) + ((v >> 2) & 1u) + ((v >> 3) & 1u);
+  auto popcount_commit = [&](uint32_t v) -> uint32_t {
+    v &= cfg_commit_mask;
+    return static_cast<uint32_t>(__builtin_popcount(v));
   };
   auto is_call_inst = [](uint32_t inst) -> bool {
     uint32_t opcode = inst & 0x7Fu;
@@ -920,18 +935,32 @@ int main(int argc, char **argv) {
   };
 
   auto classify_stall_cycle = [&]() -> int {
+    bool pipe_bus_valid = top->dbg_pipe_bus_valid_o != 0;
+    bool mem_bus_valid = top->dbg_mem_bus_valid_o != 0;
+    bool rob_ready = pipe_bus_valid ? (top->dbg_pipe_bus_rob_ready_o != 0)
+                                    : (top->dbg_rob_ready_o != 0);
+    bool dec_valid = pipe_bus_valid ? (top->dbg_pipe_bus_dec_valid_o != 0)
+                                    : (top->dbg_dec_valid_o != 0);
+    bool dec_ready = pipe_bus_valid ? (top->dbg_pipe_bus_dec_ready_o != 0)
+                                    : (top->dbg_dec_ready_o != 0);
+    bool lsu_issue_valid = mem_bus_valid ? (top->dbg_mem_bus_lsu_issue_valid_o != 0)
+                                         : (top->dbg_lsu_issue_valid_o != 0);
+    bool lsu_req_ready = mem_bus_valid ? (top->dbg_mem_bus_lsu_req_ready_o != 0)
+                                       : (top->dbg_lsu_req_ready_o != 0);
+
     if (top->backend_flush_o) return kStallFlushRecovery;
     if (top->icache_miss_req_valid_o) return kStallICacheMissWait;
     if (top->dcache_miss_req_valid_o) return kStallDCacheMissWait;
-    if (!top->dbg_rob_ready_o) return kStallROBBackpressure;
-    if (!top->dbg_dec_valid_o) return kStallFrontendEmpty;
-    if (top->dbg_dec_valid_o && !top->dbg_dec_ready_o) return kStallDecodeBlocked;
-    if (top->dbg_lsu_issue_valid_o && !top->dbg_lsu_req_ready_o) return kStallLSUReqBlocked;
+    if (!rob_ready) return kStallROBBackpressure;
+    if (!dec_valid) return kStallFrontendEmpty;
+    if (dec_valid && !dec_ready) return kStallDecodeBlocked;
+    if (lsu_issue_valid && !lsu_req_ready) return kStallLSUReqBlocked;
     return kStallOther;
   };
 
   auto classify_frontend_empty_cycle = [&]() -> int {
-    bool fe_valid = top->dbg_fe_valid_o;
+    bool fe_valid = (top->dbg_pipe_bus_valid_o != 0) ?
+        (top->dbg_pipe_bus_fe_valid_o != 0) : (top->dbg_fe_valid_o != 0);
     bool fe_ready = top->dbg_fe_ready_o;
     bool ifu_req_valid = top->dbg_ifu_req_valid_o;
     bool ifu_req_ready = top->dbg_ifu_req_ready_o;
@@ -974,7 +1003,7 @@ int main(int argc, char **argv) {
   };
 
   auto classify_decode_blocked_detail_cycle = [&]() -> const char * {
-    constexpr uint32_t kPendingReplayFullSrc = 4;
+    const uint32_t kPendingReplayFullSrc = cfg_instr_per_fetch;
     int has_rs2 = static_cast<int>(top->dbg_lsu_rs_head_has_rs2_o);
     int rs2_ready = static_cast<int>(top->dbg_lsu_rs_head_r2_ready_o);
 
@@ -1257,13 +1286,11 @@ int main(int argc, char **argv) {
     for (uint64_t v : stall_cycle_hist) stall_total_cycles += v;
 
     std::cout << "[commitm] cycles=" << final_cycles
-              << " commits=" << total_commits
-              << " width0=" << commit_width_hist[0]
-              << " width1=" << commit_width_hist[1]
-              << " width2=" << commit_width_hist[2]
-              << " width3=" << commit_width_hist[3]
-              << " width4=" << commit_width_hist[4]
-              << "\n";
+              << " commits=" << total_commits;
+    for (size_t i = 0; i < commit_width_hist.size(); i++) {
+      std::cout << " width" << i << "=" << commit_width_hist[i];
+    }
+    std::cout << "\n";
     std::cout << "[controlm] branch_count=" << control_branch_count
               << " jal_count=" << control_jal_count
               << " jalr_count=" << control_jalr_count
@@ -1465,7 +1492,7 @@ int main(int argc, char **argv) {
       redirect_distance_samples++;
       redirect_distance_max = std::max<uint64_t>(redirect_distance_max, redirect_distance);
 
-      uint32_t commit_pop = popcount4(static_cast<uint32_t>(top->commit_valid_o));
+      uint32_t commit_pop = popcount_commit(static_cast<uint32_t>(top->commit_valid_o));
       uint32_t rob_count = static_cast<uint32_t>(top->dbg_rob_count_o);
       uint32_t killed_uops = (rob_count >= commit_pop) ? (rob_count - commit_pop) : 0;
       if (flush_reason == "branch_mispredict") {
@@ -1525,7 +1552,7 @@ int main(int argc, char **argv) {
     }
 
     uint32_t commit_this_cycle = 0;
-    for (int i = 0; i < 4; i++) {
+    for (uint32_t i = 0; i < cfg_commit_width; i++) {
       bool valid = (top->commit_valid_o >> i) & 0x1;
       if (!valid) continue;
       commit_this_cycle++;
@@ -1625,7 +1652,7 @@ int main(int argc, char **argv) {
       }
     }
 
-    commit_width_hist[std::min<uint32_t>(commit_this_cycle, 4u)]++;
+    commit_width_hist[std::min<uint32_t>(commit_this_cycle, cfg_commit_width)]++;
 
     if (commit_this_cycle != 0) {
       if ((args.commit_trace || args.bru_trace) && pending_flush_penalty &&
@@ -1906,35 +1933,35 @@ int main(int argc, char **argv) {
     if (args.fe_trace && top->dbg_fe_valid_o && top->dbg_fe_ready_o) {
       uint32_t base_pc = top->dbg_fe_pc_o;
       uint32_t mismatch_mask = 0;
-      std::array<uint32_t, 4> fe_instrs{};
-      std::array<uint32_t, 4> mem_instrs{};
-      uint32_t slot_valid = static_cast<uint32_t>(top->dbg_fe_slot_valid_o) & 0xFu;
-      for (int i = 0; i < 4; i++) {
+      std::vector<uint32_t> fe_instrs(cfg_instr_per_fetch, 0);
+      std::vector<uint32_t> mem_instrs(cfg_instr_per_fetch, 0);
+      uint32_t slot_valid = static_cast<uint32_t>(top->dbg_fe_slot_valid_o) & cfg_instr_mask;
+      for (uint32_t i = 0; i < cfg_instr_per_fetch; i++) {
         fe_instrs[i] = top->dbg_fe_instrs_o[i];
         mem_instrs[i] = mem.mem.read_word(base_pc + static_cast<uint32_t>(i * 4));
         if (fe_instrs[i] != mem_instrs[i]) {
           mismatch_mask |= (1u << i);
         }
       }
-      if (mismatch_mask != 0 || slot_valid != 0xFu) {
+      if (mismatch_mask != 0 || slot_valid != cfg_instr_mask) {
         std::ios::fmtflags f(std::cout.flags());
         std::cout << "[fe   ] cycle=" << cycles
                   << " pc=0x" << std::hex << base_pc
                   << " slot_valid=0x" << slot_valid
                   << " mismatch=0x" << mismatch_mask
                   << " pred={";
-        for (int i = 0; i < 4; i++) {
+        for (uint32_t i = 0; i < cfg_instr_per_fetch; i++) {
           if (i) std::cout << ",";
           std::cout << "0x" << static_cast<uint32_t>(top->dbg_fe_pred_npc_o[i]);
         }
         std::cout << "}"
                   << " fe={";
-        for (int i = 0; i < 4; i++) {
+        for (uint32_t i = 0; i < cfg_instr_per_fetch; i++) {
           if (i) std::cout << ",";
           std::cout << "0x" << fe_instrs[i];
         }
         std::cout << "} mem={";
-        for (int i = 0; i < 4; i++) {
+        for (uint32_t i = 0; i < cfg_instr_per_fetch; i++) {
           if (i) std::cout << ",";
           std::cout << "0x" << mem_instrs[i];
         }

@@ -48,6 +48,9 @@ package build_config_pkg;
     cfg.IFU_REQ_DEPTH = user_cfg.IFU_REQ_DEPTH;
     cfg.IFU_INF_DEPTH = user_cfg.IFU_INF_DEPTH;
     cfg.IFU_FQ_DEPTH = user_cfg.IFU_FQ_DEPTH;
+    cfg.FTQ_DEPTH = (cfg.IFU_INF_DEPTH >= 2) ? cfg.IFU_INF_DEPTH : 2;
+    cfg.FTQ_ID_W = (cfg.FTQ_DEPTH > 1) ? $clog2(cfg.FTQ_DEPTH) : 1;
+    cfg.FETCH_EPOCH_W = 3;
     cfg.ENABLE_COMMIT_RAS_UPDATE = user_cfg.ENABLE_COMMIT_RAS_UPDATE;
     cfg.DC_BANKS = (user_cfg.DC_BANKS >= 1) ? user_cfg.DC_BANKS : 4;
     cfg.DC_MSHR_DEPTH = (user_cfg.DC_MSHR_DEPTH >= 1) ? user_cfg.DC_MSHR_DEPTH :

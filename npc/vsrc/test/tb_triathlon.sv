@@ -2,6 +2,8 @@
 import config_pkg::*;
 import decode_pkg::*;
 import global_config_pkg::*;
+import core_contract_pkg::*;
+import debug_bus_pkg::*;
 
 module tb_triathlon #(
     parameter int unsigned ROB_DEPTH = 64,
@@ -55,6 +57,7 @@ module tb_triathlon #(
     output logic [Cfg.XLEN-1:0]                dbg_csr_mcause_o,
     output logic                               backend_flush_o,
     output logic [Cfg.PLEN-1:0]                backend_redirect_pc_o,
+    output logic [Cfg.PLEN-1:0]                dbg_retire_redirect_pc_o,
     output logic                               dbg_rob_flush_o,
     output logic [4:0]                         dbg_rob_flush_cause_o,
     output logic                               dbg_rob_flush_is_mispred_o,
@@ -95,6 +98,16 @@ module tb_triathlon #(
     output logic                               dbg_dec_valid_o,
     output logic                               dbg_dec_ready_o,
     output logic                               dbg_rob_ready_o,
+    output logic                               dbg_pipe_bus_valid_o,
+    output logic                               dbg_pipe_bus_fe_valid_o,
+    output logic                               dbg_pipe_bus_dec_valid_o,
+    output logic                               dbg_pipe_bus_dec_ready_o,
+    output logic                               dbg_pipe_bus_rob_ready_o,
+    output logic                               dbg_mem_bus_valid_o,
+    output logic                               dbg_mem_bus_lsu_issue_valid_o,
+    output logic                               dbg_mem_bus_lsu_req_ready_o,
+    output logic [7:0]                         dbg_cfg_instr_per_fetch_o,
+    output logic [7:0]                         dbg_cfg_nret_o,
     output logic                               dbg_ren_src_from_pending_o,
     output logic [$clog2(Cfg.INSTR_PER_FETCH+1)-1:0] dbg_ren_src_count_o,
     output logic [$clog2(Cfg.INSTR_PER_FETCH+1)-1:0] dbg_ren_sel_count_o,
@@ -304,6 +317,7 @@ module tb_triathlon #(
   assign dbg_csr_mcause_o  = dut.u_backend.u_csr.csr_mcause;
   assign backend_flush_o = dut.u_backend.backend_flush_o;
   assign backend_redirect_pc_o = dut.u_backend.backend_redirect_pc_o;
+  assign dbg_retire_redirect_pc_o = dut.u_backend.retire_redirect_pc_dbg;
   assign dbg_rob_flush_o = dut.u_backend.rob_flush;
   assign dbg_rob_flush_cause_o = dut.u_backend.rob_flush_cause;
   assign dbg_rob_flush_is_mispred_o = dut.u_backend.rob_flush_is_mispred;
@@ -346,6 +360,26 @@ module tb_triathlon #(
   assign dbg_dec_valid_o = dut.u_backend.decode_ibuf_valid;
   assign dbg_dec_ready_o = dut.u_backend.decode_ibuf_ready;
   assign dbg_rob_ready_o = dut.u_backend.rob_ready;
+  pipe_dbg_t pipe_bus;
+  mem_dbg_t mem_bus;
+  assign pipe_bus.valid = 1'b1;
+  assign pipe_bus.fe_valid = dbg_fe_valid_o;
+  assign pipe_bus.dec_valid = dbg_dec_valid_o;
+  assign pipe_bus.dec_ready = dbg_dec_ready_o;
+  assign pipe_bus.rob_ready = dbg_rob_ready_o;
+  assign mem_bus.valid = 1'b1;
+  assign mem_bus.lsu_issue_valid = dut.u_backend.lsu_en;
+  assign mem_bus.lsu_req_ready = dut.u_backend.lsu_req_ready;
+  assign dbg_pipe_bus_valid_o = pipe_bus.valid;
+  assign dbg_pipe_bus_fe_valid_o = pipe_bus.fe_valid;
+  assign dbg_pipe_bus_dec_valid_o = pipe_bus.dec_valid;
+  assign dbg_pipe_bus_dec_ready_o = pipe_bus.dec_ready;
+  assign dbg_pipe_bus_rob_ready_o = pipe_bus.rob_ready;
+  assign dbg_mem_bus_valid_o = mem_bus.valid;
+  assign dbg_mem_bus_lsu_issue_valid_o = mem_bus.lsu_issue_valid;
+  assign dbg_mem_bus_lsu_req_ready_o = mem_bus.lsu_req_ready;
+  assign dbg_cfg_instr_per_fetch_o = 8'(Cfg.INSTR_PER_FETCH);
+  assign dbg_cfg_nret_o = 8'(Cfg.NRET);
   assign dbg_ren_src_from_pending_o = dut.u_backend.rename_src_from_pending;
   assign dbg_ren_sel_count_o = dut.u_backend.rename_sel_count;
   assign dbg_ren_fire_o = dut.u_backend.rename_fire;

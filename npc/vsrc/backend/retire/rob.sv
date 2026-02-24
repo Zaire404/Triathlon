@@ -55,11 +55,11 @@ module rob #(
     input logic [WB_WIDTH-1:0] wb_is_mispred_i,
     input logic [WB_WIDTH-1:0][Cfg.PLEN-1:0] wb_redirect_pc_i,
     // Fast-visible path for ALU completion (combinational assist only).
-    input logic [3:0] fast_alu_valid_i,
-    input logic [3:0][$clog2(ROB_DEPTH)-1:0] fast_alu_rob_idx_i,
-    input logic [3:0][Cfg.XLEN-1:0] fast_alu_data_i,
-    input logic [3:0] fast_alu_is_mispred_i,
-    input logic [3:0][Cfg.PLEN-1:0] fast_alu_redirect_pc_i,
+    input logic [DISPATCH_WIDTH-1:0] fast_alu_valid_i,
+    input logic [DISPATCH_WIDTH-1:0][$clog2(ROB_DEPTH)-1:0] fast_alu_rob_idx_i,
+    input logic [DISPATCH_WIDTH-1:0][Cfg.XLEN-1:0] fast_alu_data_i,
+    input logic [DISPATCH_WIDTH-1:0] fast_alu_is_mispred_i,
+    input logic [DISPATCH_WIDTH-1:0][Cfg.PLEN-1:0] fast_alu_redirect_pc_i,
     input logic fast_bru_valid_i,
     input logic [$clog2(ROB_DEPTH)-1:0] fast_bru_rob_idx_i,
     input logic [Cfg.XLEN-1:0] fast_bru_data_i,
@@ -172,7 +172,7 @@ module rob #(
       head_fast_data[i] = rob_ram[idx].data;
       head_fast_redirect_pc[i] = rob_ram[idx].redirect_pc;
       if (rob_ram[idx].fu_type == decode_pkg::FU_ALU) begin
-        for (int a = 0; a < 4; a++) begin
+        for (int a = 0; a < DISPATCH_WIDTH; a++) begin
           if (fast_alu_valid_i[a] && (fast_alu_rob_idx_i[a] == idx)) begin
             head_fast_complete[i] = 1'b1;
             head_fast_data[i] = fast_alu_data_i[a];
@@ -182,7 +182,7 @@ module rob #(
       end else if ((rob_ram[idx].fu_type == decode_pkg::FU_BRANCH) && !rob_ram[idx].is_jump) begin
         // Conditional branch may execute on ALU lanes. For correctness, only
         // enable same-cycle visibility on non-mispred branch WB.
-        for (int a = 0; a < 4; a++) begin
+        for (int a = 0; a < DISPATCH_WIDTH; a++) begin
           if (fast_alu_valid_i[a] &&
               !fast_alu_is_mispred_i[a] &&
               (fast_alu_rob_idx_i[a] == idx)) begin
@@ -349,7 +349,7 @@ module rob #(
     for (int q = 0; q < QUERY_WIDTH; q++) begin
       query_ready_o[q] = rob_ram[query_rob_idx_i[q]].complete;
       query_data_o[q]  = rob_ram[query_rob_idx_i[q]].data;
-      for (int a = 0; a < 4; a++) begin
+      for (int a = 0; a < DISPATCH_WIDTH; a++) begin
         if (fast_alu_valid_i[a] && (fast_alu_rob_idx_i[a] == query_rob_idx_i[q])) begin
           query_ready_o[q] = 1'b1;
           query_data_o[q] = fast_alu_data_i[a];

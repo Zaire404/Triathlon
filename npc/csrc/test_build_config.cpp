@@ -112,6 +112,9 @@ int main(int argc, char **argv) {
   assert(top->o_UOP_PRED_NPC == 0);
   assert(top->o_IBUF_SLOT_VALID == 0);
   assert(top->o_IBUF_PRED_NPC == 0);
+  assert(top->o_FTQ_DEPTH == 8);
+  assert(top->o_FTQ_ID_W == 3);
+  assert(top->o_FETCH_EPOCH_W == 3);
 
   std::cout << "--- [PASSED] All checks passed successfully! ---" << std::endl;
 
