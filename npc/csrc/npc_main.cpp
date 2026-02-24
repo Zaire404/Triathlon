@@ -2,10 +2,10 @@
 #include "args_parser.h"
 #include "difftest_client.h"
 #include "memory_models.h"
+#include "profile_collector.h"
 #include "verilated.h"
 #include "verilated_vcd_c.h"
 
-#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstdlib>
@@ -14,7 +14,6 @@
 #include <fstream>
 #include <iostream>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 namespace {
@@ -85,688 +84,15 @@ int main(int argc, char **argv) {
     cfg_commit_width = 4u;
   }
   const uint32_t cfg_instr_mask = make_low_mask(cfg_instr_per_fetch);
-  const uint32_t cfg_commit_mask = make_low_mask(cfg_commit_width);
 
   std::array<uint32_t, 32> rf{};
   uint64_t no_commit_cycles = 0;
-  uint64_t total_commits = 0;
-  uint32_t last_commit_pc = 0;
-  uint32_t last_commit_inst = 0;
-  bool pending_flush_penalty = false;
-  uint64_t pending_flush_cycle = 0;
-  std::string pending_flush_reason = "unknown";
-  uint64_t pred_cond_total = 0;
-  uint64_t pred_cond_miss = 0;
-  uint64_t pred_jump_total = 0;
-  uint64_t pred_jump_miss = 0;
-  uint64_t pred_jump_direct_total = 0;
-  uint64_t pred_jump_direct_miss = 0;
-  uint64_t pred_jump_indirect_total = 0;
-  uint64_t pred_jump_indirect_miss = 0;
-  uint64_t pred_ret_total = 0;
-  uint64_t pred_ret_miss = 0;
-  uint64_t pred_call_total = 0;
-  uint64_t control_branch_count = 0;
-  uint64_t control_jal_count = 0;
-  uint64_t control_jalr_count = 0;
-  uint64_t control_branch_taken_count = 0;
-  uint64_t control_call_count = 0;
-  uint64_t control_ret_count = 0;
-  uint64_t redirect_distance_sum = 0;
-  uint64_t redirect_distance_samples = 0;
-  uint64_t redirect_distance_max = 0;
-  uint64_t wrong_path_killed_uops = 0;
-  std::unordered_map<uint32_t, uint64_t> commit_pc_hist;
-  std::unordered_map<uint32_t, uint64_t> commit_inst_hist;
-  std::vector<uint64_t> commit_width_hist(std::max<uint32_t>(5u, cfg_commit_width + 1u), 0);
-  std::array<uint64_t, 8> stall_cycle_hist = {};
-  std::array<uint64_t, 19> stall_frontend_empty_hist = {};
-  std::unordered_map<std::string, uint64_t> stall_decode_blocked_detail_hist;
-  std::unordered_map<std::string, uint64_t> stall_rob_backpressure_detail_hist;
-  std::unordered_map<std::string, uint64_t> stall_other_detail_hist;
-  uint64_t branch_ready_not_issued_cycles = 0;
-  uint64_t alu_ready_not_issued_cycles = 0;
-  uint64_t complete_not_visible_cycles = 0;
-  uint64_t ifu_fq_enq = 0;
-  uint64_t ifu_fq_deq = 0;
-  uint64_t ifu_fq_bypass = 0;
-  uint64_t ifu_fq_enq_blocked = 0;
-  uint64_t ifu_fq_full_cycles = 0;
-  uint64_t ifu_fq_empty_cycles = 0;
-  uint64_t ifu_fq_nonempty_cycles = 0;
-  uint64_t ifu_fq_occ_sum = 0;
-  uint64_t ifu_fq_occ_max = 0;
-  std::array<uint64_t, 16> ifu_fq_occ_hist = {};
-  bool has_prev_commit = false;
-  uint32_t prev_commit_pc = 0;
-  uint32_t prev_commit_inst = 0;
+  npc::ProfileCollector profile(args, cfg_instr_per_fetch, cfg_commit_width);
 
-  auto popcount_commit = [&](uint32_t v) -> uint32_t {
-    v &= cfg_commit_mask;
-    return static_cast<uint32_t>(__builtin_popcount(v));
-  };
-  auto is_call_inst = [](uint32_t inst) -> bool {
-    uint32_t opcode = inst & 0x7Fu;
-    uint32_t rd = (inst >> 7) & 0x1Fu;
-    if (opcode == 0x6Fu || opcode == 0x67u) {
-      return (rd == 1u || rd == 5u);
-    }
-    return false;
-  };
-  auto is_ret_inst = [](uint32_t inst) -> bool {
-    uint32_t opcode = inst & 0x7Fu;
-    if (opcode != 0x67u) return false;  // JALR only
-    uint32_t rd = (inst >> 7) & 0x1Fu;
-    uint32_t rs1 = (inst >> 15) & 0x1Fu;
-    uint32_t imm12 = (inst >> 20) & 0xFFFu;
-    return (rd == 0u) && (rs1 == 1u || rs1 == 5u) && (imm12 == 0u);
-  };
-  auto is_indirect_jump_inst = [&](uint32_t inst) -> bool {
-    uint32_t opcode = inst & 0x7Fu;
-    if (opcode != 0x67u) return false;
-    if (is_call_inst(inst) || is_ret_inst(inst)) return false;
-    return true;
-  };
-  auto emit_pred_summary = [&]() {
-    if (!(args.commit_trace || args.bru_trace)) return;
-    uint64_t pred_cond_hit = (pred_cond_total >= pred_cond_miss) ? (pred_cond_total - pred_cond_miss) : 0;
-    uint64_t pred_jump_hit = (pred_jump_total >= pred_jump_miss) ? (pred_jump_total - pred_jump_miss) : 0;
-    uint64_t pred_jump_direct_hit = (pred_jump_direct_total >= pred_jump_direct_miss)
-                                        ? (pred_jump_direct_total - pred_jump_direct_miss)
-                                        : 0;
-    uint64_t pred_jump_indirect_hit = (pred_jump_indirect_total >= pred_jump_indirect_miss)
-                                          ? (pred_jump_indirect_total - pred_jump_indirect_miss)
-                                          : 0;
-    uint64_t pred_ret_hit = (pred_ret_total >= pred_ret_miss) ? (pred_ret_total - pred_ret_miss) : 0;
-    uint64_t cond_update_total = static_cast<uint64_t>(top->dbg_bpu_cond_update_total_o);
-    uint64_t cond_local_correct = static_cast<uint64_t>(top->dbg_bpu_cond_local_correct_o);
-    uint64_t cond_global_correct = static_cast<uint64_t>(top->dbg_bpu_cond_global_correct_o);
-    uint64_t cond_selected_correct = static_cast<uint64_t>(top->dbg_bpu_cond_selected_correct_o);
-    uint64_t cond_choose_local = static_cast<uint64_t>(top->dbg_bpu_cond_choose_local_o);
-    uint64_t cond_choose_global = static_cast<uint64_t>(top->dbg_bpu_cond_choose_global_o);
-    uint64_t tage_lookup_total = static_cast<uint64_t>(top->dbg_bpu_tage_lookup_total_o);
-    uint64_t tage_hit_total = static_cast<uint64_t>(top->dbg_bpu_tage_hit_total_o);
-    uint64_t tage_override_total = static_cast<uint64_t>(top->dbg_bpu_tage_override_total_o);
-    uint64_t tage_override_correct = static_cast<uint64_t>(top->dbg_bpu_tage_override_correct_o);
-    uint64_t sc_lookup_total = static_cast<uint64_t>(top->dbg_bpu_sc_lookup_total_o);
-    uint64_t sc_confident_total = static_cast<uint64_t>(top->dbg_bpu_sc_confident_total_o);
-    uint64_t sc_override_total = static_cast<uint64_t>(top->dbg_bpu_sc_override_total_o);
-    uint64_t sc_override_correct = static_cast<uint64_t>(top->dbg_bpu_sc_override_correct_o);
-    uint64_t loop_lookup_total = static_cast<uint64_t>(top->dbg_bpu_loop_lookup_total_o);
-    uint64_t loop_hit_total = static_cast<uint64_t>(top->dbg_bpu_loop_hit_total_o);
-    uint64_t loop_confident_total = static_cast<uint64_t>(top->dbg_bpu_loop_confident_total_o);
-    uint64_t loop_override_total = static_cast<uint64_t>(top->dbg_bpu_loop_override_total_o);
-    uint64_t loop_override_correct = static_cast<uint64_t>(top->dbg_bpu_loop_override_correct_o);
-    uint64_t cond_provider_legacy_selected =
-        static_cast<uint64_t>(top->dbg_bpu_cond_provider_legacy_selected_o);
-    uint64_t cond_provider_tage_selected =
-        static_cast<uint64_t>(top->dbg_bpu_cond_provider_tage_selected_o);
-    uint64_t cond_provider_sc_selected =
-        static_cast<uint64_t>(top->dbg_bpu_cond_provider_sc_selected_o);
-    uint64_t cond_provider_loop_selected =
-        static_cast<uint64_t>(top->dbg_bpu_cond_provider_loop_selected_o);
-    uint64_t cond_provider_legacy_correct =
-        static_cast<uint64_t>(top->dbg_bpu_cond_provider_legacy_correct_o);
-    uint64_t cond_provider_tage_correct =
-        static_cast<uint64_t>(top->dbg_bpu_cond_provider_tage_correct_o);
-    uint64_t cond_provider_sc_correct =
-        static_cast<uint64_t>(top->dbg_bpu_cond_provider_sc_correct_o);
-    uint64_t cond_provider_loop_correct =
-        static_cast<uint64_t>(top->dbg_bpu_cond_provider_loop_correct_o);
-    uint64_t cond_selected_wrong_alt_legacy_correct =
-        static_cast<uint64_t>(top->dbg_bpu_cond_selected_wrong_alt_legacy_correct_o);
-    uint64_t cond_selected_wrong_alt_tage_correct =
-        static_cast<uint64_t>(top->dbg_bpu_cond_selected_wrong_alt_tage_correct_o);
-    uint64_t cond_selected_wrong_alt_sc_correct =
-        static_cast<uint64_t>(top->dbg_bpu_cond_selected_wrong_alt_sc_correct_o);
-    uint64_t cond_selected_wrong_alt_loop_correct =
-        static_cast<uint64_t>(top->dbg_bpu_cond_selected_wrong_alt_loop_correct_o);
-    uint64_t cond_selected_wrong_alt_any_correct =
-        static_cast<uint64_t>(top->dbg_bpu_cond_selected_wrong_alt_any_correct_o);
-    std::ios::fmtflags f(std::cout.flags());
-    std::cout << "[pred  ] cond_total=" << pred_cond_total
-              << " cond_miss=" << pred_cond_miss
-              << " cond_hit=" << pred_cond_hit
-              << " jump_total=" << pred_jump_total
-              << " jump_miss=" << pred_jump_miss
-              << " jump_hit=" << pred_jump_hit
-              << " jump_direct_total=" << pred_jump_direct_total
-              << " jump_direct_miss=" << pred_jump_direct_miss
-              << " jump_direct_hit=" << pred_jump_direct_hit
-              << " jump_indirect_total=" << pred_jump_indirect_total
-              << " jump_indirect_miss=" << pred_jump_indirect_miss
-              << " jump_indirect_hit=" << pred_jump_indirect_hit
-              << " ret_total=" << pred_ret_total
-              << " ret_miss=" << pred_ret_miss
-              << " ret_hit=" << pred_ret_hit
-              << " call_total=" << pred_call_total
-              << " cond_update_total=" << cond_update_total
-              << " cond_local_correct=" << cond_local_correct
-              << " cond_global_correct=" << cond_global_correct
-              << " cond_selected_correct=" << cond_selected_correct
-              << " cond_choose_local=" << cond_choose_local
-              << " cond_choose_global=" << cond_choose_global
-              << " tage_lookup_total=" << tage_lookup_total
-              << " tage_hit_total=" << tage_hit_total
-              << " tage_override_total=" << tage_override_total
-              << " tage_override_correct=" << tage_override_correct
-              << " sc_lookup_total=" << sc_lookup_total
-              << " sc_confident_total=" << sc_confident_total
-              << " sc_override_total=" << sc_override_total
-              << " sc_override_correct=" << sc_override_correct
-              << " loop_lookup_total=" << loop_lookup_total
-              << " loop_hit_total=" << loop_hit_total
-              << " loop_confident_total=" << loop_confident_total
-              << " loop_override_total=" << loop_override_total
-              << " loop_override_correct=" << loop_override_correct
-              << " cond_provider_legacy_selected=" << cond_provider_legacy_selected
-              << " cond_provider_tage_selected=" << cond_provider_tage_selected
-              << " cond_provider_sc_selected=" << cond_provider_sc_selected
-              << " cond_provider_loop_selected=" << cond_provider_loop_selected
-              << " cond_provider_legacy_correct=" << cond_provider_legacy_correct
-              << " cond_provider_tage_correct=" << cond_provider_tage_correct
-              << " cond_provider_sc_correct=" << cond_provider_sc_correct
-              << " cond_provider_loop_correct=" << cond_provider_loop_correct
-              << " cond_selected_wrong_alt_legacy_correct=" << cond_selected_wrong_alt_legacy_correct
-              << " cond_selected_wrong_alt_tage_correct=" << cond_selected_wrong_alt_tage_correct
-              << " cond_selected_wrong_alt_sc_correct=" << cond_selected_wrong_alt_sc_correct
-              << " cond_selected_wrong_alt_loop_correct=" << cond_selected_wrong_alt_loop_correct
-              << " cond_selected_wrong_alt_any_correct=" << cond_selected_wrong_alt_any_correct
-              << "\n";
-    std::cout << "[flushm] wrong_path_killed_uops=" << wrong_path_killed_uops
-              << " redirect_distance_samples=" << redirect_distance_samples
-              << " redirect_distance_sum=" << redirect_distance_sum
-              << " redirect_distance_max=" << redirect_distance_max
-              << "\n";
-    std::cout.flags(f);
-  };
-
-  enum StallKindIdx : int {
-    kStallFlushRecovery = 0,
-    kStallICacheMissWait = 1,
-    kStallDCacheMissWait = 2,
-    kStallROBBackpressure = 3,
-    kStallFrontendEmpty = 4,
-    kStallDecodeBlocked = 5,
-    kStallLSUReqBlocked = 6,
-    kStallOther = 7,
-  };
-
-  enum FrontendEmptyDetailIdx : int {
-    kFeNoReq = 0,
-    kFeWaitICacheRspHitLatency = 1,
-    kFeWaitICacheRspMissWait = 2,
-    kFeRspBlockedByFQFull = 3,
-    kFeWaitIbufferConsume = 4,
-    kFeRedirectRecovery = 5,
-    kFeRspCaptureBubble = 6,
-    kFeHasDataDecodeGap = 7,
-    kFeOther = 8,
-    kFeDropStaleRsp = 9,
-    kFeNoReqReqQEmpty = 10,
-    kFeNoReqInfFull = 11,
-    kFeNoReqStorageBudget = 12,
-    kFeNoReqFlushBlock = 13,
-    kFeNoReqOther = 14,
-    kFeReqFireNoInflight = 15,
-    kFeRspNoInflight = 16,
-    kFeFQNonemptyNoFeValid = 17,
-    kFeReqReadyNoFire = 18,
-  };
-
-  auto classify_stall_cycle = [&]() -> int {
-    bool pipe_bus_valid = top->dbg_pipe_bus_valid_o != 0;
-    bool mem_bus_valid = top->dbg_mem_bus_valid_o != 0;
-    bool rob_ready = pipe_bus_valid ? (top->dbg_pipe_bus_rob_ready_o != 0)
-                                    : (top->dbg_rob_ready_o != 0);
-    bool dec_valid = pipe_bus_valid ? (top->dbg_pipe_bus_dec_valid_o != 0)
-                                    : (top->dbg_dec_valid_o != 0);
-    bool dec_ready = pipe_bus_valid ? (top->dbg_pipe_bus_dec_ready_o != 0)
-                                    : (top->dbg_dec_ready_o != 0);
-    bool lsu_issue_valid = mem_bus_valid ? (top->dbg_mem_bus_lsu_issue_valid_o != 0)
-                                         : (top->dbg_lsu_issue_valid_o != 0);
-    bool lsu_req_ready = mem_bus_valid ? (top->dbg_mem_bus_lsu_req_ready_o != 0)
-                                       : (top->dbg_lsu_req_ready_o != 0);
-
-    if (top->backend_flush_o) return kStallFlushRecovery;
-    if (top->icache_miss_req_valid_o) return kStallICacheMissWait;
-    if (top->dcache_miss_req_valid_o) return kStallDCacheMissWait;
-    if (!rob_ready) return kStallROBBackpressure;
-    if (!dec_valid) return kStallFrontendEmpty;
-    if (dec_valid && !dec_ready) return kStallDecodeBlocked;
-    if (lsu_issue_valid && !lsu_req_ready) return kStallLSUReqBlocked;
-    return kStallOther;
-  };
-
-  auto classify_frontend_empty_cycle = [&]() -> int {
-    bool fe_valid = (top->dbg_pipe_bus_valid_o != 0) ?
-        (top->dbg_pipe_bus_fe_valid_o != 0) : (top->dbg_fe_valid_o != 0);
-    bool fe_ready = top->dbg_fe_ready_o;
-    bool ifu_req_valid = top->dbg_ifu_req_valid_o;
-    bool ifu_req_ready = top->dbg_ifu_req_ready_o;
-    bool ifu_req_fire = top->dbg_ifu_req_fire_o;
-    bool ifu_req_inflight = top->dbg_ifu_req_inflight_o;
-    bool ifu_rsp_valid = top->dbg_ifu_rsp_valid_o;
-    bool ifu_rsp_capture = top->dbg_ifu_rsp_capture_o;
-    bool ifu_drop_stale_rsp = top->dbg_ifu_drop_stale_rsp_o;
-    bool ifu_fq_full = top->dbg_ifu_fq_full_o;
-    bool ifu_fq_empty = top->dbg_ifu_fq_empty_o;
-    bool ifu_block_flush = top->dbg_ifu_block_flush_o;
-    bool ifu_block_reqq_empty = top->dbg_ifu_block_reqq_empty_o;
-    bool ifu_block_inf_full = top->dbg_ifu_block_inf_full_o;
-    bool ifu_block_storage_budget = top->dbg_ifu_block_storage_budget_o;
-
-    if (fe_valid && !fe_ready) return kFeWaitIbufferConsume;
-    if (fe_valid && fe_ready) return kFeHasDataDecodeGap;
-    if (ifu_req_inflight && ifu_rsp_valid && ifu_rsp_capture) return kFeRspCaptureBubble;
-    if (ifu_drop_stale_rsp) return kFeDropStaleRsp;
-    if (ifu_rsp_valid && !ifu_rsp_capture && ifu_fq_full) return kFeRspBlockedByFQFull;
-    if (ifu_req_inflight && !ifu_rsp_valid) {
-      uint32_t icache_state = static_cast<uint32_t>(top->dbg_icache_state_o);
-      if (icache_state == 2u || icache_state == 3u) return kFeWaitICacheRspMissWait;
-      return kFeWaitICacheRspHitLatency;
-    }
-    if (!ifu_req_inflight && ifu_fq_empty && !ifu_req_valid) {
-      if (ifu_block_flush) return kFeNoReqFlushBlock;
-      if (ifu_block_reqq_empty) return kFeNoReqReqQEmpty;
-      if (ifu_block_inf_full) return kFeNoReqInfFull;
-      if (ifu_block_storage_budget) return kFeNoReqStorageBudget;
-      if (!ifu_req_ready) return kFeRedirectRecovery;
-      return kFeNoReqOther;
-    }
-    if (!ifu_req_fire && ifu_req_valid && !ifu_req_ready) return kFeRedirectRecovery;
-    if (ifu_req_fire && !ifu_req_inflight && !ifu_rsp_valid) return kFeReqFireNoInflight;
-    if (ifu_rsp_valid && !ifu_rsp_capture && !ifu_req_inflight) return kFeRspNoInflight;
-    if (!ifu_fq_empty && !fe_valid) return kFeFQNonemptyNoFeValid;
-    if (ifu_req_valid && ifu_req_ready && !ifu_req_fire) return kFeReqReadyNoFire;
-    return kFeOther;
-  };
-
-  auto classify_decode_blocked_detail_cycle = [&]() -> const char * {
-    const uint32_t kPendingReplayFullSrc = cfg_instr_per_fetch;
-    int has_rs2 = static_cast<int>(top->dbg_lsu_rs_head_has_rs2_o);
-    int rs2_ready = static_cast<int>(top->dbg_lsu_rs_head_r2_ready_o);
-
-    if (top->dbg_ren_src_from_pending_o) {
-      bool full = static_cast<uint32_t>(top->dbg_ren_src_count_o) >= kPendingReplayFullSrc;
-      if (top->dbg_ren_fire_o && static_cast<uint32_t>(top->dbg_ren_sel_count_o) > 0u) {
-        return full ? "pending_replay_progress_full" : "pending_replay_progress_has_room";
-      }
-      return full ? "pending_replay_wait_full" : "pending_replay_wait_has_room";
-    }
-
-    if (static_cast<uint32_t>(top->dbg_lsu_grp_lane_busy_o) != 0u && !top->dbg_lsu_grp_alloc_fire_o) {
-      if (static_cast<uint32_t>(top->dbg_lsu_grp_ld_owner_o) == 0u) return "lsug_wait_dcache_owner";
-      return "lsug_no_free_lane";
-    }
-
-    if (top->dbg_dc_store_wait_same_line_o) return "dc_store_wait_same_line";
-    if (top->dbg_dc_store_wait_mshr_full_o) return "dc_store_wait_mshr_full";
-
-    if (static_cast<uint32_t>(top->dbg_sb_alloc_req_o) != 0u && !top->dbg_sb_alloc_ready_o) return "sb_alloc_blocked";
-
-    if (top->dbg_lsu_rs_head_valid_o) {
-      bool has_rs1 = top->dbg_lsu_rs_head_has_rs1_o;
-      bool rs1_ready = top->dbg_lsu_rs_head_r1_ready_o;
-      bool has_rs2_local = top->dbg_lsu_rs_head_has_rs2_o;
-      bool rs2_ready_local = top->dbg_lsu_rs_head_r2_ready_o;
-      if ((has_rs1 && !rs1_ready) || (has_rs2_local && !rs2_ready_local)) return "lsu_operand_wait";
-    }
-
-    if (static_cast<uint32_t>(top->dbg_lsu_rs_busy_o) != 0u && static_cast<uint32_t>(top->dbg_lsu_rs_ready_o) == 0u) {
-      return "lsu_rs_pressure";
-    }
-
-    if (top->dbg_rob_q2_valid_o && !top->dbg_rob_q2_complete_o && has_rs2 == 1 && rs2_ready == 0) return "rob_q2_wait";
-
-    std::array<int, 5> gate = {static_cast<int>(top->dbg_gate_alu_o), static_cast<int>(top->dbg_gate_bru_o),
-                               static_cast<int>(top->dbg_gate_lsu_o), static_cast<int>(top->dbg_gate_mdu_o),
-                               static_cast<int>(top->dbg_gate_csr_o)};
-    std::array<uint32_t, 5> need = {static_cast<uint32_t>(top->dbg_need_alu_o), static_cast<uint32_t>(top->dbg_need_bru_o),
-                                    static_cast<uint32_t>(top->dbg_need_lsu_o), static_cast<uint32_t>(top->dbg_need_mdu_o),
-                                    static_cast<uint32_t>(top->dbg_need_csr_o)};
-    const std::array<std::pair<int, const char *>, 5> gate_priority = {{
-        {2, "dispatch_gate_lsu"},
-        {0, "dispatch_gate_alu"},
-        {1, "dispatch_gate_bru"},
-        {4, "dispatch_gate_csr"},
-        {3, "dispatch_gate_mdu"},
-    }};
-    for (const auto &entry : gate_priority) {
-      int idx = entry.first;
-      if (gate[idx] == 0 && need[idx] > 0u) return entry.second;
-    }
-    for (const auto &entry : gate_priority) {
-      int idx = entry.first;
-      if (gate[idx] == 0) return entry.second;
-    }
-
-    uint32_t sm = static_cast<uint32_t>(top->dbg_lsu_state_o);
-    if (sm == 1u && !top->dbg_lsu_ld_fire_o) return "lsu_wait_ld_req";
-    if (sm == 2u && !top->dbg_lsu_rsp_fire_o) return "lsu_wait_ld_rsp";
-    return "other";
-  };
-
-  auto classify_rob_backpressure_detail_cycle = [&]() -> const char * {
-    uint32_t fu = static_cast<uint32_t>(top->dbg_rob_head_fu_o);
-    bool complete = top->dbg_rob_head_complete_o;
-    bool is_store = top->dbg_rob_head_is_store_o;
-
-    if (is_store) {
-      if (!top->dbg_sb_head_valid_o) return "rob_store_wait_sb_head";
-      if (!top->dbg_sb_head_committed_o) return "rob_store_wait_commit";
-      if (!top->dbg_sb_head_addr_valid_o) return "rob_store_wait_addr";
-      if (!top->dbg_sb_head_data_valid_o) return "rob_store_wait_data";
-      if (top->dbg_sb_dcache_req_valid_o && !top->dbg_sb_dcache_req_ready_o) return "rob_store_wait_dcache";
-      if (!top->dbg_sb_dcache_req_valid_o) return "rob_store_wait_issue";
-      return "rob_store_wait_other";
-    }
-
-    if (!complete) {
-      if (fu == 1u) return "rob_head_fu_alu_incomplete";
-      if (fu == 2u) return "rob_head_fu_branch_incomplete";
-      if (fu == 3u) {
-        uint32_t sm = static_cast<uint32_t>(top->dbg_lsu_state_o);
-        bool ld_valid = top->dbg_lsu_ld_req_valid_o;
-        bool ld_ready = top->dbg_lsu_ld_req_ready_o;
-        bool rsp_valid = top->dbg_lsu_ld_rsp_valid_o;
-        bool rsp_ready = top->dbg_lsu_ld_rsp_ready_o;
-        uint32_t owner = static_cast<uint32_t>(top->dbg_lsu_grp_ld_owner_o);
-        bool alloc_fire = top->dbg_lsu_grp_alloc_fire_o;
-
-        if (sm == 0u) return "rob_lsu_incomplete_sm_idle";
-        if (sm == 1u) {
-          if (ld_valid && !ld_ready) {
-            if (owner != 0u) {
-              if (rsp_valid && rsp_ready) return "rob_lsu_wait_ld_req_ready_owner_rsp_fire";
-              if (!rsp_valid && rsp_ready) return "rob_lsu_wait_ld_req_ready_owner_rsp_valid";
-              if (rsp_valid && !rsp_ready) return "rob_lsu_wait_ld_req_ready_owner_rsp_ready";
-            }
-            if (top->dbg_sb_dcache_req_valid_o && !top->dbg_sb_dcache_req_ready_o) return "rob_lsu_wait_ld_req_ready_sb_conflict";
-            bool mshr_blocked = top->dbg_dc_mshr_full_o || !top->dbg_dc_mshr_alloc_ready_o;
-            if (mshr_blocked) return "rob_lsu_wait_ld_req_ready_mshr_blocked";
-            if (top->dcache_miss_req_valid_o && !top->dcache_miss_req_ready_i) return "rob_lsu_wait_ld_req_ready_miss_port_busy";
-            return "rob_lsu_wait_ld_req_ready";
-          }
-          if (!ld_valid && !ld_ready) {
-            if (owner != 0u) {
-              if (rsp_valid && rsp_ready) return "rob_lsu_wait_ld_owner_rsp_fire";
-              if (!rsp_valid && rsp_ready) return "rob_lsu_wait_ld_owner_rsp_valid";
-              if (rsp_valid && !rsp_ready) return "rob_lsu_wait_ld_owner_rsp_ready";
-              return "rob_lsu_wait_ld_owner_hold";
-            }
-            if (!alloc_fire) return "rob_lsu_wait_ld_arb_no_grant";
-          }
-          if (!top->dbg_lsu_ld_fire_o) return "rob_lsu_wait_ld_req_fire";
-          return "rob_lsu_incomplete_sm_req_unknown";
-        }
-        if (sm == 2u) {
-          if (!rsp_valid) return "rob_lsu_wait_ld_rsp_valid";
-          if (rsp_valid && !rsp_ready) return "rob_lsu_wait_ld_rsp_ready";
-          if (!top->dbg_lsu_rsp_fire_o) return "rob_lsu_wait_ld_rsp_fire";
-          return "rob_lsu_incomplete_sm_rsp_unknown";
-        }
-        if (sm == 3u) return "rob_lsu_wait_wb";
-        return "rob_lsu_incomplete_sm_illegal";
-      }
-      if (fu == 4u || fu == 5u) return "rob_head_fu_mdu_incomplete";
-      if (fu == 6u) return "rob_head_fu_csr_incomplete";
-      return "rob_head_fu_unknown_incomplete";
-    }
-
-    return "rob_head_complete_but_not_ready";
-  };
-
-  auto classify_other_detail_cycle = [&]() -> const char * {
-    uint32_t rob_count = static_cast<uint32_t>(top->dbg_rob_count_o);
-    bool ren_ready = top->dbg_ren_ready_o;
-    bool ren_fire = top->dbg_ren_fire_o;
-    uint32_t sm = static_cast<uint32_t>(top->dbg_lsu_state_o);
-    uint32_t fu = static_cast<uint32_t>(top->dbg_rob_head_fu_o);
-    bool rob_head_complete = top->dbg_rob_head_complete_o;
-    bool rob_head_is_store = top->dbg_rob_head_is_store_o;
-    bool q2_incomplete = top->dbg_rob_q2_valid_o && !top->dbg_rob_q2_complete_o;
-
-    if (rob_count == 0u) {
-      if (!ren_ready) return "rob_empty_refill_ren_not_ready";
-      if (ren_fire) return "rob_empty_refill_ren_fire";
-      if (top->dbg_ifu_req_inflight_o) return "rob_empty_refill_wait_frontend_rsp";
-      if (top->dbg_ifu_rsp_valid_o && top->dbg_ifu_rsp_capture_o) return "rob_empty_refill_rsp_capture";
-      return "rob_empty_refill_other";
-    }
-
-    if (sm == 3u) {
-      if (fu == 3u && !rob_head_complete) return "lsu_wait_wb_head_lsu_incomplete";
-      if (fu == 3u && rob_head_complete) return "lsu_wait_wb_head_lsu_complete";
-      if (q2_incomplete) return "lsu_wait_wb_q2_incomplete";
-      return "lsu_wait_wb_other";
-    }
-
-    if (rob_head_is_store) {
-      if (!top->dbg_sb_head_valid_o) return "rob_head_store_wait_sb_head_nonbp";
-      if (!top->dbg_sb_head_committed_o) return "rob_head_store_wait_commit_nonbp";
-      if (!top->dbg_sb_head_addr_valid_o) return "rob_head_store_wait_addr_nonbp";
-      if (!top->dbg_sb_head_data_valid_o) return "rob_head_store_wait_data_nonbp";
-      if (top->dbg_sb_dcache_req_valid_o && !top->dbg_sb_dcache_req_ready_o) return "rob_head_store_wait_dcache_nonbp";
-      if (!top->dbg_sb_dcache_req_valid_o) return "rob_head_store_wait_issue_nonbp";
-      return "rob_head_store_wait_other_nonbp";
-    }
-
-    if (!rob_head_complete) {
-      if (fu == 1u) {
-        if (top->dbg_alu_wb_head_hit_o) return "rob_head_alu_complete_not_visible_incomplete_nonbp";
-        if (top->dbg_alu_issue_any_o) return "rob_head_alu_exec_wait_wb_incomplete_nonbp";
-        if (top->dbg_alu_ready_not_issued_o) return "rob_head_alu_ready_not_issued_incomplete_nonbp";
-        if (!top->dbg_gate_alu_o && static_cast<uint32_t>(top->dbg_need_alu_o) > 0u) {
-          return "rob_head_alu_dispatch_blocked_incomplete_nonbp";
-        }
-        return "rob_head_alu_wait_operand_or_select_incomplete_nonbp";
-      }
-      if (fu == 2u) {
-        if (top->dbg_bru_wb_head_hit_o) return "rob_head_branch_complete_not_visible_incomplete_nonbp";
-        if (top->dbg_bru_valid_o) return "rob_head_branch_exec_wait_wb_incomplete_nonbp";
-        if (top->dbg_bru_ready_not_issued_o) return "rob_head_branch_ready_not_issued_incomplete_nonbp";
-        if (!top->dbg_gate_bru_o && static_cast<uint32_t>(top->dbg_need_bru_o) > 0u) {
-          return "rob_head_branch_dispatch_blocked_incomplete_nonbp";
-        }
-        return "rob_head_branch_wait_operand_or_select_incomplete_nonbp";
-      }
-      if (fu == 3u) {
-        bool ld_valid = top->dbg_lsu_ld_req_valid_o;
-        bool ld_ready = top->dbg_lsu_ld_req_ready_o;
-        bool rsp_valid = top->dbg_lsu_ld_rsp_valid_o;
-        bool rsp_ready = top->dbg_lsu_ld_rsp_ready_o;
-        if (sm == 0u) return "rob_head_lsu_incomplete_sm_idle_nonbp";
-        if (sm == 1u) {
-          if (ld_valid && !ld_ready) return "rob_head_lsu_incomplete_wait_req_ready_nonbp";
-          if (!ld_valid && !ld_ready) return "rob_head_lsu_incomplete_wait_owner_or_alloc_nonbp";
-          if (!top->dbg_lsu_ld_fire_o) return "rob_head_lsu_incomplete_req_fire_gap_nonbp";
-          return "rob_head_lsu_incomplete_sm_req_unknown_nonbp";
-        }
-        if (sm == 2u) {
-          if (!rsp_valid) return "rob_head_lsu_incomplete_wait_rsp_valid_nonbp";
-          if (rsp_valid && !rsp_ready) return "rob_head_lsu_incomplete_wait_rsp_ready_nonbp";
-          if (!top->dbg_lsu_rsp_fire_o) return "rob_head_lsu_incomplete_rsp_fire_gap_nonbp";
-          return "rob_head_lsu_incomplete_sm_rsp_unknown_nonbp";
-        }
-        return "rob_head_lsu_incomplete_sm_other_nonbp";
-      }
-      if (fu == 4u || fu == 5u) return "rob_head_mdu_incomplete_nonbp";
-      if (fu == 6u) return "rob_head_csr_incomplete_nonbp";
-      return "rob_head_unknown_incomplete_nonbp";
-    }
-
-    if (q2_incomplete) return "rob_q2_not_complete_nonstall";
-    if (!ren_ready) return "ren_not_ready";
-    if (!ren_fire) return "ren_no_fire";
-
-    if (sm == 1u && top->dbg_lsu_ld_req_valid_o && top->dbg_lsu_ld_req_ready_o && !top->dbg_lsu_ld_fire_o) {
-      return "lsu_req_fire_gap";
-    }
-    if (sm == 2u && top->dbg_lsu_ld_rsp_valid_o && top->dbg_lsu_ld_rsp_ready_o && !top->dbg_lsu_rsp_fire_o) {
-      return "lsu_rsp_fire_gap";
-    }
-
-    return "other";
-  };
-
-  auto emit_ranked_summary = [&](const char *tag,
-                                 const char *value_key,
-                                 const std::unordered_map<uint32_t, uint64_t> &hist) {
-    std::vector<std::pair<uint32_t, uint64_t>> items(hist.begin(), hist.end());
-    std::sort(items.begin(), items.end(), [](const auto &a, const auto &b) {
-      if (a.second != b.second) return a.second > b.second;
-      return a.first < b.first;
-    });
-
-    std::ios::fmtflags f(std::cout.flags());
-    std::cout << "[" << tag << "]";
-    const size_t limit = std::min<size_t>(5, items.size());
-    for (size_t i = 0; i < limit; i++) {
-      std::cout << " rank" << i << "_" << value_key << "=0x" << std::hex << items[i].first
-                << std::dec << " rank" << i << "_count=" << items[i].second;
-    }
-    std::cout << "\n";
-    std::cout.flags(f);
-  };
-
-  auto emit_detail_summary = [&](const char *tag, const char *total_key, uint64_t total,
-                                 const std::unordered_map<std::string, uint64_t> &hist) {
-    std::vector<std::pair<std::string, uint64_t>> items(hist.begin(), hist.end());
-    std::sort(items.begin(), items.end(), [](const auto &a, const auto &b) {
-      if (a.first != b.first) return a.first < b.first;
-      return a.second > b.second;
-    });
-    std::cout << "[" << tag << "] mode=cycle " << total_key << "=" << total;
-    for (const auto &kv : items) {
-      std::cout << " " << kv.first << "=" << kv.second;
-    }
-    std::cout << "\n";
-  };
-
-  auto emit_profile_summary = [&](uint64_t final_cycles) {
-    if (!(args.commit_trace || args.bru_trace)) return;
-    emit_pred_summary();
-
-    if (has_prev_commit) {
-      uint32_t opcode = prev_commit_inst & 0x7Fu;
-      if (opcode == 0x63u) {
-        control_branch_count++;
-      } else if (opcode == 0x6Fu) {
-        control_jal_count++;
-      } else if (opcode == 0x67u) {
-        control_jalr_count++;
-      }
-      if (is_call_inst(prev_commit_inst)) control_call_count++;
-      if (is_ret_inst(prev_commit_inst)) control_ret_count++;
-      has_prev_commit = false;
-    }
-
-    uint64_t stall_total_cycles = 0;
-    for (uint64_t v : stall_cycle_hist) stall_total_cycles += v;
-
-    std::cout << "[commitm] cycles=" << final_cycles
-              << " commits=" << total_commits;
-    for (size_t i = 0; i < commit_width_hist.size(); i++) {
-      std::cout << " width" << i << "=" << commit_width_hist[i];
-    }
-    std::cout << "\n";
-    std::cout << "[controlm] branch_count=" << control_branch_count
-              << " jal_count=" << control_jal_count
-              << " jalr_count=" << control_jalr_count
-              << " branch_taken_count=" << control_branch_taken_count
-              << " call_count=" << control_call_count
-              << " ret_count=" << control_ret_count
-              << " control_count=" << (control_branch_count + control_jal_count + control_jalr_count)
-              << "\n";
-    std::cout << "[stallm] mode=cycle"
-              << " stall_total_cycles=" << stall_total_cycles
-              << " flush_recovery=" << stall_cycle_hist[kStallFlushRecovery]
-              << " icache_miss_wait=" << stall_cycle_hist[kStallICacheMissWait]
-              << " dcache_miss_wait=" << stall_cycle_hist[kStallDCacheMissWait]
-              << " rob_backpressure=" << stall_cycle_hist[kStallROBBackpressure]
-              << " frontend_empty=" << stall_cycle_hist[kStallFrontendEmpty]
-              << " decode_blocked=" << stall_cycle_hist[kStallDecodeBlocked]
-              << " lsu_req_blocked=" << stall_cycle_hist[kStallLSUReqBlocked]
-              << " other=" << stall_cycle_hist[kStallOther]
-              << "\n";
-    uint64_t fe_no_req_total = stall_frontend_empty_hist[kFeNoReq] +
-                               stall_frontend_empty_hist[kFeNoReqReqQEmpty] +
-                               stall_frontend_empty_hist[kFeNoReqInfFull] +
-                               stall_frontend_empty_hist[kFeNoReqStorageBudget] +
-                               stall_frontend_empty_hist[kFeNoReqFlushBlock] +
-                               stall_frontend_empty_hist[kFeNoReqOther];
-    std::cout << "[stallm2] mode=cycle"
-              << " frontend_empty_total=" << stall_cycle_hist[kStallFrontendEmpty]
-              << " fe_no_req=" << fe_no_req_total
-              << " fe_wait_icache_rsp_hit_latency=" << stall_frontend_empty_hist[kFeWaitICacheRspHitLatency]
-              << " fe_wait_icache_rsp_miss_wait=" << stall_frontend_empty_hist[kFeWaitICacheRspMissWait]
-              << " fe_rsp_blocked_by_fq_full=" << stall_frontend_empty_hist[kFeRspBlockedByFQFull]
-              << " fe_wait_ibuffer_consume=" << stall_frontend_empty_hist[kFeWaitIbufferConsume]
-              << " fe_redirect_recovery=" << stall_frontend_empty_hist[kFeRedirectRecovery]
-              << " fe_rsp_capture_bubble=" << stall_frontend_empty_hist[kFeRspCaptureBubble]
-              << " fe_has_data_decode_gap=" << stall_frontend_empty_hist[kFeHasDataDecodeGap]
-              << " fe_drop_stale_rsp=" << stall_frontend_empty_hist[kFeDropStaleRsp]
-              << " fe_no_req_reqq_empty=" << stall_frontend_empty_hist[kFeNoReqReqQEmpty]
-              << " fe_no_req_inf_full=" << stall_frontend_empty_hist[kFeNoReqInfFull]
-              << " fe_no_req_storage_budget=" << stall_frontend_empty_hist[kFeNoReqStorageBudget]
-              << " fe_no_req_flush_block=" << stall_frontend_empty_hist[kFeNoReqFlushBlock]
-              << " fe_no_req_other=" << stall_frontend_empty_hist[kFeNoReqOther]
-              << " fe_req_fire_no_inflight=" << stall_frontend_empty_hist[kFeReqFireNoInflight]
-              << " fe_rsp_no_inflight=" << stall_frontend_empty_hist[kFeRspNoInflight]
-              << " fe_fq_nonempty_no_fevalid=" << stall_frontend_empty_hist[kFeFQNonemptyNoFeValid]
-              << " fe_req_ready_nofire=" << stall_frontend_empty_hist[kFeReqReadyNoFire]
-              << " fe_other=" << stall_frontend_empty_hist[kFeOther]
-              << "\n";
-    uint64_t fq_samples = final_cycles;
-    uint64_t fq_occ_avg_x1000 = (fq_samples == 0) ? 0 : ((ifu_fq_occ_sum * 1000ull + fq_samples / 2ull) / fq_samples);
-    std::cout << "[ifum] mode=cycle"
-              << " fq_samples=" << fq_samples
-              << " fq_enq=" << ifu_fq_enq
-              << " fq_deq=" << ifu_fq_deq
-              << " fq_bypass=" << ifu_fq_bypass
-              << " fq_enq_blocked=" << ifu_fq_enq_blocked
-              << " fq_full_cycles=" << ifu_fq_full_cycles
-              << " fq_empty_cycles=" << ifu_fq_empty_cycles
-              << " fq_nonempty_cycles=" << ifu_fq_nonempty_cycles
-              << " fq_occ_sum=" << ifu_fq_occ_sum
-              << " fq_occ_max=" << ifu_fq_occ_max
-              << " fq_occ_avg_x1000=" << fq_occ_avg_x1000;
-    for (size_t i = 0; i < ifu_fq_occ_hist.size(); i++) {
-      std::cout << " fq_occ_bin" << i << "=" << ifu_fq_occ_hist[i];
-    }
-    std::cout << "\n";
-    emit_detail_summary("stallm3", "decode_blocked_total", stall_cycle_hist[kStallDecodeBlocked],
-                        stall_decode_blocked_detail_hist);
-    emit_detail_summary("stallm4", "rob_backpressure_total", stall_cycle_hist[kStallROBBackpressure],
-                        stall_rob_backpressure_detail_hist);
-    emit_detail_summary("stallm5", "other_total", stall_cycle_hist[kStallOther], stall_other_detail_hist);
-    std::cout << "[stallm6] mode=cycle"
-              << " branch_ready_not_issued=" << branch_ready_not_issued_cycles
-              << " alu_ready_not_issued=" << alu_ready_not_issued_cycles
-              << " complete_not_visible_to_rob=" << complete_not_visible_cycles
-              << "\n";
-    emit_ranked_summary("hotpcm", "pc", commit_pc_hist);
-    emit_ranked_summary("hotinstm", "inst", commit_inst_hist);
-  };
   for (uint64_t cycles = 0; cycles < args.max_cycles; cycles++) {
     mem.mem.set_time_us(cycles);
     npc::tick(top, mem, tfp, sim_time);
-    uint32_t fq_count = static_cast<uint32_t>(top->dbg_ifu_fq_count_o);
-    if (fq_count >= ifu_fq_occ_hist.size()) fq_count = static_cast<uint32_t>(ifu_fq_occ_hist.size() - 1);
-    ifu_fq_occ_sum += fq_count;
-    ifu_fq_occ_hist[fq_count]++;
-    ifu_fq_occ_max = std::max<uint64_t>(ifu_fq_occ_max, fq_count);
-    if (top->dbg_ifu_fq_full_o) ifu_fq_full_cycles++;
-    if (top->dbg_ifu_fq_empty_o) {
-      ifu_fq_empty_cycles++;
-    } else {
-      ifu_fq_nonempty_cycles++;
-    }
-    if (top->dbg_ifu_fq_enq_fire_o) ifu_fq_enq++;
-    if (top->dbg_ifu_fq_deq_fire_o) ifu_fq_deq++;
-    if (top->dbg_ifu_fq_bypass_fire_o) ifu_fq_bypass++;
-    if (top->dbg_ifu_fq_enq_blocked_o) ifu_fq_enq_blocked++;
+    profile.observe_cycle(top);
 
     if (top->dbg_sb_dcache_req_valid_o && top->dbg_sb_dcache_req_ready_o) {
       uint32_t addr = top->dbg_sb_dcache_req_addr_o;
@@ -814,106 +140,7 @@ int main(int argc, char **argv) {
       std::cout.flags(f);
     }
 
-    if ((args.commit_trace || args.bru_trace) && top->backend_flush_o) {
-      bool rob_flush = top->dbg_rob_flush_o;
-      bool rob_mispred = top->dbg_rob_flush_is_mispred_o;
-      bool rob_exception = top->dbg_rob_flush_is_exception_o;
-      bool rob_is_branch = top->dbg_rob_flush_is_branch_o;
-      bool rob_is_jump = top->dbg_rob_flush_is_jump_o;
-      uint32_t cause = static_cast<uint32_t>(top->dbg_rob_flush_cause_o) & 0x1Fu;
-      uint32_t src_pc = top->dbg_rob_flush_src_pc_o;
-      uint32_t redirect_pc = top->backend_redirect_pc_o;
-
-      std::string flush_reason = "external";
-      std::string flush_source = rob_flush ? "rob" : "external";
-      if (rob_flush) {
-        if (rob_mispred) {
-          flush_reason = "branch_mispredict";
-        } else if (rob_exception) {
-          flush_reason = "exception";
-        } else {
-          flush_reason = "rob_other";
-        }
-      }
-
-      std::string miss_type = "none";
-      std::string miss_subtype = "none";
-      if (flush_reason == "branch_mispredict") {
-        if (rob_is_jump) {
-          uint32_t src_inst = mem.mem.read_word(src_pc);
-          if (is_ret_inst(src_inst)) {
-            miss_type = "return";
-            miss_subtype = "return";
-            pred_ret_miss++;
-          } else if (is_indirect_jump_inst(src_inst)) {
-            miss_type = "jump";
-            miss_subtype = "jump_indirect";
-            pred_jump_miss++;
-            pred_jump_indirect_miss++;
-          } else {
-            miss_type = "jump";
-            miss_subtype = "jump_direct";
-            pred_jump_miss++;
-            pred_jump_direct_miss++;
-          }
-        } else if (rob_is_branch) {
-          miss_type = "cond_branch";
-          miss_subtype = "cond_branch";
-          pred_cond_miss++;
-        } else {
-          miss_type = "control_unknown";
-          miss_subtype = "control_unknown";
-        }
-      }
-
-      uint32_t redirect_distance =
-          (redirect_pc >= src_pc) ? (redirect_pc - src_pc) : (src_pc - redirect_pc);
-      redirect_distance_sum += redirect_distance;
-      redirect_distance_samples++;
-      redirect_distance_max = std::max<uint64_t>(redirect_distance_max, redirect_distance);
-
-      uint32_t commit_pop = popcount_commit(static_cast<uint32_t>(top->commit_valid_o));
-      uint32_t rob_count = static_cast<uint32_t>(top->dbg_rob_count_o);
-      uint32_t killed_uops = (rob_count >= commit_pop) ? (rob_count - commit_pop) : 0;
-      if (flush_reason == "branch_mispredict") {
-        wrong_path_killed_uops += killed_uops;
-      }
-
-      std::ios::fmtflags f(std::cout.flags());
-      std::cout << "[flush ] cycle=" << cycles
-                << " reason=" << flush_reason
-                << " source=" << flush_source
-                << " cause=0x" << std::hex << cause
-                << " src_pc=0x" << src_pc
-                << " redirect_pc=0x" << redirect_pc
-                << std::dec
-                << " miss_type=" << miss_type
-                << " miss_subtype=" << miss_subtype
-                << " bpu_arch_ras_count=" << static_cast<uint32_t>(top->dbg_bpu_arch_ras_count_o)
-                << " bpu_spec_ras_count=" << static_cast<uint32_t>(top->dbg_bpu_spec_ras_count_o)
-                << " bpu_arch_ras_top=0x" << std::hex << static_cast<uint32_t>(top->dbg_bpu_arch_ras_top_o)
-                << " bpu_spec_ras_top=0x" << static_cast<uint32_t>(top->dbg_bpu_spec_ras_top_o)
-                << std::dec
-                << " redirect_distance=" << redirect_distance
-                << " killed_uops=" << killed_uops
-                << std::dec << "\n";
-      if (top->dbg_bru_mispred_o) {
-        std::cout << "[bru   ] cycle=" << cycles
-                  << " valid=" << static_cast<int>(top->dbg_bru_valid_o)
-                  << " pc=0x" << std::hex << top->dbg_bru_pc_o
-                  << " imm=0x" << static_cast<uint32_t>(top->dbg_bru_imm_o)
-                  << " op=" << std::dec << static_cast<int>(top->dbg_bru_op_o)
-                  << " is_jump=" << static_cast<int>(top->dbg_bru_is_jump_o)
-                  << " is_branch=" << static_cast<int>(top->dbg_bru_is_branch_o)
-                  << std::dec << "\n";
-      }
-      std::cout.flags(f);
-      if (!pending_flush_penalty) {
-        pending_flush_penalty = true;
-        pending_flush_cycle = cycles;
-        pending_flush_reason = flush_reason;
-      }
-    }
+    profile.record_flush(cycles, top, mem.mem);
 
     if (args.bru_trace && top->dbg_bru_wb_valid_o) {
       std::ios::fmtflags f(std::cout.flags());
@@ -936,7 +163,6 @@ int main(int argc, char **argv) {
       bool valid = (top->commit_valid_o >> i) & 0x1;
       if (!valid) continue;
       commit_this_cycle++;
-      total_commits++;
 
       std::array<uint32_t, 32> rf_before = rf;
 
@@ -949,47 +175,7 @@ int main(int argc, char **argv) {
 
       uint32_t pc = top->commit_pc_o[i];
       uint32_t inst = mem.mem.read_word(pc);
-      commit_pc_hist[pc]++;
-      commit_inst_hist[inst]++;
-
-      if (has_prev_commit) {
-        uint32_t prev_opcode = prev_commit_inst & 0x7Fu;
-        if (prev_opcode == 0x63u) {
-          control_branch_count++;
-          uint32_t expected_next = prev_commit_pc + 4u;
-          if (pc != expected_next) control_branch_taken_count++;
-        } else if (prev_opcode == 0x6Fu) {
-          control_jal_count++;
-        } else if (prev_opcode == 0x67u) {
-          control_jalr_count++;
-        }
-        if (is_call_inst(prev_commit_inst)) control_call_count++;
-        if (is_ret_inst(prev_commit_inst)) control_ret_count++;
-      }
-      has_prev_commit = true;
-      prev_commit_pc = pc;
-      prev_commit_inst = inst;
-
-      uint32_t opcode = inst & 0x7Fu;
-      if (opcode == 0x63u) {
-        pred_cond_total++;
-      } else if (opcode == 0x6Fu || opcode == 0x67u) {
-        if (is_ret_inst(inst)) {
-          pred_ret_total++;
-        } else {
-          pred_jump_total++;
-          if (is_indirect_jump_inst(inst)) {
-            pred_jump_indirect_total++;
-          } else {
-            pred_jump_direct_total++;
-          }
-        }
-      }
-      if (is_call_inst(inst)) {
-        pred_call_total++;
-      }
-      last_commit_pc = pc;
-      last_commit_inst = inst;
+      profile.record_commit(pc, inst);
       if (args.commit_trace) {
         std::ios::fmtflags f(std::cout.flags());
         std::cout << "[commit] cycle=" << cycles
@@ -1005,7 +191,7 @@ int main(int argc, char **argv) {
       }
       if (!difftest.step_and_check(cycles, pc, inst, rf_before, rf)) {
         std::cerr << "[difftest] stop on first mismatch\n";
-        emit_profile_summary(cycles);
+        profile.emit_summary(cycles, top);
         if (tfp) tfp->close();
         delete top;
         return 1;
@@ -1014,37 +200,28 @@ int main(int argc, char **argv) {
         uint32_t code = rf[10];
         if (code == 0) {
           std::cout << "HIT GOOD TRAP\n";
-          double ipc = cycles ? static_cast<double>(total_commits) / static_cast<double>(cycles) : 0.0;
-          double cpi = total_commits ? static_cast<double>(cycles) / static_cast<double>(total_commits) : 0.0;
+          double ipc = cycles ? static_cast<double>(profile.total_commits()) / static_cast<double>(cycles) : 0.0;
+          double cpi = profile.total_commits() ? static_cast<double>(cycles) / static_cast<double>(profile.total_commits()) : 0.0;
           std::cout << "IPC=" << ipc << " CPI=" << cpi
                     << " cycles=" << cycles
-                    << " commits=" << total_commits << "\n";
-          emit_profile_summary(cycles);
+                    << " commits=" << profile.total_commits() << "\n";
+          profile.emit_summary(cycles, top);
           if (tfp) tfp->close();
           delete top;
           return 0;
         }
         std::cout << "HIT BAD TRAP (code=" << code << ")\n";
-        emit_profile_summary(cycles);
+        profile.emit_summary(cycles, top);
         if (tfp) tfp->close();
         delete top;
         return 1;
       }
     }
 
-    commit_width_hist[std::min<uint32_t>(commit_this_cycle, cfg_commit_width)]++;
+    profile.record_commit_width(commit_this_cycle);
 
     if (commit_this_cycle != 0) {
-      if ((args.commit_trace || args.bru_trace) && pending_flush_penalty &&
-          cycles > pending_flush_cycle) {
-        std::ios::fmtflags f(std::cout.flags());
-        std::cout << "[flushp] cycle=" << cycles
-                  << " reason=" << pending_flush_reason
-                  << " penalty=" << (cycles - pending_flush_cycle)
-                  << "\n";
-        std::cout.flags(f);
-        pending_flush_penalty = false;
-      }
+      profile.on_commit_cycle(cycles);
       if (difftest.enabled()) {
         npc::DUTCSRState dut_csr = {};
         dut_csr.mtvec = top->dbg_csr_mtvec_o;
@@ -1053,7 +230,7 @@ int main(int argc, char **argv) {
         dut_csr.mcause = top->dbg_csr_mcause_o;
         if (!difftest.check_arch_state(cycles, rf, dut_csr)) {
           std::cerr << "[difftest] stop on arch-state mismatch\n";
-          emit_profile_summary(cycles);
+          profile.emit_summary(cycles, top);
           if (tfp) tfp->close();
           delete top;
           return 1;
@@ -1062,175 +239,17 @@ int main(int argc, char **argv) {
       no_commit_cycles = 0;
     } else {
       no_commit_cycles++;
-      int stall_kind = classify_stall_cycle();
-      stall_cycle_hist[stall_kind]++;
-      if (stall_kind == kStallFrontendEmpty) {
-        stall_frontend_empty_hist[classify_frontend_empty_cycle()]++;
-      } else if (stall_kind == kStallDecodeBlocked) {
-        stall_decode_blocked_detail_hist[classify_decode_blocked_detail_cycle()]++;
-      } else if (stall_kind == kStallROBBackpressure) {
-        stall_rob_backpressure_detail_hist[classify_rob_backpressure_detail_cycle()]++;
-      } else if (stall_kind == kStallOther) {
-        stall_other_detail_hist[classify_other_detail_cycle()]++;
-      }
-      if (top->dbg_bru_ready_not_issued_o) branch_ready_not_issued_cycles++;
-      if (top->dbg_alu_ready_not_issued_o) alu_ready_not_issued_cycles++;
-      if (!top->dbg_rob_head_complete_o &&
-          (top->dbg_bru_wb_head_hit_o || top->dbg_alu_wb_head_hit_o)) {
-        complete_not_visible_cycles++;
-      }
-      if (args.stall_trace && args.stall_threshold > 0 &&
-          (no_commit_cycles == args.stall_threshold ||
-           (no_commit_cycles > args.stall_threshold &&
-            no_commit_cycles % args.stall_threshold == 0))) {
-        std::ios::fmtflags f(std::cout.flags());
-        std::cout << "[stall ] cycle=" << cycles
-                  << " no_commit=" << no_commit_cycles
-                  << " fe(v/r/pc)=" << static_cast<int>(top->dbg_fe_valid_o) << "/"
-                  << static_cast<int>(top->dbg_fe_ready_o) << "/0x" << std::hex
-                  << top->dbg_fe_pc_o
-                  << " ifu_req(v/r/fire/inflight)=" << std::dec
-                  << static_cast<int>(top->dbg_ifu_req_valid_o) << "/"
-                  << static_cast<int>(top->dbg_ifu_req_ready_o) << "/"
-                  << static_cast<int>(top->dbg_ifu_req_fire_o) << "/"
-                  << static_cast<int>(top->dbg_ifu_req_inflight_o)
-                  << " ifu_rsp(v/cap)="
-                  << static_cast<int>(top->dbg_ifu_rsp_valid_o) << "/"
-                  << static_cast<int>(top->dbg_ifu_rsp_capture_o)
-                  << " ifu_fq(cnt/full/empty/pop)="
-                  << static_cast<uint32_t>(top->dbg_ifu_fq_count_o) << "/"
-                  << static_cast<int>(top->dbg_ifu_fq_full_o) << "/"
-                  << static_cast<int>(top->dbg_ifu_fq_empty_o) << "/"
-                  << static_cast<int>(top->dbg_ifu_ibuf_pop_o)
-                  << " dec(v/r)=" << std::dec << static_cast<int>(top->dbg_dec_valid_o) << "/"
-                  << static_cast<int>(top->dbg_dec_ready_o)
-                  << " rob_ready=" << static_cast<int>(top->dbg_rob_ready_o)
-                  << " ren(pend/src/sel/fire/rdy)="
-                  << static_cast<int>(top->dbg_ren_src_from_pending_o) << "/"
-                  << static_cast<uint32_t>(top->dbg_ren_src_count_o) << "/"
-                  << static_cast<uint32_t>(top->dbg_ren_sel_count_o) << "/"
-                  << static_cast<int>(top->dbg_ren_fire_o) << "/"
-                  << static_cast<int>(top->dbg_ren_ready_o)
-                  << " gate(alu/bru/lsu/mdu/csr)="
-                  << static_cast<int>(top->dbg_gate_alu_o) << "/"
-                  << static_cast<int>(top->dbg_gate_bru_o) << "/"
-                  << static_cast<int>(top->dbg_gate_lsu_o) << "/"
-                  << static_cast<int>(top->dbg_gate_mdu_o) << "/"
-                  << static_cast<int>(top->dbg_gate_csr_o)
-                  << " need(alu/bru/lsu/mdu/csr)="
-                  << static_cast<uint32_t>(top->dbg_need_alu_o) << "/"
-                  << static_cast<uint32_t>(top->dbg_need_bru_o) << "/"
-                  << static_cast<uint32_t>(top->dbg_need_lsu_o) << "/"
-                  << static_cast<uint32_t>(top->dbg_need_mdu_o) << "/"
-                  << static_cast<uint32_t>(top->dbg_need_csr_o)
-                  << " free(alu/bru/lsu/csr)="
-                  << static_cast<uint32_t>(top->dbg_free_alu_o) << "/"
-                  << static_cast<uint32_t>(top->dbg_free_bru_o) << "/"
-                  << static_cast<uint32_t>(top->dbg_free_lsu_o) << "/"
-                  << static_cast<uint32_t>(top->dbg_free_csr_o)
-                  << " lsu_ld(v/r/addr)=" << static_cast<int>(top->dbg_lsu_ld_req_valid_o) << "/"
-                  << static_cast<int>(top->dbg_lsu_ld_req_ready_o) << "/0x" << std::hex
-                  << top->dbg_lsu_ld_req_addr_o
-                  << " lsu_rsp(v/r)=" << std::dec << static_cast<int>(top->dbg_lsu_ld_rsp_valid_o)
-                  << "/" << static_cast<int>(top->dbg_lsu_ld_rsp_ready_o)
-                  << " lsu_sm=" << static_cast<uint32_t>(top->dbg_lsu_state_o)
-                  << " lsu_ld_fire=" << static_cast<int>(top->dbg_lsu_ld_fire_o)
-                  << " lsu_rsp_fire=" << static_cast<int>(top->dbg_lsu_rsp_fire_o)
-                  << " lsu_inflight(tag/addr)=0x" << std::hex
-                  << static_cast<uint32_t>(top->dbg_lsu_inflight_tag_o)
-                  << "/0x" << top->dbg_lsu_inflight_addr_o
-                  << " lsug(busy/alloc_fire/alloc_lane/ld_owner)=0x"
-                  << static_cast<uint32_t>(top->dbg_lsu_grp_lane_busy_o)
-                  << std::dec << "/" << static_cast<int>(top->dbg_lsu_grp_alloc_fire_o)
-                  << "/0x" << std::hex << static_cast<uint32_t>(top->dbg_lsu_grp_alloc_lane_o)
-                  << "/0x" << static_cast<uint32_t>(top->dbg_lsu_grp_ld_owner_o)
-                  << " lsu_rs(b/r)=0x" << std::hex
-                  << static_cast<uint32_t>(top->dbg_lsu_rs_busy_o) << "/0x"
-                  << static_cast<uint32_t>(top->dbg_lsu_rs_ready_o)
-                  << " lsu_rs_head(v/idx/dst)=" << std::dec
-                  << static_cast<int>(top->dbg_lsu_rs_head_valid_o) << "/0x"
-                  << std::hex << static_cast<uint32_t>(top->dbg_lsu_rs_head_idx_o)
-                  << "/0x" << static_cast<uint32_t>(top->dbg_lsu_rs_head_dst_o)
-                  << " lsu_rs_head(rs1r/rs2r/has1/has2)=" << std::dec
-                  << static_cast<int>(top->dbg_lsu_rs_head_r1_ready_o) << "/"
-                  << static_cast<int>(top->dbg_lsu_rs_head_r2_ready_o) << "/"
-                  << static_cast<int>(top->dbg_lsu_rs_head_has_rs1_o) << "/"
-                  << static_cast<int>(top->dbg_lsu_rs_head_has_rs2_o)
-                  << " lsu_rs_head(q1/q2/sb)=0x" << std::hex
-                  << static_cast<uint32_t>(top->dbg_lsu_rs_head_q1_o) << "/0x"
-                  << static_cast<uint32_t>(top->dbg_lsu_rs_head_q2_o) << "/0x"
-                  << static_cast<uint32_t>(top->dbg_lsu_rs_head_sb_id_o)
-                  << " lsu_rs_head(ld/st)=" << std::dec
-                  << static_cast<int>(top->dbg_lsu_rs_head_is_load_o) << "/"
-                  << static_cast<int>(top->dbg_lsu_rs_head_is_store_o)
-                  << " sb_alloc(req/ready/fire)=0x" << std::hex
-                  << static_cast<uint32_t>(top->dbg_sb_alloc_req_o)
-                  << std::dec << "/" << static_cast<int>(top->dbg_sb_alloc_ready_o) << "/"
-                  << static_cast<int>(top->dbg_sb_alloc_fire_o)
-                  << " sb_dcache(v/r/addr)=" << static_cast<int>(top->dbg_sb_dcache_req_valid_o)
-                  << "/" << static_cast<int>(top->dbg_sb_dcache_req_ready_o) << "/0x"
-                  << std::hex << top->dbg_sb_dcache_req_addr_o
-                  << " dc_mshr(cnt/full/empty)=" << std::dec
-                  << static_cast<uint32_t>(top->dbg_dc_mshr_count_o) << "/"
-                  << static_cast<int>(top->dbg_dc_mshr_full_o) << "/"
-                  << static_cast<int>(top->dbg_dc_mshr_empty_o)
-                  << " dc_mshr(alloc_rdy/line_hit)="
-                  << static_cast<int>(top->dbg_dc_mshr_alloc_ready_o) << "/"
-                  << static_cast<int>(top->dbg_dc_mshr_req_line_hit_o)
-                  << " dc_store_wait(same/full)="
-                  << static_cast<int>(top->dbg_dc_store_wait_same_line_o) << "/"
-                  << static_cast<int>(top->dbg_dc_store_wait_mshr_full_o)
-                  << " ic_miss(v/r)=" << std::dec
-                  << static_cast<int>(top->icache_miss_req_valid_o) << "/"
-                  << static_cast<int>(top->icache_miss_req_ready_i)
-                  << " ic_sm=" << static_cast<uint32_t>(top->dbg_icache_state_o)
-                  << " dc_miss(v/r)=" << static_cast<int>(top->dcache_miss_req_valid_o) << "/"
-                  << static_cast<int>(top->dcache_miss_req_ready_i)
-                  << " flush=" << static_cast<int>(top->backend_flush_o)
-                  << " rdir=0x" << std::hex << top->backend_redirect_pc_o
-                  << std::dec
-                  << " rob_head(fu/comp/is_store/pc)=0x" << std::hex
-                  << static_cast<uint32_t>(top->dbg_rob_head_fu_o)
-                  << "/" << static_cast<int>(top->dbg_rob_head_complete_o)
-                  << "/" << static_cast<int>(top->dbg_rob_head_is_store_o)
-                  << "/0x" << top->dbg_rob_head_pc_o
-                  << std::dec
-                  << " rob_cnt=" << static_cast<uint32_t>(top->dbg_rob_count_o)
-                  << " rob_ptr(h/t)=0x" << std::hex
-                  << static_cast<uint32_t>(top->dbg_rob_head_ptr_o)
-                  << "/0x" << static_cast<uint32_t>(top->dbg_rob_tail_ptr_o)
-                  << std::dec
-                  << " rob_q2(v/idx/fu/comp/st/pc)=" << std::dec
-                  << static_cast<int>(top->dbg_rob_q2_valid_o) << "/0x"
-                  << std::hex << static_cast<uint32_t>(top->dbg_rob_q2_idx_o)
-                  << "/0x" << static_cast<uint32_t>(top->dbg_rob_q2_fu_o)
-                  << std::dec << "/" << static_cast<int>(top->dbg_rob_q2_complete_o)
-                  << "/" << static_cast<int>(top->dbg_rob_q2_is_store_o)
-                  << "/0x" << std::hex << static_cast<uint32_t>(top->dbg_rob_q2_pc_o)
-                  << " sb(cnt/h/t)=0x" << std::hex
-                  << static_cast<uint32_t>(top->dbg_sb_count_o)
-                  << "/0x" << static_cast<uint32_t>(top->dbg_sb_head_ptr_o)
-                  << "/0x" << static_cast<uint32_t>(top->dbg_sb_tail_ptr_o)
-                  << std::dec
-                  << " sb_head(v/c/a/d/addr)="
-                  << static_cast<int>(top->dbg_sb_head_valid_o) << "/"
-                  << static_cast<int>(top->dbg_sb_head_committed_o) << "/"
-                  << static_cast<int>(top->dbg_sb_head_addr_valid_o) << "/"
-                  << static_cast<int>(top->dbg_sb_head_data_valid_o) << "/0x"
-                  << std::hex << top->dbg_sb_head_addr_o
-                  << std::dec << "\n";
-        std::cout.flags(f);
-      }
+      profile.on_no_commit_cycle(cycles, no_commit_cycles, top);
     }
 
     if (args.progress_interval > 0 && cycles != 0 &&
         (cycles % args.progress_interval == 0)) {
       std::ios::fmtflags f(std::cout.flags());
       std::cout << "[progress] cycle=" << cycles
-                << " commits=" << total_commits
+                << " commits=" << profile.total_commits()
                 << " no_commit=" << no_commit_cycles
-                << " last_pc=0x" << std::hex << last_commit_pc
-                << " last_inst=0x" << last_commit_inst
+                << " last_pc=0x" << std::hex << profile.last_commit_pc()
+                << " last_inst=0x" << profile.last_commit_inst()
                 << " a0=0x" << rf[10]
                 << " rob_head(pc/comp/is_store/fu)=0x" << top->dbg_rob_head_pc_o
                 << "/" << std::dec
@@ -1352,7 +371,7 @@ int main(int argc, char **argv) {
   }
 
   std::cerr << "TIMEOUT after " << args.max_cycles << " cycles\n";
-  emit_profile_summary(args.max_cycles);
+  profile.emit_summary(args.max_cycles, top);
   if (tfp) tfp->close();
   delete top;
   return 1;
