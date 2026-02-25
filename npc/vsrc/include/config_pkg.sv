@@ -21,6 +21,8 @@ package config_pkg;
     int unsigned VLEN;
     // Instruction Length (in bits)
     int unsigned ILEN;
+    // Reset vector
+    int unsigned RESET_VECTOR;
     // Branch predictor mode: 1 enables gshare, 0 uses PC-only index
     int unsigned BPU_USE_GSHARE;
     // Branch predictor mode: 1 enables TAGE conditional predictor
@@ -116,6 +118,8 @@ package config_pkg;
     int unsigned VLEN;
     // Instruction Length (in bits)
     int unsigned ILEN;
+    // Reset vector
+    int unsigned RESET_VECTOR;
     // Physical address Size (in bits)
     int unsigned PLEN;
     // General Purpose Physical Register Size (in bits)

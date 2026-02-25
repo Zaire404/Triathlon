@@ -17,14 +17,28 @@ namespace npc {
 
 struct UnifiedMem {
   std::vector<uint32_t> pmem_words;
+  std::vector<uint32_t> bootrom_words;
   uint64_t rtc_time_us = 0;
   uint64_t clint_mtime = 0;
   uint64_t clint_mtimecmp = ~0ull;
 
-  UnifiedMem() : pmem_words(kPmemSize / sizeof(uint32_t), 0) {}
+  UnifiedMem()
+      : pmem_words(kPmemSize / sizeof(uint32_t), 0),
+        bootrom_words(kBootRomSize / sizeof(uint32_t), 0) {}
 
   static bool in_pmem(uint32_t addr) {
     return addr >= kPmemBase && addr < (kPmemBase + kPmemSize);
+  }
+
+  static bool in_bootrom(uint32_t addr) {
+    return addr >= kBootRomBase && addr < (kBootRomBase + kBootRomSize);
+  }
+
+  static bool access_touches_bootrom(uint32_t addr, uint32_t size) {
+    for (uint32_t i = 0; i < size; i++) {
+      if (in_bootrom(addr + i)) return true;
+    }
+    return false;
   }
 
   static bool is_clint_word(uint32_t aligned) {
@@ -61,6 +75,14 @@ struct UnifiedMem {
       return;
     }
 
+    if (in_bootrom(aligned)) {
+      uint32_t idx = (aligned - kBootRomBase) >> 2;
+      if (idx < bootrom_words.size()) {
+        bootrom_words[idx] = data;
+      }
+      return;
+    }
+
     if (!in_pmem(aligned)) return;
     uint32_t idx = (aligned - kPmemBase) >> 2;
     if (idx < pmem_words.size()) {
@@ -69,7 +91,7 @@ struct UnifiedMem {
   }
 
   void write_byte(uint32_t addr, uint8_t data) {
-    if (!in_pmem(addr)) return;
+    if (!in_pmem(addr) && !in_bootrom(addr)) return;
     uint32_t aligned = addr & ~0x3u;
     uint32_t shift = (addr & 0x3u) * 8u;
     uint32_t mask = 0xffu << shift;
@@ -79,7 +101,9 @@ struct UnifiedMem {
   }
 
   void write_half(uint32_t addr, uint16_t data) {
-    if (!in_pmem(addr) || !in_pmem(addr + 1u)) return;
+    bool lo_ok = in_pmem(addr) || in_bootrom(addr);
+    bool hi_ok = in_pmem(addr + 1u) || in_bootrom(addr + 1u);
+    if (!lo_ok || !hi_ok) return;
     uint32_t aligned = addr & ~0x3u;
     uint32_t shift = (addr & 0x3u) * 8u;
     uint32_t mask = 0xffffu << shift;
@@ -89,6 +113,13 @@ struct UnifiedMem {
   }
 
   void write_store(uint32_t addr, uint32_t data, uint32_t op) {
+    // Boot ROM is executable/read-only after initialization.
+    if ((op == 7u && access_touches_bootrom(addr, 1u)) ||
+        (op == 8u && access_touches_bootrom(addr, 2u)) ||
+        (op == 9u && access_touches_bootrom(addr, 4u))) {
+      return;
+    }
+
     switch (op) {
       case 7u:
         write_byte(addr, static_cast<uint8_t>(data & 0xffu));
@@ -113,6 +144,14 @@ struct UnifiedMem {
     if (aligned == kClintMtimecmpHigh) return static_cast<uint32_t>((clint_mtimecmp >> 32) & 0xFFFFFFFFu);
     if (aligned == kClintMtimeLow) return static_cast<uint32_t>(clint_mtime & 0xFFFFFFFFu);
     if (aligned == kClintMtimeHigh) return static_cast<uint32_t>((clint_mtime >> 32) & 0xFFFFFFFFu);
+
+    if (in_bootrom(aligned)) {
+      uint32_t idx = (aligned - kBootRomBase) >> 2;
+      if (idx < bootrom_words.size()) {
+        return bootrom_words[idx];
+      }
+      return 0u;
+    }
 
     if (!in_pmem(aligned)) return 0u;
     uint32_t idx = (aligned - kPmemBase) >> 2;
@@ -150,6 +189,13 @@ struct UnifiedMem {
         }
       }
       write_word(base + static_cast<uint32_t>(i), word);
+    }
+    return true;
+  }
+
+  bool load_words(const std::vector<uint32_t> &words, uint32_t base) {
+    for (size_t i = 0; i < words.size(); i++) {
+      write_word(base + static_cast<uint32_t>(i) * 4u, words[i]);
     }
     return true;
   }

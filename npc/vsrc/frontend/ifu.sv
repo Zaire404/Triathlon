@@ -304,7 +304,7 @@ module ifu #(
 
   always_ff @(posedge clk) begin
     if (rst) begin
-      pc_reg <= 'h80000000;
+      pc_reg <= Cfg.PLEN'(Cfg.RESET_VECTOR);
       fetch_epoch_q <= '0;
 
       req_pc_fifo_q <= '0;

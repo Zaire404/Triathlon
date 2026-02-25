@@ -1,5 +1,6 @@
 #include "Vtb_triathlon.h"
 #include "args_parser.h"
+#include "boot_loader.h"
 #include "difftest_client.h"
 #include "memory_models.h"
 #include "profile_collector.h"
@@ -28,13 +29,39 @@ int main(int argc, char **argv) {
   if (args.img_path.empty()) {
     std::cerr << "Usage: " << argv[0]
               << " <IMG> [--max-cycles N] [-d REF_SO] [--trace [vcd]] [--commit-trace]"
-              << " [--bru-trace] [--fe-trace] [--stall-trace [N]]"
+              << " [--bru-trace] [--fe-trace] [--stall-trace [N]] [--boot-handoff]"
+              << " [--dtb <path>] [--firmware-load-base <addr>]"
               << " [--progress [N]]\n";
     return 1;
   }
 
   npc::MemSystem mem;
-  if (!mem.mem.load_binary(args.img_path, npc::kPmemBase)) return 1;
+  uint32_t entry_pc = npc::kPmemBase;
+  if (args.boot_handoff) {
+    const uint32_t firmware_base = (args.firmware_load_base != 0)
+                                       ? static_cast<uint32_t>(args.firmware_load_base)
+                                       : npc::kOpenSbiLoadBase;
+    if (firmware_base == entry_pc) {
+      std::ios::fmtflags f(std::cerr.flags());
+      std::cerr << "[boot] firmware-load-base 0x" << std::hex << firmware_base
+                << " overlaps reset trampoline at 0x" << entry_pc
+                << std::dec << "\n";
+      std::cerr.flags(f);
+      return 1;
+    }
+    if (!mem.mem.load_binary(args.img_path, firmware_base)) return 1;
+
+    npc::BootHandoff handoff = npc::make_default_boot_handoff();
+    if (!args.dtb_path.empty()) {
+      if (!mem.mem.load_binary(args.dtb_path, handoff.dtb_addr)) return 1;
+    } else {
+      npc::install_minimal_dtb(mem.mem, handoff.dtb_addr);
+    }
+    npc::install_boot_handoff_stub(mem.mem, firmware_base, handoff, npc::kBootRomBase);
+    npc::install_jump_stub(mem.mem, npc::kBootRomBase, entry_pc);
+  } else {
+    if (!mem.mem.load_binary(args.img_path, npc::kPmemBase)) return 1;
+  }
   mem.icache.mem = &mem.mem;
   mem.dcache.mem = &mem.mem;
 
@@ -57,7 +84,7 @@ int main(int argc, char **argv) {
 
   npc::Difftest difftest;
   if (!args.difftest_so.empty()) {
-    if (!difftest.init(args.difftest_so, mem.mem.pmem_words, npc::kPmemBase)) {
+    if (!difftest.init(args.difftest_so, mem.mem.pmem_words, entry_pc)) {
       if (tfp) tfp->close();
       delete top;
       return 1;

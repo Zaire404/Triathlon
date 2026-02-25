@@ -9,6 +9,9 @@ struct SimArgs {
   std::string img_path;
   uint64_t max_cycles = 600000000;
   std::string difftest_so;
+  bool boot_handoff = false;
+  std::string dtb_path;
+  uint64_t firmware_load_base = 0;
   bool trace = false;
   std::string trace_path = "npc.vcd";
   bool commit_trace = false;

@@ -28,6 +28,34 @@ SimArgs parse_args(int argc, char **argv) {
       }
       continue;
     }
+    if (arg == "--boot-handoff") {
+      args.boot_handoff = true;
+      continue;
+    }
+    if (arg == "--dtb" && i + 1 < argc) {
+      args.dtb_path = argv[i + 1];
+      i++;
+      continue;
+    }
+    if (arg.rfind("--dtb=", 0) == 0) {
+      args.dtb_path = arg.substr(std::string("--dtb=").size());
+      continue;
+    }
+    if (arg == "--firmware-load-base" && i + 1 < argc) {
+      uint64_t v = 0;
+      if (parse_u64(argv[i + 1], v)) {
+        args.firmware_load_base = v;
+        i++;
+        continue;
+      }
+    }
+    if (arg.rfind("--firmware-load-base=", 0) == 0) {
+      uint64_t v = 0;
+      if (parse_u64(arg.substr(std::string("--firmware-load-base=").size()), v)) {
+        args.firmware_load_base = v;
+      }
+      continue;
+    }
     if (arg.rfind("--difftest=", 0) == 0) {
       args.difftest_so = arg.substr(std::string("--difftest=").size());
       continue;

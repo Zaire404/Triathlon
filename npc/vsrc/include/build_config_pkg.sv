@@ -13,6 +13,7 @@ package build_config_pkg;
     cfg.VLEN = user_cfg.VLEN;
     cfg.PLEN = user_cfg.VLEN;  // 假设物理地址大小等于虚拟地址大小
     cfg.ILEN = user_cfg.ILEN;
+    cfg.RESET_VECTOR = (user_cfg.RESET_VECTOR != 0) ? user_cfg.RESET_VECTOR : 32'h80000000;
     cfg.FETCH_WIDTH = user_cfg.INSTR_PER_FETCH * user_cfg.ILEN / 8;
     cfg.BPU_USE_GSHARE = user_cfg.BPU_USE_GSHARE;
     cfg.BPU_USE_TAGE = user_cfg.BPU_USE_TAGE;
