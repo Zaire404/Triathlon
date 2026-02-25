@@ -114,7 +114,7 @@ module sv32_mmu (
       end else begin
         unique case (state_q)
           ST_WALK_L1: begin
-            if (pte_rsp_valid_i && pte_req_ready_i) begin
+            if (pte_rsp_valid_i) begin
               if (pte_invalid(pte)) begin
                 state_q <= ST_IDLE;
                 resp_valid_q <= 1'b1;
@@ -139,7 +139,7 @@ module sv32_mmu (
             end
           end
           ST_WALK_L0: begin
-            if (pte_rsp_valid_i && pte_req_ready_i) begin
+            if (pte_rsp_valid_i) begin
               if (pte_invalid(pte) || !pte_is_leaf(pte) || !pte_perm_ok(pte, req_access_q)) begin
                 state_q <= ST_IDLE;
                 resp_valid_q <= 1'b1;
