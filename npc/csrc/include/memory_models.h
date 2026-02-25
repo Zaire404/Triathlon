@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Vtb_triathlon.h"
+#include "platform_contract.h"
 #include "verilated.h"
 #include "verilated_vcd_c.h"
 
@@ -15,16 +15,11 @@
 
 namespace npc {
 
-inline constexpr uint32_t kPmemBase = 0x80000000u;
-inline constexpr uint32_t kSerialPort = 0xA00003F8u;
-inline constexpr uint32_t kRtcPortLow = 0xA0000048u;
-inline constexpr uint32_t kRtcPortHigh = 0xA000004Cu;
-inline constexpr uint32_t kPmemSize = 0x08000000u;
-inline constexpr uint32_t kSeed4Addr = 0x80003C3Cu;
-
 struct UnifiedMem {
   std::vector<uint32_t> pmem_words;
   uint64_t rtc_time_us = 0;
+  uint64_t clint_mtime = 0;
+  uint64_t clint_mtimecmp = ~0ull;
 
   UnifiedMem() : pmem_words(kPmemSize / sizeof(uint32_t), 0) {}
 
@@ -32,10 +27,40 @@ struct UnifiedMem {
     return addr >= kPmemBase && addr < (kPmemBase + kPmemSize);
   }
 
-  void set_time_us(uint64_t t) { rtc_time_us = t; }
+  static bool is_clint_word(uint32_t aligned) {
+    return aligned == kClintMtimecmpLow || aligned == kClintMtimecmpHigh ||
+           aligned == kClintMtimeLow || aligned == kClintMtimeHigh;
+  }
+
+  void set_time_us(uint64_t t) {
+    rtc_time_us = t;
+    clint_mtime = t;
+  }
+
+  bool timer_irq_pending() const { return clint_mtime >= clint_mtimecmp; }
 
   void write_word(uint32_t addr, uint32_t data) {
     uint32_t aligned = addr & ~0x3u;
+
+    if (aligned == kClintMtimecmpLow) {
+      clint_mtimecmp = (clint_mtimecmp & 0xFFFFFFFF00000000ull) | static_cast<uint64_t>(data);
+      return;
+    }
+    if (aligned == kClintMtimecmpHigh) {
+      clint_mtimecmp = (clint_mtimecmp & 0x00000000FFFFFFFFull) |
+                       (static_cast<uint64_t>(data) << 32);
+      return;
+    }
+    if (aligned == kClintMtimeLow) {
+      clint_mtime = (clint_mtime & 0xFFFFFFFF00000000ull) | static_cast<uint64_t>(data);
+      return;
+    }
+    if (aligned == kClintMtimeHigh) {
+      clint_mtime = (clint_mtime & 0x00000000FFFFFFFFull) |
+                    (static_cast<uint64_t>(data) << 32);
+      return;
+    }
+
     if (!in_pmem(aligned)) return;
     uint32_t idx = (aligned - kPmemBase) >> 2;
     if (idx < pmem_words.size()) {
@@ -83,6 +108,12 @@ struct UnifiedMem {
     uint32_t aligned = addr & ~0x3u;
     if (aligned == kRtcPortLow) return static_cast<uint32_t>(rtc_time_us & 0xFFFFFFFFu);
     if (aligned == kRtcPortHigh) return static_cast<uint32_t>((rtc_time_us >> 32) & 0xFFFFFFFFu);
+
+    if (aligned == kClintMtimecmpLow) return static_cast<uint32_t>(clint_mtimecmp & 0xFFFFFFFFu);
+    if (aligned == kClintMtimecmpHigh) return static_cast<uint32_t>((clint_mtimecmp >> 32) & 0xFFFFFFFFu);
+    if (aligned == kClintMtimeLow) return static_cast<uint32_t>(clint_mtime & 0xFFFFFFFFu);
+    if (aligned == kClintMtimeHigh) return static_cast<uint32_t>((clint_mtime >> 32) & 0xFFFFFFFFu);
+
     if (!in_pmem(aligned)) return 0u;
     uint32_t idx = (aligned - kPmemBase) >> 2;
     if (idx < pmem_words.size()) {
@@ -141,7 +172,8 @@ struct ICacheModel {
     refill_pulse = false;
   }
 
-  void drive(Vtb_triathlon *top) {
+  template <typename Top>
+  void drive(Top *top) {
     top->icache_miss_req_ready_i = 1;
     if (refill_pulse) {
       top->icache_refill_valid_i = 1;
@@ -156,7 +188,8 @@ struct ICacheModel {
     }
   }
 
-  void observe(Vtb_triathlon *top) {
+  template <typename Top>
+  void observe(Top *top) {
     if (!top->rst_ni) {
       reset();
       return;
@@ -204,7 +237,8 @@ struct DCacheModel {
     refill_txn = MissTxn{};
   }
 
-  void drive(Vtb_triathlon *top) {
+  template <typename Top>
+  void drive(Top *top) {
     top->dcache_miss_req_ready_i = 1;
     top->dcache_wb_req_ready_i = 1;
     if (refill_pulse) {
@@ -220,7 +254,8 @@ struct DCacheModel {
     }
   }
 
-  void observe(Vtb_triathlon *top) {
+  template <typename Top>
+  void observe(Top *top) {
     if (!top->rst_ni) {
       reset();
       return;
@@ -271,18 +306,22 @@ struct MemSystem {
     dcache.reset();
   }
 
-  void drive(Vtb_triathlon *top) {
+  template <typename Top>
+  void drive(Top *top) {
+    top->timer_irq_i = mem.timer_irq_pending() ? 1 : 0;
     icache.drive(top);
     dcache.drive(top);
   }
 
-  void observe(Vtb_triathlon *top) {
+  template <typename Top>
+  void observe(Top *top) {
     icache.observe(top);
     dcache.observe(top);
   }
 };
 
-inline void tick(Vtb_triathlon *top, MemSystem &mem, VerilatedVcdC *tfp,
+template <typename Top>
+inline void tick(Top *top, MemSystem &mem, VerilatedVcdC *tfp,
                  vluint64_t &sim_time) {
   mem.drive(top);
   top->clk_i = 0;
@@ -298,7 +337,8 @@ inline void tick(Vtb_triathlon *top, MemSystem &mem, VerilatedVcdC *tfp,
   mem.observe(top);
 }
 
-inline void reset(Vtb_triathlon *top, MemSystem &mem, VerilatedVcdC *tfp,
+template <typename Top>
+inline void reset(Top *top, MemSystem &mem, VerilatedVcdC *tfp,
                   vluint64_t &sim_time) {
   top->rst_ni = 0;
   mem.reset();

@@ -103,6 +103,8 @@ package decode_pkg;
     logic is_ecall;
     logic is_ebreak;
     logic is_mret;
+    logic is_sret;
+    logic is_wfi;
 
     // CSR 相关字段
     logic [11:0] csr_addr;

@@ -7,6 +7,7 @@ module backend #(
 ) (
     input logic clk_i,
     input logic rst_ni,
+    input logic timer_irq_i,
     input logic flush_from_backend,
     input logic frontend_ibuf_valid,
     output logic frontend_ibuf_ready,
@@ -187,6 +188,10 @@ module backend #(
   logic                                           rob_flush_is_branch;
   logic                                           rob_flush_is_jump;
   logic [        Cfg.PLEN-1:0]                    rob_flush_src_pc;
+  logic                                           csr_irq_trap;
+  logic [                 4:0]                    csr_irq_trap_cause;
+  logic [        Cfg.PLEN-1:0]                    csr_irq_trap_pc;
+  logic [        Cfg.PLEN-1:0]                    csr_irq_trap_redirect_pc;
   logic [            FTQ_ID_W-1:0]                bpu_update_ftq_id_dbg;
   logic [       FETCH_EPOCH_W-1:0]                bpu_update_fetch_epoch_dbg;
   logic [         COMMIT_SEL_W-1:0]               bpu_update_sel_idx_dbg;
@@ -197,6 +202,8 @@ module backend #(
   logic [DISPATCH_WIDTH*2-1:0]                    rob_query_ready;
   logic [DISPATCH_WIDTH*2-1:0][     Cfg.XLEN-1:0] rob_query_data;
   logic [   ROB_IDX_WIDTH-1:0]                    rob_head_ptr;
+  logic                                           rob_empty;
+  logic [        Cfg.PLEN-1:0]                    rob_head_pc;
 
   rob #(
       .Cfg(Cfg),
@@ -238,6 +245,10 @@ module backend #(
       .wb_ecause_i     (wb_ecause),
       .wb_is_mispred_i (wb_is_mispred),
       .wb_redirect_pc_i(wb_redirect_pc),
+      .async_exception_valid_i(csr_irq_trap),
+      .async_exception_cause_i(csr_irq_trap_cause),
+      .async_exception_pc_i(csr_irq_trap_pc),
+      .async_exception_redirect_pc_i(csr_irq_trap_redirect_pc),
       .fast_alu_valid_i({alu3_wb_valid, alu2_wb_valid, alu1_wb_valid, alu0_wb_valid}),
       .fast_alu_rob_idx_i({alu3_wb_tag, alu2_wb_tag, alu1_wb_tag, alu0_wb_tag}),
       .fast_alu_data_i({alu3_wb_data, alu2_wb_data, alu1_wb_data, alu0_wb_data}),
@@ -278,9 +289,10 @@ module backend #(
       .query_ready_o  (rob_query_ready),
       .query_data_o   (rob_query_data),
 
-      .rob_empty_o(),
+      .rob_empty_o(rob_empty),
       .rob_full_o (),
-      .rob_head_o (rob_head_ptr)
+      .rob_head_o (rob_head_ptr),
+      .rob_head_pc_o(rob_head_pc)
   );
 
   retire_redirect_ctrl #(
@@ -1490,6 +1502,30 @@ module backend #(
   logic [Cfg.XLEN-1:0] csr_wb_data;
   logic csr_wb_exception;
   logic [4:0] csr_wb_ecause;
+  logic csr_wb_is_mispred;
+  logic [Cfg.PLEN-1:0] csr_wb_redirect_pc;
+  logic csr_irq_inject;
+  logic csr_exec_valid;
+  decode_pkg::uop_t csr_exec_uop;
+  logic [Cfg.XLEN-1:0] csr_exec_v1;
+  logic [ROB_IDX_WIDTH-1:0] csr_exec_dst;
+  logic [Cfg.PLEN-1:0] csr_exec_trap_pc;
+
+  always_comb begin
+    csr_irq_inject = timer_irq_i && !rob_empty && !csr_en;
+    csr_exec_valid = csr_en || csr_irq_inject;
+    csr_exec_uop = csr_uop;
+    csr_exec_v1 = csr_v1;
+    csr_exec_dst = csr_dst;
+    csr_exec_trap_pc = csr_uop.pc;
+
+    if (csr_irq_inject) begin
+      csr_exec_uop = '0;
+      csr_exec_v1 = '0;
+      csr_exec_dst = rob_head_ptr;
+      csr_exec_trap_pc = rob_head_pc;
+    end
+  end
 
   execute_csr #(
       .Cfg  (Cfg),
@@ -1498,16 +1534,25 @@ module backend #(
   ) u_csr (
       .clk_i      (clk_i),
       .rst_ni     (rst_ni),
-      .csr_valid_i(csr_en),
-      .uop_i      (csr_uop),
-      .rs1_data_i (csr_v1),
-      .rob_tag_i  (csr_dst),
+      .csr_valid_i(csr_exec_valid),
+      .uop_i      (csr_exec_uop),
+      .rs1_data_i (csr_exec_v1),
+      .rob_tag_i  (csr_exec_dst),
+      .interrupt_inject_i(csr_irq_inject),
+      .timer_irq_i(timer_irq_i),
+      .trap_pc_i(csr_exec_trap_pc),
 
       .csr_valid_o  (csr_wb_valid),
       .csr_rob_tag_o(csr_wb_tag),
       .csr_result_o (csr_wb_data),
       .csr_exception_o(csr_wb_exception),
-      .csr_ecause_o   (csr_wb_ecause)
+      .csr_ecause_o   (csr_wb_ecause),
+      .csr_is_mispred_o(csr_wb_is_mispred),
+      .csr_redirect_pc_o(csr_wb_redirect_pc),
+      .irq_trap_o(csr_irq_trap),
+      .irq_trap_cause_o(csr_irq_trap_cause),
+      .irq_trap_pc_o(csr_irq_trap_pc),
+      .irq_trap_redirect_pc_o(csr_irq_trap_redirect_pc)
   );
 
   // =========================================================
@@ -1574,6 +1619,8 @@ module backend #(
     fu_rob_idx[6]     = csr_wb_tag;
     fu_exception[6]   = csr_wb_exception;
     fu_ecause[6]      = csr_wb_ecause;
+    fu_is_mispred[6]  = csr_wb_is_mispred;
+    fu_redirect_pc[6] = csr_wb_redirect_pc;
   end
 
   logic [WB_WIDTH-1:0]                    wb_raw_valid;

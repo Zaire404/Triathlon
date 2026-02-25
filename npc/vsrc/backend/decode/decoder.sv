@@ -58,10 +58,10 @@ module decoder #(
   localparam logic [6:0] OPCODE_OP = 7'b0110011;
   localparam logic [6:0] OPCODE_OP_32 = 7'b0111011;  // RV64I W-type
   localparam logic [6:0] OPCODE_MISC_MEM = 7'b0001111;  // FENCE, FENCE.I
+  localparam logic [6:0] OPCODE_AMO = 7'b0101111;  // A extension
   localparam logic [6:0] OPCODE_SYSTEM = 7'b1110011;  // ECALL/EBREAK/MRET/CSR
 
   // 将来扩展时可以在这里预留更多 opcode：
-  // localparam logic [6:0] OPCODE_AMO       = 7'b0101111; // A extension
   // localparam logic [6:0] OPCODE_LOAD_FP   = 7'b0000111; // F/D
   // localparam logic [6:0] OPCODE_STORE_FP  = 7'b0100111; // F/D
   // localparam logic [6:0] OPCODE_VECTOR    = 7'b1010111; // V extension
@@ -166,6 +166,7 @@ module decoder #(
     logic [6:0] opcode_field;
     logic [2:0] funct3_field;
     logic [6:0] funct7_field;
+    logic [4:0] funct5_field;
 
     begin
       // Bind raw bits to union and derive typed views
@@ -180,6 +181,7 @@ module decoder #(
       opcode_field          = instr_rtype.opcode;
       funct3_field          = instr_rtype.funct3;
       funct7_field          = instr_rtype.funct7;
+      funct5_field          = instr_atype.funct5;
 
       // Default initialization
       uop_decoded.valid     = 1'b1;
@@ -212,6 +214,8 @@ module decoder #(
       uop_decoded.is_ecall  = 1'b0;
       uop_decoded.is_ebreak = 1'b0;
       uop_decoded.is_mret   = 1'b0;
+      uop_decoded.is_sret   = 1'b0;
+      uop_decoded.is_wfi    = 1'b0;
       uop_decoded.csr_addr  = 12'h000;
       uop_decoded.csr_op    = CSR_RW;
 
@@ -459,12 +463,60 @@ module decoder #(
         end
 
         // -------------------------
+        // Atomic memory operations (A extension, RV32A word form)
+        // -------------------------
+        OPCODE_AMO: begin
+          uop_decoded.fu      = FU_LSU;
+          uop_decoded.has_rs1 = 1'b1;
+          uop_decoded.has_rd  = (instr_rtype.rd != '0);
+
+          if (funct3_field != 3'b010) begin
+            uop_decoded.illegal = 1'b1;
+          end else begin
+            unique case (funct5_field)
+              5'b00010: begin  // LR.W
+                if (instr_atype.rs2 != 5'b0) begin
+                  uop_decoded.illegal = 1'b1;
+                end else begin
+                  uop_decoded.rs2     = '0;
+                  uop_decoded.has_rs2 = 1'b0;
+                  uop_decoded.is_load = 1'b1;
+                  uop_decoded.lsu_op  = LSU_LW;
+                end
+              end
+
+              5'b00011: begin  // SC.W
+                uop_decoded.has_rs2  = 1'b1;
+                uop_decoded.is_store = 1'b1;
+                uop_decoded.lsu_op   = LSU_SW;
+              end
+
+              // AMOSWAP/ADD/XOR/AND/OR/MIN/MAX/MINU/MAXU
+              5'b00001, 5'b00000, 5'b00100, 5'b01100, 5'b01000, 5'b10000,
+              5'b10100, 5'b11000, 5'b11100: begin
+                uop_decoded.has_rs2  = 1'b1;
+                uop_decoded.is_load  = 1'b1;
+                uop_decoded.is_store = 1'b1;
+                uop_decoded.lsu_op   = LSU_SW;
+              end
+
+              default: begin
+                uop_decoded.illegal = 1'b1;
+              end
+            endcase
+          end
+        end
+
+        // -------------------------
         // Fence / Fence.I
         // -------------------------
         OPCODE_MISC_MEM: begin
           uop_decoded.fu       = FU_ALU;
           uop_decoded.is_fence = 1'b1;
-          // TODO: 更精细的 fence 语义，如果你的 memory system 需要
+          // RV32I: FENCE(funct3=000), Zifencei: FENCE.I(funct3=001)
+          if (!(funct3_field inside {3'b000, 3'b001})) begin
+            uop_decoded.illegal = 1'b1;
+          end
         end
 
         // -------------------------
@@ -474,14 +526,18 @@ module decoder #(
         OPCODE_SYSTEM: begin
           unique case (funct3_field)
             3'b000: begin
-              // 当前后端未实现异常/特权处理：将系统指令降级为 ALU NOP，
-              // 以保证 ECALL/EBREAK/MRET 可以正常退休（由软件/仿真层处理）。
-              uop_decoded.fu     = FU_ALU;
-              uop_decoded.alu_op = ALU_NOP;
+              // Privileged SYSTEM instructions are handled by CSR FU.
+              uop_decoded.fu     = FU_CSR;
               uop_decoded.is_csr = 1'b0;
+              uop_decoded.rs2    = '0;
+              uop_decoded.has_rs2 = 1'b0;
+              uop_decoded.has_rs1 = 1'b0;
+              uop_decoded.has_rd  = 1'b0;
               if (instr_itype.imm == 12'h000) uop_decoded.is_ecall = 1'b1;
               else if (instr_itype.imm == 12'h001) uop_decoded.is_ebreak = 1'b1;
               else if (instr_itype.imm == 12'h302) uop_decoded.is_mret = 1'b1;
+              else if (instr_itype.imm == 12'h102) uop_decoded.is_sret = 1'b1;
+              else if (instr_itype.imm == 12'h105) uop_decoded.is_wfi = 1'b1;
               else uop_decoded.illegal = 1'b1;
             end
 

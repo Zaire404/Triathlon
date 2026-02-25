@@ -124,6 +124,7 @@ struct MemModel {
   }
 
   void drive(Vtb_backend *top) {
+    top->timer_irq_i = 0;
     top->dcache_miss_req_ready_i = block_miss_req ? 0 : 1;
     top->dcache_wb_req_ready_i = 1;
 
@@ -212,6 +213,7 @@ static bool tick_sample_frontend_ready(Vtb_backend *top, MemModel &mem) {
 
 static void reset(Vtb_backend *top, MemModel &mem) {
   top->rst_ni = 0;
+  top->timer_irq_i = 0;
   top->flush_from_backend = 0;
   top->frontend_ibuf_valid = 0;
   top->frontend_ibuf_pc = 0;

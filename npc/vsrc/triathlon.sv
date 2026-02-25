@@ -9,6 +9,8 @@ module triathlon #(
     input logic clk_i,
     // Asynchronous reset active low
     input logic rst_ni,
+    // Platform interrupt inputs
+    input logic timer_irq_i,
 
     // -----------------------------
     // I-Cache miss/refill interface
@@ -132,6 +134,7 @@ module triathlon #(
   ) u_backend (
       .clk_i,
       .rst_ni,
+      .timer_irq_i(timer_irq_i),
       .flush_from_backend(1'b0),
 
       .frontend_ibuf_valid (fe_be_bus.valid),

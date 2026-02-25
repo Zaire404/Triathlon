@@ -13,6 +13,7 @@ module tb_triathlon #(
 ) (
     input logic clk_i,
     input logic rst_ni,
+    input logic timer_irq_i,
 
     // I-Cache miss/refill interface
     output logic                                  icache_miss_req_valid_o,
@@ -274,6 +275,7 @@ module tb_triathlon #(
   ) dut (
       .clk_i,
       .rst_ni,
+      .timer_irq_i(timer_irq_i),
 
       .icache_miss_req_valid_o,
       .icache_miss_req_ready_i,

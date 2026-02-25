@@ -18,12 +18,7 @@
 
 namespace {
 
-constexpr uint32_t kPmemBase = 0x80000000u;
 constexpr uint32_t kEbreakInsn = 0x00100073u;
-constexpr uint32_t kSerialPort = 0xA00003F8u;
-constexpr uint32_t kSeed4Addr = 0x80003C3Cu;
-
-
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -39,7 +34,7 @@ int main(int argc, char **argv) {
   }
 
   npc::MemSystem mem;
-  if (!mem.mem.load_binary(args.img_path, kPmemBase)) return 1;
+  if (!mem.mem.load_binary(args.img_path, npc::kPmemBase)) return 1;
   mem.icache.mem = &mem.mem;
   mem.dcache.mem = &mem.mem;
 
@@ -62,7 +57,7 @@ int main(int argc, char **argv) {
 
   npc::Difftest difftest;
   if (!args.difftest_so.empty()) {
-    if (!difftest.init(args.difftest_so, mem.mem.pmem_words, kPmemBase)) {
+    if (!difftest.init(args.difftest_so, mem.mem.pmem_words, npc::kPmemBase)) {
       if (tfp) tfp->close();
       delete top;
       return 1;
@@ -106,12 +101,12 @@ int main(int argc, char **argv) {
                   << " data=0x" << data
                   << std::dec
                   << " op=" << op
-                  << ((addr == kSeed4Addr) ? " <seed4>" : "")
+                  << ((addr == npc::kSeed4Addr) ? " <seed4>" : "")
                   << "\n";
         std::cout.flags(f);
       }
       // avoid double printing when difftest also prints the log
-      if (addr == kSerialPort && !difftest.enabled()) {
+      if (addr == npc::kSerialPort && !difftest.enabled()) {
         uint8_t ch = static_cast<uint8_t>(data & 0xFFu);
         std::cout << static_cast<char>(ch) << std::flush;
       }
@@ -122,7 +117,7 @@ int main(int argc, char **argv) {
       std::cout << "[ldreq ] cycle=" << cycles
                 << " addr=0x" << std::hex << top->dbg_lsu_ld_req_addr_o
                 << " tag=0x" << static_cast<uint32_t>(top->dbg_lsu_inflight_tag_o)
-                << ((top->dbg_lsu_ld_req_addr_o == kSeed4Addr) ? " <seed4>" : "")
+                << ((top->dbg_lsu_ld_req_addr_o == npc::kSeed4Addr) ? " <seed4>" : "")
                 << std::dec << "\n";
       std::cout.flags(f);
     }
@@ -135,7 +130,7 @@ int main(int argc, char **argv) {
                 << " data=0x" << top->dbg_lsu_ld_rsp_data_o
                 << std::dec
                 << " err=" << static_cast<int>(top->dbg_lsu_ld_rsp_err_o)
-                << ((top->dbg_lsu_inflight_addr_o == kSeed4Addr) ? " <seed4>" : "")
+                << ((top->dbg_lsu_inflight_addr_o == npc::kSeed4Addr) ? " <seed4>" : "")
                 << "\n";
       std::cout.flags(f);
     }

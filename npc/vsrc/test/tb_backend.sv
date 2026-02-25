@@ -6,6 +6,7 @@ import global_config_pkg::*;
 module tb_backend (
     input logic clk_i,
     input logic rst_ni,
+    input logic timer_irq_i,
     input logic flush_from_backend,
 
     // Frontend -> backend
@@ -87,6 +88,7 @@ module tb_backend (
   ) dut (
       .clk_i,
       .rst_ni,
+      .timer_irq_i(timer_irq_i),
       .flush_from_backend,
       .frontend_ibuf_valid,
       .frontend_ibuf_ready,

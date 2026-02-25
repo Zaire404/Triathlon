@@ -54,6 +54,10 @@ module rob #(
     input logic [WB_WIDTH-1:0][4:0] wb_ecause_i,
     input logic [WB_WIDTH-1:0] wb_is_mispred_i,
     input logic [WB_WIDTH-1:0][Cfg.PLEN-1:0] wb_redirect_pc_i,
+    input logic async_exception_valid_i,
+    input logic [4:0] async_exception_cause_i,
+    input logic [Cfg.PLEN-1:0] async_exception_pc_i,
+    input logic [Cfg.PLEN-1:0] async_exception_redirect_pc_i,
     // Fast-visible path for ALU completion (combinational assist only).
     input logic [DISPATCH_WIDTH-1:0] fast_alu_valid_i,
     input logic [DISPATCH_WIDTH-1:0][$clog2(ROB_DEPTH)-1:0] fast_alu_rob_idx_i,
@@ -111,7 +115,8 @@ module rob #(
 
     output logic rob_empty_o,
     output logic rob_full_o,
-    output logic [$clog2(ROB_DEPTH)-1:0] rob_head_o
+    output logic [$clog2(ROB_DEPTH)-1:0] rob_head_o,
+    output logic [Cfg.PLEN-1:0] rob_head_pc_o
 );
   localparam int unsigned PTR_WIDTH = $clog2(ROB_DEPTH);
 
@@ -241,6 +246,17 @@ module rob #(
       st_mask = '0;
       ld_mask = '0;
       commit_permitted_mask = '0;
+    end else if (async_exception_valid_i) begin
+      stop_commit = 1'b1;
+      flush_o = 1'b1;
+      flush_pc_o = async_exception_redirect_pc_i;
+      flush_cause_o = async_exception_cause_i;
+      flush_is_exception_o = 1'b1;
+      flush_src_pc_o = async_exception_pc_i;
+      br_mask = '0;
+      st_mask = '0;
+      ld_mask = '0;
+      commit_permitted_mask = '0;
     end else begin
       // --- 1. Resource Check ---
       br_mask = '1;
@@ -275,7 +291,9 @@ module rob #(
             if (rob_ram[commit_rob_index_o[i]].exception) begin
               stop_commit   = 1'b1;
               flush_o       = 1'b1;
-              flush_pc_o    = rob_ram[commit_rob_index_o[i]].pc;
+              flush_pc_o    = (head_fast_redirect_pc[i] != '0) ?
+                              head_fast_redirect_pc[i] :
+                              rob_ram[commit_rob_index_o[i]].pc;
               flush_cause_o = rob_ram[commit_rob_index_o[i]].ecause;
               flush_is_exception_o = 1'b1;
               flush_is_branch_o = rob_ram[commit_rob_index_o[i]].is_branch;
@@ -381,6 +399,7 @@ module rob #(
   assign head_ptr_d = head_ptr_q + PTR_WIDTH'(commit_cnt);
 
   assign rob_head_o = head_ptr_q;
+  assign rob_head_pc_o = rob_ram[head_ptr_q].pc;
   assign count_d    = count_q + dispatch_cnt - commit_cnt;
 
   // ... Sequential Logic ...
