@@ -21,6 +21,16 @@ struct UnifiedMem {
   uint64_t rtc_time_us = 0;
   uint64_t clint_mtime = 0;
   uint64_t clint_mtimecmp = ~0ull;
+  bool uart_stdout_enabled = true;
+  uint8_t uart_ier = 0;
+  uint8_t uart_fcr = 0;
+  uint8_t uart_lcr = 0;
+  uint8_t uart_mcr = 0;
+  uint8_t uart_lsr = 0x60;  // THR/TEMT ready
+  uint8_t uart_msr = 0;
+  uint8_t uart_scr = 0;
+  uint8_t uart_dll = 0;
+  uint8_t uart_dlm = 0;
 
   UnifiedMem()
       : pmem_words(kPmemSize / sizeof(uint32_t), 0),
@@ -34,11 +44,78 @@ struct UnifiedMem {
     return addr >= kBootRomBase && addr < (kBootRomBase + kBootRomSize);
   }
 
+  static bool in_uart(uint32_t addr) {
+    return addr >= kUartTx && addr < (kUartTx + 8u);
+  }
+
   static bool access_touches_bootrom(uint32_t addr, uint32_t size) {
     for (uint32_t i = 0; i < size; i++) {
       if (in_bootrom(addr + i)) return true;
     }
     return false;
+  }
+
+  bool uart_dlab() const { return (uart_lcr & 0x80u) != 0; }
+
+  uint8_t uart_peek8(uint32_t addr) const {
+    uint32_t off = addr - kUartTx;
+    switch (off) {
+      case 0:
+        return uart_dlab() ? uart_dll : 0u;  // no RX FIFO model yet
+      case 1:
+        return uart_dlab() ? uart_dlm : uart_ier;
+      case 2: {
+        uint8_t iir = 0x01u;  // no pending interrupt
+        if ((uart_fcr & 0x01u) != 0) iir |= 0xC0u;
+        return iir;
+      }
+      case 3:
+        return uart_lcr;
+      case 4:
+        return uart_mcr;
+      case 5:
+        return static_cast<uint8_t>(uart_lsr | 0x60u);
+      case 6:
+        return uart_msr;
+      case 7:
+        return uart_scr;
+      default:
+        return 0xffu;
+    }
+  }
+
+  void uart_write8(uint32_t addr, uint8_t data) {
+    uint32_t off = addr - kUartTx;
+    switch (off) {
+      case 0:
+        if (uart_dlab()) {
+          uart_dll = data;
+        } else if (uart_stdout_enabled) {
+          std::cout << static_cast<char>(data) << std::flush;
+        }
+        break;
+      case 1:
+        if (uart_dlab()) {
+          uart_dlm = data;
+        } else {
+          uart_ier = data;
+        }
+        break;
+      case 2:
+        uart_fcr = data;
+        break;
+      case 3:
+        uart_lcr = data;
+        break;
+      case 4:
+        uart_mcr = data;
+        break;
+      case 7:
+        uart_scr = data;
+        break;
+      default:
+        break;
+    }
   }
 
   static bool is_clint_word(uint32_t aligned) {
@@ -75,6 +152,13 @@ struct UnifiedMem {
       return;
     }
 
+    if (in_uart(aligned)) {
+      for (uint32_t i = 0; i < 4; i++) {
+        uart_write8(aligned + i, static_cast<uint8_t>((data >> (i * 8u)) & 0xffu));
+      }
+      return;
+    }
+
     if (in_bootrom(aligned)) {
       uint32_t idx = (aligned - kBootRomBase) >> 2;
       if (idx < bootrom_words.size()) {
@@ -91,6 +175,10 @@ struct UnifiedMem {
   }
 
   void write_byte(uint32_t addr, uint8_t data) {
+    if (in_uart(addr)) {
+      uart_write8(addr, data);
+      return;
+    }
     if (!in_pmem(addr) && !in_bootrom(addr)) return;
     uint32_t aligned = addr & ~0x3u;
     uint32_t shift = (addr & 0x3u) * 8u;
@@ -101,9 +189,14 @@ struct UnifiedMem {
   }
 
   void write_half(uint32_t addr, uint16_t data) {
-    bool lo_ok = in_pmem(addr) || in_bootrom(addr);
-    bool hi_ok = in_pmem(addr + 1u) || in_bootrom(addr + 1u);
+    bool lo_ok = in_pmem(addr) || in_bootrom(addr) || in_uart(addr);
+    bool hi_ok = in_pmem(addr + 1u) || in_bootrom(addr + 1u) || in_uart(addr + 1u);
     if (!lo_ok || !hi_ok) return;
+    if (in_uart(addr) || in_uart(addr + 1u)) {
+      write_byte(addr, static_cast<uint8_t>(data & 0xffu));
+      write_byte(addr + 1u, static_cast<uint8_t>((data >> 8) & 0xffu));
+      return;
+    }
     uint32_t aligned = addr & ~0x3u;
     uint32_t shift = (addr & 0x3u) * 8u;
     uint32_t mask = 0xffffu << shift;
@@ -144,6 +237,14 @@ struct UnifiedMem {
     if (aligned == kClintMtimecmpHigh) return static_cast<uint32_t>((clint_mtimecmp >> 32) & 0xFFFFFFFFu);
     if (aligned == kClintMtimeLow) return static_cast<uint32_t>(clint_mtime & 0xFFFFFFFFu);
     if (aligned == kClintMtimeHigh) return static_cast<uint32_t>((clint_mtime >> 32) & 0xFFFFFFFFu);
+
+    if (in_uart(aligned)) {
+      uint32_t value = 0u;
+      for (uint32_t i = 0; i < 4; i++) {
+        value |= static_cast<uint32_t>(uart_peek8(aligned + i)) << (i * 8u);
+      }
+      return value;
+    }
 
     if (in_bootrom(aligned)) {
       uint32_t idx = (aligned - kBootRomBase) >> 2;

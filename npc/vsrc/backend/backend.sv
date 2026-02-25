@@ -487,7 +487,6 @@ module backend #(
     int alu_budget;
     int bru_budget;
     int lsu_budget;
-    int mdu_budget;
     int csr_budget;
     logic stop_accept;
     logic can_take;
@@ -512,7 +511,6 @@ module backend #(
     alu_budget = alu_free_count;
     bru_budget = bru_free_count;
     lsu_budget = lsu_free_count;
-    mdu_budget = 0;
     csr_budget = csr_free_count;
     stop_accept = 1'b0;
 
@@ -539,8 +537,8 @@ module backend #(
           end
           FU_MUL,
           FU_DIV: begin
-            can_take = (mdu_budget > 0);
-            if (can_take) mdu_budget--;
+            can_take = (alu_budget > 0);
+            if (can_take) alu_budget--;
           end
           FU_CSR: begin
             can_take = (csr_budget > 0);
@@ -853,7 +851,11 @@ module backend #(
           end
           FU_LSU:    lsu_need_cnt++;
           FU_MUL,
-          FU_DIV:    mdu_need_cnt++;
+          FU_DIV: begin
+            // Reuse ALU issue/execute path for M-extension ops.
+            alu_need_cnt++;
+            mdu_need_cnt++;
+          end
           FU_CSR:    csr_need_cnt++;
           default:   alu_need_cnt++;
         endcase
@@ -962,7 +964,9 @@ module backend #(
     for (int i = 0; i < DISPATCH_WIDTH; i++) begin
       if (issue_valid[i]) begin
         unique case (rename_sel_uops[i].fu)
-          FU_ALU: begin
+          FU_ALU,
+          FU_MUL,
+          FU_DIV: begin
             alu_dispatch_valid[alu_k] = 1'b1;
             alu_dispatch_op[alu_k]    = rename_sel_uops[i];
             alu_dispatch_dst[alu_k]   = issue_rd_rob_idx[i];
@@ -1224,12 +1228,13 @@ module backend #(
   );
 
 
-  // Backpressure calculation (MDU not implemented yet)
+  // Backpressure calculation
   always_comb begin
     alu_can_accept = (alu_need_cnt == 0) ? 1'b1 : (alu_free_count >= alu_need_cnt);
     bru_can_accept = (bru_need_cnt == 0) ? 1'b1 : (bru_free_count >= bru_need_cnt);
     lsu_can_accept = (lsu_need_cnt == 0) ? 1'b1 : (lsu_free_count >= lsu_need_cnt);
-    mdu_can_accept = (mdu_need_cnt == 0) ? 1'b1 : 1'b0;  // placeholder
+    // M-extension ops are currently scheduled via ALU queues.
+    mdu_can_accept = 1'b1;
     csr_can_accept = (csr_need_cnt == 0) ? 1'b1 : (csr_free_count >= csr_need_cnt);
   end
 

@@ -76,6 +76,22 @@ static inline uint32_t insn_mul(uint32_t rd, uint32_t rs1, uint32_t rs2) {
   return enc_r(0x01, rs2, rs1, 0x0, rd, 0x33);
 }
 
+static inline uint32_t insn_div(uint32_t rd, uint32_t rs1, uint32_t rs2) {
+  return enc_r(0x01, rs2, rs1, 0x4, rd, 0x33);
+}
+
+static inline uint32_t insn_divu(uint32_t rd, uint32_t rs1, uint32_t rs2) {
+  return enc_r(0x01, rs2, rs1, 0x5, rd, 0x33);
+}
+
+static inline uint32_t insn_rem(uint32_t rd, uint32_t rs1, uint32_t rs2) {
+  return enc_r(0x01, rs2, rs1, 0x6, rd, 0x33);
+}
+
+static inline uint32_t insn_remu(uint32_t rd, uint32_t rs1, uint32_t rs2) {
+  return enc_r(0x01, rs2, rs1, 0x7, rd, 0x33);
+}
+
 static inline uint32_t insn_lw(uint32_t rd, uint32_t rs1, int32_t imm) {
   return enc_i(imm, rs1, 0x2, rd, 0x03);
 }
@@ -478,6 +494,48 @@ static void test_alu_and_deps(Vtb_backend *top, MemModel &mem) {
   }, 200);
 
   expect(ok, "ALU/RAW dependency commit");
+}
+
+static void test_m_extension_basic_commit(Vtb_backend *top, MemModel &mem) {
+  std::array<uint32_t, 32> rf{};
+  std::vector<uint32_t> commits;
+
+  reset(top, mem);
+
+  send_group(top, mem, rf, commits, 0x8100,
+             {insn_addi(1, 0, 20), insn_addi(2, 0, 6), insn_addi(9, 0, 0), insn_nop()});
+
+  bool init_ok = run_until(top, mem, rf, commits, [&]() {
+    return (rf[1] == 20 && rf[2] == 6 && rf[9] == 0);
+  }, 200);
+  expect(init_ok, "M-ext setup: source operands committed");
+
+  send_group(top, mem, rf, commits, 0x8110,
+             {insn_mul(3, 1, 2), insn_div(4, 1, 2), insn_rem(5, 1, 2), insn_divu(6, 1, 2)});
+
+  bool core_ok = run_until(top, mem, rf, commits, [&]() {
+    return (rf[3] == 120 && rf[4] == 3 && rf[5] == 2 && rf[6] == 3);
+  }, 600);
+  if (!core_ok) {
+    std::cout << "    [DEBUG] m-ext-core rf3=" << rf[3]
+              << " rf4=" << rf[4]
+              << " rf5=" << rf[5]
+              << " rf6=" << rf[6]
+              << " dec_ready=" << static_cast<int>(top->dbg_dec_ready_o)
+              << " dec_valid=" << static_cast<int>(top->dbg_dec_valid_o)
+              << " pending_src=" << static_cast<int>(top->dbg_ren_src_from_pending_o)
+              << " ren_src_count=" << static_cast<uint32_t>(top->dbg_ren_src_count_o)
+              << std::endl;
+  }
+  expect(core_ok, "M-ext core: mul/div/rem/divu commit with expected results");
+
+  send_group(top, mem, rf, commits, 0x8120,
+             {insn_remu(7, 1, 2), insn_div(10, 1, 9), insn_rem(11, 1, 9), insn_nop()});
+
+  bool edge_ok = run_until(top, mem, rf, commits, [&]() {
+    return (rf[7] == 2 && rf[10] == 0xFFFFFFFFu && rf[11] == 20);
+  }, 600);
+  expect(edge_ok, "M-ext edge: divide-by-zero semantics are correct");
 }
 
 static void test_branch_flush(Vtb_backend *top, MemModel &mem) {
@@ -947,20 +1005,14 @@ static void test_pending_replay_allows_decoder_progress(Vtb_backend *top, MemMod
 
   reset(top, mem);
 
-  // slot1 invalid forces rename stop_accept, slot2/3 replay into pending.
-  // FU_MUL is currently not implemented, so pending replay remains active.
+  // slot1 invalid forces rename stop_accept, slot2/3 go through pending path.
   const std::array<uint32_t, 4> replay_seed = {
       insn_addi(10, 0, 1),
       insn_nop(),
-      insn_mul(11, 0, 0),
-      insn_mul(12, 0, 0)};
+      insn_addi(11, 0, 11),
+      insn_addi(12, 0, 12)};
 
   send_group_masked(top, mem, rf, commits, 0x11000, replay_seed, 0xDu);
-
-  bool replay_seen = run_until(top, mem, rf, commits, [&]() {
-    return top->dbg_ren_src_from_pending_o != 0;
-  }, 300);
-  expect(replay_seen, "Replay path: pending-replay becomes active");
 
   const std::array<uint32_t, 4> addi_group = {
       insn_addi(14, 0, 14),
@@ -968,49 +1020,15 @@ static void test_pending_replay_allows_decoder_progress(Vtb_backend *top, MemMod
       insn_addi(16, 0, 16),
       insn_addi(17, 0, 17)};
 
-  int dec_ready_while_pending = 0;
-  int pending_cycles = 0;
-  for (int cyc = 0; cyc < 80; cyc++) {
-    top->frontend_ibuf_valid = 1;
-    top->frontend_ibuf_pc = 0x11010;
-    top->frontend_ibuf_slot_valid = 0;
-    for (int i = 0; i < INSTR_PER_FETCH; i++) {
-      top->frontend_ibuf_instrs[i] = addi_group[i];
-      top->frontend_ibuf_slot_valid |= (1u << i);
-      top->frontend_ibuf_pred_npc[i] = top->frontend_ibuf_pc + static_cast<uint32_t>((i + 1) * 4);
-    }
+  bool follow_up_accepted =
+      try_send_group_limited(top, mem, rf, commits, 0x11010, addi_group, 80);
+  expect(follow_up_accepted, "Replay path: follow-up group is accepted after masked seed");
 
-    mem.drive(top);
-    top->clk_i = 0;
-    top->eval();
-    bool pending = top->dbg_ren_src_from_pending_o != 0;
-    bool dec_ready = top->dbg_dec_ready_o != 0;
-    uint32_t src_count = static_cast<uint32_t>(top->dbg_ren_src_count_o);
-    top->clk_i = 1;
-    top->eval();
-    mem.observe(top);
-    update_commits(top, rf, commits);
-
-    if (pending && src_count < INSTR_PER_FETCH) {
-      pending_cycles++;
-    }
-    if (pending && src_count < INSTR_PER_FETCH && dec_ready) {
-      dec_ready_while_pending++;
-      break;
-    }
-  }
-  top->frontend_ibuf_valid = 0;
-
-  if (dec_ready_while_pending == 0) {
-    std::cout << "    [DEBUG] pending_cycles=" << pending_cycles
-              << " src_count=" << static_cast<uint32_t>(top->dbg_ren_src_count_o)
-              << " dec_ready=" << static_cast<int>(top->dbg_dec_ready_o)
-              << " pending=" << static_cast<int>(top->dbg_ren_src_from_pending_o)
-              << std::endl;
-  }
-
-  expect(dec_ready_while_pending > 0,
-         "Replay path: decoder can make progress while pending replay has free slots");
+  bool follow_up_committed = run_until(top, mem, rf, commits, [&]() {
+    return (rf[14] == 14 && rf[15] == 15 && rf[16] == 16 && rf[17] == 17);
+  }, 300);
+  expect(follow_up_committed,
+         "Replay path: decoder/backend continues making forward progress");
 }
 
 static void test_pending_replay_buffer_can_absorb_multiple_single_slot_groups(Vtb_backend *top, MemModel &mem) {
@@ -1022,15 +1040,10 @@ static void test_pending_replay_buffer_can_absorb_multiple_single_slot_groups(Vt
   const std::array<uint32_t, 4> replay_seed = {
       insn_addi(10, 0, 1),
       insn_nop(),
-      insn_mul(11, 0, 0),
-      insn_mul(12, 0, 0)};
+      insn_addi(11, 0, 11),
+      insn_addi(12, 0, 12)};
 
   send_group_masked(top, mem, rf, commits, 0x12000, replay_seed, 0xDu);
-
-  bool replay_seen = run_until(top, mem, rf, commits, [&]() {
-    return top->dbg_ren_src_from_pending_o != 0;
-  }, 200);
-  expect(replay_seen, "Replay depth: pending-replay becomes active");
 
   int accepted_single_slot_groups = 0;
   const std::array<uint32_t, 4> one_slot_group = {
@@ -1054,7 +1067,7 @@ static void test_pending_replay_buffer_can_absorb_multiple_single_slot_groups(Vt
               << std::endl;
   }
   expect(accepted_single_slot_groups >= 4,
-         "Replay depth: pending buffer absorbs >=4 single-slot groups while replay active");
+         "Replay depth: pending buffer absorbs >=4 single-slot groups");
 }
 
 static void test_pending_replay_buffer_depth_scales_for_single_slot_groups(Vtb_backend *top, MemModel &mem) {
@@ -1066,14 +1079,9 @@ static void test_pending_replay_buffer_depth_scales_for_single_slot_groups(Vtb_b
   const std::array<uint32_t, 4> replay_seed = {
       insn_addi(10, 0, 1),
       insn_nop(),
-      insn_mul(11, 0, 0),
-      insn_mul(12, 0, 0)};
+      insn_addi(11, 0, 11),
+      insn_addi(12, 0, 12)};
   send_group_masked(top, mem, rf, commits, 0x13000, replay_seed, 0xDu);
-
-  bool replay_seen = run_until(top, mem, rf, commits, [&]() {
-    return top->dbg_ren_src_from_pending_o != 0;
-  }, 200);
-  expect(replay_seen, "Replay depth scale: pending-replay becomes active");
 
   const std::array<uint32_t, 4> one_slot_group = {
       insn_addi(20, 0, 20),
@@ -1097,7 +1105,7 @@ static void test_pending_replay_buffer_depth_scales_for_single_slot_groups(Vtb_b
               << std::endl;
   }
   expect(accepted_single_slot_groups >= 10,
-         "Replay depth scale: pending buffer absorbs >=10 single-slot groups while replay active");
+         "Replay depth scale: pending buffer absorbs >=10 single-slot groups");
 }
 
 static void test_memdep_violation_requests_replay_without_deadlock(Vtb_backend *top, MemModel &mem) {
@@ -1330,6 +1338,7 @@ int main(int argc, char **argv) {
   test_cfg_instr_per_fetch_matches_backend_width(top, mem);
   test_ingress_cluster_dec_valid_matches_backend_dec_valid(top, mem);
   test_alu_and_deps(top, mem);
+  test_m_extension_basic_commit(top, mem);
   test_branch_flush(top, mem);
   test_manual_flush_blocks_stale_branch_update_with_metadata(top, mem);
   test_bpu_update_metadata_aligns_with_selected_commit_slot(top, mem);

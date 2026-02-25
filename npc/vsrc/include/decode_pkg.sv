@@ -27,7 +27,15 @@ package decode_pkg;
     ALU_SRA,
     ALU_LUI,
     ALU_AUIPC,
-    ALU_NOP
+    ALU_NOP,
+    ALU_MUL,
+    ALU_MULH,
+    ALU_MULHSU,
+    ALU_MULHU,
+    ALU_DIV,
+    ALU_DIVU,
+    ALU_REM,
+    ALU_REMU
   } alu_op_e;
 
   typedef enum logic [2:0] {

@@ -49,6 +49,33 @@ module execute_alu #(
   logic [31:0]     alu_res_w;
   logic [31:0]     op_a_w;
   logic [31:0]     op_b_w;
+  logic signed [XLEN-1:0] op_a_s;
+  logic signed [XLEN-1:0] op_b_s;
+  logic [XLEN-1:0] op_a_u;
+  logic [XLEN-1:0] op_b_u;
+  logic signed [XLEN:0] mul_a_ss;
+  logic signed [XLEN:0] mul_b_ss;
+  logic signed [XLEN:0] mul_b_su;
+  logic [XLEN:0] mul_a_uu;
+  logic [XLEN:0] mul_b_uu;
+  logic signed [2*XLEN+1:0] mul_prod_ss;
+  logic signed [2*XLEN+1:0] mul_prod_su;
+  logic [2*XLEN+1:0] mul_prod_uu;
+  logic [XLEN-1:0] min_int;
+
+  assign op_a_s = $signed(op_a);
+  assign op_b_s = $signed(op_b);
+  assign op_a_u = op_a;
+  assign op_b_u = op_b;
+  assign mul_a_ss = {op_a[XLEN-1], op_a};
+  assign mul_b_ss = {op_b[XLEN-1], op_b};
+  assign mul_b_su = $signed({1'b0, op_b});
+  assign mul_a_uu = {1'b0, op_a};
+  assign mul_b_uu = {1'b0, op_b};
+  assign mul_prod_ss = mul_a_ss * mul_b_ss;
+  assign mul_prod_su = mul_a_ss * mul_b_su;
+  assign mul_prod_uu = mul_a_uu * mul_b_uu;
+  assign min_int = {1'b1, {(XLEN - 1) {1'b0}}};
 
   always_comb begin
     alu_res = '0;
@@ -82,6 +109,42 @@ module execute_alu #(
         // [改进] 比较结果使用 XLEN'(1) 适配位宽
         ALU_SLT:   alu_res = ($signed(op_a) < $signed(op_b)) ? XLEN'(1) : '0;
         ALU_SLTU:  alu_res = (op_a < op_b) ? XLEN'(1) : '0;
+        ALU_MUL:   alu_res = mul_prod_uu[XLEN-1:0];
+        ALU_MULH:  alu_res = mul_prod_ss[2*XLEN-1:XLEN];
+        ALU_MULHSU: alu_res = mul_prod_su[2*XLEN-1:XLEN];
+        ALU_MULHU: alu_res = mul_prod_uu[2*XLEN-1:XLEN];
+        ALU_DIV: begin
+          if (op_b_u == '0) begin
+            alu_res = '1;
+          end else if ((op_a_u == min_int) && (op_b_u == {XLEN{1'b1}})) begin
+            alu_res = min_int;
+          end else begin
+            alu_res = op_a_s / op_b_s;
+          end
+        end
+        ALU_DIVU: begin
+          if (op_b_u == '0) begin
+            alu_res = '1;
+          end else begin
+            alu_res = op_a_u / op_b_u;
+          end
+        end
+        ALU_REM: begin
+          if (op_b_u == '0) begin
+            alu_res = op_a_u;
+          end else if ((op_a_u == min_int) && (op_b_u == {XLEN{1'b1}})) begin
+            alu_res = '0;
+          end else begin
+            alu_res = op_a_s % op_b_s;
+          end
+        end
+        ALU_REMU: begin
+          if (op_b_u == '0) begin
+            alu_res = op_a_u;
+          end else begin
+            alu_res = op_a_u % op_b_u;
+          end
+        end
         default:   alu_res = '0;
       endcase
     end

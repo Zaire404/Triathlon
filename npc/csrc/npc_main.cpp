@@ -90,6 +90,7 @@ int main(int argc, char **argv) {
       return 1;
     }
   }
+  mem.mem.uart_stdout_enabled = !difftest.enabled();
 
   npc::reset(top, mem, tfp, sim_time);
   auto make_low_mask = [](uint32_t width) -> uint32_t {
@@ -131,11 +132,6 @@ int main(int argc, char **argv) {
                   << ((addr == npc::kSeed4Addr) ? " <seed4>" : "")
                   << "\n";
         std::cout.flags(f);
-      }
-      // avoid double printing when difftest also prints the log
-      if (addr == npc::kSerialPort && !difftest.enabled()) {
-        uint8_t ch = static_cast<uint8_t>(data & 0xFFu);
-        std::cout << static_cast<char>(ch) << std::flush;
       }
     }
 

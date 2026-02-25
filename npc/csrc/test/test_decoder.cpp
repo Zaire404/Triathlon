@@ -24,7 +24,15 @@ enum AluOp {
   ALU_SRA,
   ALU_LUI,
   ALU_AUIPC,
-  ALU_NOP
+  ALU_NOP,
+  ALU_MUL,
+  ALU_MULH,
+  ALU_MULHSU,
+  ALU_MULHU,
+  ALU_DIV,
+  ALU_DIVU,
+  ALU_REM,
+  ALU_REMU
 };
 
 // 功能单元类型
@@ -409,15 +417,35 @@ GoldenInfo decode_reference(uint32_t inst, uint32_t pc) {
     if (funct7 == 1) {
       switch (funct3) {
       case 0:
+        info.alu_op = ALU_MUL;
+        info.fu_type = FU_MUL;
+        break;
       case 1:
+        info.alu_op = ALU_MULH;
+        info.fu_type = FU_MUL;
+        break;
       case 2:
+        info.alu_op = ALU_MULHSU;
+        info.fu_type = FU_MUL;
+        break;
       case 3:
+        info.alu_op = ALU_MULHU;
         info.fu_type = FU_MUL;
         break;
       case 4:
+        info.alu_op = ALU_DIV;
+        info.fu_type = FU_DIV;
+        break;
       case 5:
+        info.alu_op = ALU_DIVU;
+        info.fu_type = FU_DIV;
+        break;
       case 6:
+        info.alu_op = ALU_REM;
+        info.fu_type = FU_DIV;
+        break;
       case 7:
+        info.alu_op = ALU_REMU;
         info.fu_type = FU_DIV;
         break;
       }

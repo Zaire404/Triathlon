@@ -399,41 +399,49 @@ module decoder #(
               7'b0000001, 3'b000
             } : begin
               uop_decoded.fu = FU_MUL;  /* MUL   */
+              uop_decoded.alu_op = ALU_MUL;
             end
             {
               7'b0000001, 3'b001
             } : begin
               uop_decoded.fu = FU_MUL;  /* MULH  */
+              uop_decoded.alu_op = ALU_MULH;
             end
             {
               7'b0000001, 3'b010
             } : begin
               uop_decoded.fu = FU_MUL;  /* MULHSU*/
+              uop_decoded.alu_op = ALU_MULHSU;
             end
             {
               7'b0000001, 3'b011
             } : begin
               uop_decoded.fu = FU_MUL;  /* MULHU */
+              uop_decoded.alu_op = ALU_MULHU;
             end
             {
               7'b0000001, 3'b100
             } : begin
               uop_decoded.fu = FU_DIV;  /* DIV   */
+              uop_decoded.alu_op = ALU_DIV;
             end
             {
               7'b0000001, 3'b101
             } : begin
               uop_decoded.fu = FU_DIV;  /* DIVU  */
+              uop_decoded.alu_op = ALU_DIVU;
             end
             {
               7'b0000001, 3'b110
             } : begin
               uop_decoded.fu = FU_DIV;  /* REM   */
+              uop_decoded.alu_op = ALU_REM;
             end
             {
               7'b0000001, 3'b111
             } : begin
               uop_decoded.fu = FU_DIV;  /* REMU  */
+              uop_decoded.alu_op = ALU_REMU;
             end
 
             default: uop_decoded.illegal = 1'b1;
