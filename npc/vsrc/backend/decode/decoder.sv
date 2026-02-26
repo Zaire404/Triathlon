@@ -216,6 +216,7 @@ module decoder #(
       uop_decoded.is_mret   = 1'b0;
       uop_decoded.is_sret   = 1'b0;
       uop_decoded.is_wfi    = 1'b0;
+      uop_decoded.is_sfence_vma = 1'b0;
       uop_decoded.csr_addr  = 12'h000;
       uop_decoded.csr_op    = CSR_RW;
 
@@ -546,6 +547,13 @@ module decoder #(
               else if (instr_itype.imm == 12'h302) uop_decoded.is_mret = 1'b1;
               else if (instr_itype.imm == 12'h102) uop_decoded.is_sret = 1'b1;
               else if (instr_itype.imm == 12'h105) uop_decoded.is_wfi = 1'b1;
+              else if (instr_itype.imm == 12'h120) begin
+                uop_decoded.is_sfence_vma = 1'b1;
+                uop_decoded.has_rs1 = 1'b1;
+                uop_decoded.has_rs2 = 1'b1;
+                uop_decoded.rs1 = instr_rtype.rs1;
+                uop_decoded.rs2 = instr_rtype.rs2;
+              end
               else uop_decoded.illegal = 1'b1;
             end
 

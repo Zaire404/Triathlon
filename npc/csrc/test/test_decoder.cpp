@@ -71,6 +71,7 @@ struct GoldenInfo {
   int rs1, rs2, rd;
   bool has_rs1, has_rs2, has_rd;
   bool is_load, is_store, is_branch, is_jump, is_csr, is_fence;
+  bool is_sfence_vma;
 };
 
 struct DirectedCase {
@@ -79,6 +80,7 @@ struct DirectedCase {
   bool illegal;
   int fu_type;
   bool is_fence;
+  bool is_sfence_vma;
   bool is_load;
   bool is_store;
   int lsu_op;
@@ -105,6 +107,8 @@ void run_directed_case(Vtb_decoder *top, const DirectedCase &tc) {
     mismatch = true;
   if ((bool)top->check_is_fence != tc.is_fence)
     mismatch = true;
+  if ((bool)top->check_is_sfence_vma != tc.is_sfence_vma)
+    mismatch = true;
   if ((bool)top->check_is_load != tc.is_load)
     mismatch = true;
   if ((bool)top->check_is_store != tc.is_store)
@@ -121,6 +125,8 @@ void run_directed_case(Vtb_decoder *top, const DirectedCase &tc) {
               << " got=" << top->check_fu_type << std::endl;
     std::cout << "  is_fence: expect=" << tc.is_fence
               << " got=" << (int)top->check_is_fence << std::endl;
+    std::cout << "  is_sfence_vma: expect=" << tc.is_sfence_vma
+              << " got=" << (int)top->check_is_sfence_vma << std::endl;
     std::cout << "  is_load: expect=" << tc.is_load
               << " got=" << (int)top->check_is_load << std::endl;
     std::cout << "  is_store: expect=" << tc.is_store
@@ -601,6 +607,8 @@ GoldenInfo decode_reference(uint32_t inst, uint32_t pc) {
       } else if (sys_imm == 0x302) { /* MRET */
       } else if (sys_imm == 0x102) { /* SRET */
       } else if (sys_imm == 0x105) { /* WFI */
+      } else if (sys_imm == 0x120) { /* SFENCE.VMA */
+        info.is_sfence_vma = true;
       } else {
         info.illegal = true; // 其他情况非法
       }
@@ -754,19 +762,21 @@ int main(int argc, char **argv) {
 
   std::vector<DirectedCase> directed_cases = {
       {"LR.W legal", encode_amo_w(0x02, 10, 11, 0), false, FU_LSU, false,
-       true, false, LSU_LW},
+       false, true, false, LSU_LW},
       {"SC.W legal", encode_amo_w(0x03, 5, 6, 7), false, FU_LSU, false, false,
-       true, LSU_SW},
+       false, true, LSU_SW},
       {"AMOSWAP.W legal", encode_amo_w(0x01, 3, 4, 8), false, FU_LSU, false,
-       true, true, LSU_SW},
+       false, true, true, LSU_SW},
       {"FENCE.I marker", (0x001u << 12) | 0x0Fu, false, FU_ALU, true, false,
-       false, LSU_LW},
+       false, false, LSU_LW},
       {"ECALL as CSR-FU", 0x00000073u, false, FU_CSR, false, false, false,
-       LSU_LW},
+       false, LSU_LW},
       {"MRET as CSR-FU", 0x30200073u, false, FU_CSR, false, false, false,
-       LSU_LW},
+       false, LSU_LW},
       {"WFI as CSR-FU", 0x10500073u, false, FU_CSR, false, false, false,
-       LSU_LW},
+       false, LSU_LW},
+      {"SFENCE.VMA as CSR-FU", 0x12000073u, false, FU_CSR, false, true, false,
+       false, LSU_LW},
   };
 
   for (const auto &tc : directed_cases) {
@@ -830,6 +840,10 @@ int main(int argc, char **argv) {
       }
       if (top->check_is_fence != ref.is_fence) {
         std::cout << "[ERROR] is_fence mismatch!" << std::endl;
+        mismatch = true;
+      }
+      if (top->check_is_sfence_vma != ref.is_sfence_vma) {
+        std::cout << "[ERROR] is_sfence_vma mismatch!" << std::endl;
         mismatch = true;
       }
       // 检查寄存器索引 (确保解码器正确提取了 rs1/rs2/rd)

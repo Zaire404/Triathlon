@@ -26,6 +26,10 @@ module lsu_lane #(
     input  decode_pkg::uop_t                     uop_i,
     input  logic             [     Cfg.XLEN-1:0] rs1_data_i,
     input  logic             [     Cfg.XLEN-1:0] rs2_data_i,
+    input  logic                                 addr_override_valid_i,
+    input  logic             [     Cfg.PLEN-1:0] addr_override_i,
+    input  logic                                 force_exception_i,
+    input  logic             [ ECAUSE_WIDTH-1:0] force_ecause_i,
     input  logic             [ROB_IDX_WIDTH-1:0] rob_tag_i,
     input  logic             [ SB_IDX_WIDTH-1:0] sb_id_i,
 
@@ -153,7 +157,7 @@ module lsu_lane #(
   assign is_store      = uop_i.is_store;
 
   assign eff_addr_xlen = rs1_data_i + uop_i.imm;
-  assign eff_addr      = eff_addr_xlen[Cfg.PLEN-1:0];
+  assign eff_addr      = addr_override_valid_i ? addr_override_i : eff_addr_xlen[Cfg.PLEN-1:0];
   assign misaligned    = is_misaligned(uop_i.lsu_op, eff_addr);
 
   assign fwd_data      = extract_fwd(sb_load_data_i, uop_i.lsu_op);
@@ -171,12 +175,13 @@ module lsu_lane #(
   function automatic lsu_state_e next_state_after_accept(input logic acc_is_store,
                                                           input logic acc_is_load,
                                                           input logic acc_misaligned,
+                                                          input logic acc_force_exception,
                                                           input logic acc_sb_hit);
     begin
       if (acc_is_store) begin
         next_state_after_accept = S_RESP;
       end else if (acc_is_load) begin
-        if (acc_misaligned || acc_sb_hit) begin
+        if (acc_misaligned || acc_force_exception || acc_sb_hit) begin
           next_state_after_accept = S_RESP;
         end else begin
           next_state_after_accept = S_LD_REQ;
@@ -257,7 +262,8 @@ module lsu_lane #(
     unique case (state_q)
       S_IDLE: begin
         if (req_fire_w) begin
-          state_d = next_state_after_accept(is_store, is_load, misaligned, sb_load_hit_i);
+          state_d = next_state_after_accept(is_store, is_load, misaligned, force_exception_i,
+                                            sb_load_hit_i);
         end
       end
 
@@ -271,7 +277,8 @@ module lsu_lane #(
         if (ld_rsp_valid_i) begin
           if (wb_ready_i) begin
             if (req_fire_w) begin
-              state_d = next_state_after_accept(is_store, is_load, misaligned, sb_load_hit_i);
+              state_d = next_state_after_accept(is_store, is_load, misaligned, force_exception_i,
+                                                sb_load_hit_i);
             end else begin
               state_d = S_IDLE;
             end
@@ -284,7 +291,8 @@ module lsu_lane #(
       S_RESP: begin
         if (wb_ready_i) begin
           if (req_fire_w) begin
-            state_d = next_state_after_accept(is_store, is_load, misaligned, sb_load_hit_i);
+            state_d = next_state_after_accept(is_store, is_load, misaligned, force_exception_i,
+                                              sb_load_hit_i);
           end else begin
             state_d = S_IDLE;
           end
@@ -325,7 +333,7 @@ module lsu_lane #(
       end else begin
         // Accept new request
         if (req_fire_w) begin
-          if (is_load && !misaligned && !sb_load_hit_i) begin
+          if (is_load && !misaligned && !force_exception_i && !sb_load_hit_i) begin
             req_addr_q <= eff_addr;
             req_op_q   <= uop_i.lsu_op;
             req_tag_q  <= rob_tag_i;
@@ -342,6 +350,10 @@ module lsu_lane #(
               resp_data_q   <= '0;
               resp_exc_q    <= 1'b1;
               resp_ecause_q <= EXC_LD_ADDR_MISALIGNED;
+            end else if (force_exception_i) begin
+              resp_data_q   <= '0;
+              resp_exc_q    <= 1'b1;
+              resp_ecause_q <= force_ecause_i;
             end else if (sb_load_hit_i) begin
               resp_data_q   <= fwd_data;
               resp_exc_q    <= 1'b0;

@@ -41,12 +41,38 @@ module ifu #(
 
     //--- 4.后端冲刷/重定向接口 ---
     input logic                flush_i,
-    input logic [Cfg.PLEN-1:0] redirect_pc_i
+    input logic [Cfg.PLEN-1:0] redirect_pc_i,
+
+    //--- 5.I-side MMU control + page table walker ---
+    input logic [31:0] mmu_satp_i,
+    input logic [1:0]  mmu_priv_i,
+    input logic        mmu_sum_i,
+    input logic        mmu_mxr_i,
+    input logic        mmu_sfence_vma_i,
+    output logic       pte_req_valid_o,
+    input logic        pte_req_ready_i,
+    output logic [31:0] pte_req_paddr_o,
+    input logic        pte_rsp_valid_i,
+    input logic [31:0] pte_rsp_data_i,
+    output logic       pte_upd_valid_o,
+    input logic        pte_upd_ready_i,
+    output logic [31:0] pte_upd_paddr_o,
+    output logic [31:0] pte_upd_data_o,
+
+    //--- 6.IFetch fault sideband (to backend) ---
+    output logic       ifetch_fault_valid_o,
+    input logic        ifetch_fault_ready_i,
+    output logic [Cfg.PLEN-1:0] ifetch_fault_pc_o,
+    output logic [Cfg.PLEN-1:0] ifetch_fault_tval_o,
+    output logic [4:0] ifetch_fault_cause_o
 );
 
   localparam int unsigned INSTR_BYTES = Cfg.ILEN / 8;
   localparam int unsigned SLOT_IDX_W = (Cfg.INSTR_PER_FETCH > 1) ? $clog2(Cfg.INSTR_PER_FETCH) : 1;
   localparam int unsigned EPOCH_W = 3;
+  localparam logic [1:0] PRIV_LVL_M = 2'b11;
+  localparam logic [1:0] MMU_ACCESS_INSTR = 2'd0;
+  localparam logic [4:0] EXC_INST_PAGE_FAULT = 5'd12;
   localparam int unsigned FTQ_DEPTH = (Cfg.IFU_INF_DEPTH >= 2) ? Cfg.IFU_INF_DEPTH : 2;
   localparam int unsigned FTQ_ID_W = (FTQ_DEPTH > 1) ? $clog2(FTQ_DEPTH) : 1;
 
@@ -86,6 +112,12 @@ module ifu #(
   logic [REQ_PTR_W-1:0] req_head_q;
   logic [REQ_PTR_W-1:0] req_tail_q;
   logic [REQ_CNT_W-1:0] req_count_q;
+  logic [Cfg.PLEN-1:0] req_head_pc_w;
+  logic req_head_pred_slot_valid_w;
+  logic [SLOT_IDX_W-1:0] req_head_pred_slot_idx_w;
+  logic [Cfg.PLEN-1:0] req_head_pred_target_w;
+  logic [FTQ_ID_W-1:0] req_head_ftq_id_w;
+  logic [EPOCH_W-1:0] req_head_epoch_w;
 
   // Inflight FIFO metadata
   logic [INF_DEPTH-1:0][Cfg.PLEN-1:0] inf_pc_fifo_q;
@@ -136,6 +168,16 @@ module ifu #(
   logic can_issue_req_w;
   logic req_issue_valid_w;
   logic req_issue_fire_w;
+  logic req_pop_w;
+  logic translation_active_w;
+  logic issue_need_mmu_w;
+  logic issue_translation_ready_w;
+  logic [Cfg.PLEN-1:0] issue_paddr_w;
+  logic mmu_req_fire_w;
+  logic mmu_resp_fire_w;
+  logic fault_consume_w;
+  logic ftq_free_valid_w;
+  logic [FTQ_ID_W-1:0] ftq_free_id_w;
 
   logic rsp_capture_w;
   logic drop_stale_rsp_w;
@@ -151,6 +193,23 @@ module ifu #(
   logic [Cfg.PLEN-1:0] ftq_alloc_pc_w;
   logic [EPOCH_W-1:0] ftq_alloc_epoch_w;
   logic [((FTQ_DEPTH > 1) ? $clog2(FTQ_DEPTH + 1) : 1)-1:0] ftq_count_w;
+
+  typedef enum logic [1:0] {
+    MMU_ST_IDLE = 2'd0,
+    MMU_ST_REQ = 2'd1,
+    MMU_ST_WAIT = 2'd2,
+    MMU_ST_READY = 2'd3
+  } ifu_mmu_state_e;
+  ifu_mmu_state_e mmu_state_q;
+  logic [31:0] mmu_translated_paddr_q;
+  logic mmu_req_ready_w;
+  logic mmu_resp_valid_w;
+  logic [31:0] mmu_resp_paddr_w;
+  logic mmu_resp_page_fault_w;
+
+  logic fault_pending_q;
+  logic [Cfg.PLEN-1:0] fault_pc_q;
+  logic [Cfg.PLEN-1:0] fault_tval_q;
 
   function automatic [REQ_PTR_W-1:0] req_ptr_inc(input [REQ_PTR_W-1:0] ptr);
     if (ptr == REQ_PTR_W'(REQ_DEPTH - 1)) begin
@@ -173,6 +232,13 @@ module ifu #(
   assign inf_fifo_empty_w = (inf_count_q == INF_CNT_W'(0));
   assign inf_fifo_full_w = (inf_count_q == INF_CNT_W'(INF_DEPTH));
 
+  assign req_head_pc_w = req_pc_fifo_q[req_head_q];
+  assign req_head_pred_slot_valid_w = req_pred_slot_valid_fifo_q[req_head_q];
+  assign req_head_pred_slot_idx_w = req_pred_slot_idx_fifo_q[req_head_q];
+  assign req_head_pred_target_w = req_pred_target_fifo_q[req_head_q];
+  assign req_head_ftq_id_w = req_ftq_id_fifo_q[req_head_q];
+  assign req_head_epoch_w = req_epoch_fifo_q[req_head_q];
+
   assign inf_head_pc_w = inf_pc_fifo_q[inf_head_q];
   assign inf_head_pred_slot_valid_w = inf_pred_slot_valid_fifo_q[inf_head_q];
   assign inf_head_pred_slot_idx_w = inf_pred_slot_idx_fifo_q[inf_head_q];
@@ -188,7 +254,7 @@ module ifu #(
 
   // BPU side: enqueue requests into pending FIFO when space is available.
   assign bpu_query_pc_w = flush_i ? redirect_pc_i : pc_reg;
-  assign can_accept_bpu_w = (flush_i ? 1'b1 : (!req_fifo_full_w || req_issue_fire_w)) &&
+  assign can_accept_bpu_w = (flush_i ? 1'b1 : (!req_fifo_full_w || req_pop_w)) &&
                             ftq_alloc_ready_w;
   assign ifu2bpu_pc_o = bpu_query_pc_w;
   assign ifu2bpu_handshake_o.valid = can_accept_bpu_w;
@@ -198,6 +264,11 @@ module ifu #(
   assign ftq_alloc_epoch_w = flush_i ? flush_next_epoch_w : fetch_epoch_q;
 
   // ICache side: issue oldest pending request.
+  assign translation_active_w = mmu_satp_i[31] && (mmu_priv_i != PRIV_LVL_M);
+  assign issue_need_mmu_w = translation_active_w;
+  assign issue_translation_ready_w = !issue_need_mmu_w || (mmu_state_q == MMU_ST_READY);
+  assign issue_paddr_w = issue_need_mmu_w ? mmu_translated_paddr_q[Cfg.PLEN-1:0] : req_head_pc_w;
+
   assign rsp_epoch_match_w = !inf_fifo_empty_w && (inf_head_epoch_w == fetch_epoch_q);
   // During flush, IFU clears request/inflight queues. Incoming ICache responses in
   // that cycle must be ignored, otherwise a stale response may be captured and
@@ -208,20 +279,30 @@ module ifu #(
 
   // Conservative safety gate:
   // fq_count + inflight_count tracks worst-case buffered responses pressure.
-  assign can_issue_req_w = !flush_i && !req_fifo_empty_w && !inf_fifo_full_w &&
+  assign can_issue_req_w = !flush_i && !fault_pending_q && !req_fifo_empty_w && !inf_fifo_full_w &&
                            (storage_budget_w < (FQ_CNT_W + 1)'(FQ_DEPTH));
   assign req_block_flush_w = flush_i;
   assign req_block_reqq_empty_w = !flush_i && req_fifo_empty_w;
   assign req_block_inf_full_w = !flush_i && !req_fifo_empty_w && inf_fifo_full_w;
   assign req_block_storage_budget_w = !flush_i && !req_fifo_empty_w && !inf_fifo_full_w &&
                                       (storage_budget_w >= (FQ_CNT_W + 1)'(FQ_DEPTH));
-  assign req_issue_valid_w = can_issue_req_w;
+  assign req_issue_valid_w = can_issue_req_w && issue_translation_ready_w;
   assign req_issue_fire_w = req_issue_valid_w && icache2ifu_rsp_handshake_i.ready;
+  assign req_pop_w = req_issue_fire_w || fault_consume_w;
+
+  assign mmu_req_fire_w = (mmu_state_q == MMU_ST_REQ) && mmu_req_ready_w;
+  assign mmu_resp_fire_w = (mmu_state_q == MMU_ST_WAIT) && mmu_resp_valid_w;
+  assign fault_consume_w = fault_pending_q && ifetch_fault_ready_i && !rsp_capture_w;
 
   assign flush_icache_o = flush_i;
   assign ifu2icache_req_handshake_o.valid = req_issue_valid_w;
   assign ifu2icache_req_handshake_o.ready = 1'b1;
-  assign ifu2icache_req_addr_o = req_pc_fifo_q[req_head_q];
+  assign ifu2icache_req_addr_o = issue_paddr_w;
+
+  assign ifetch_fault_valid_o = fault_pending_q;
+  assign ifetch_fault_pc_o = fault_pc_q;
+  assign ifetch_fault_tval_o = fault_tval_q;
+  assign ifetch_fault_cause_o = EXC_INST_PAGE_FAULT;
 
   // IBuffer dequeue and response push decisions via bundle FIFO.
   assign fq_enq_valid_w = rsp_capture_w;
@@ -253,6 +334,35 @@ module ifu #(
           ifu_ibuffer_rsp_fetch_epoch_o} = fq_deq_data_w;
   assign ifu_ibuffer_rsp_valid_o = fq_deq_valid_w;
 
+  assign ftq_free_valid_w = fault_consume_w || rsp_capture_w;
+  assign ftq_free_id_w = fault_consume_w ? req_head_ftq_id_w : inf_head_ftq_id_w;
+
+  sv32_mmu u_ifu_mmu (
+      .clk_i(clk),
+      .rst_ni(~rst),
+      .req_valid_i(mmu_state_q == MMU_ST_REQ),
+      .req_vaddr_i({{(32-Cfg.PLEN){1'b0}}, req_head_pc_w}),
+      .req_access_i(MMU_ACCESS_INSTR),
+      .req_priv_i(mmu_priv_i),
+      .req_sum_i(mmu_sum_i),
+      .req_mxr_i(mmu_mxr_i),
+      .satp_i(mmu_satp_i),
+      .sfence_vma_i(mmu_sfence_vma_i),
+      .req_ready_o(mmu_req_ready_w),
+      .resp_valid_o(mmu_resp_valid_w),
+      .resp_paddr_o(mmu_resp_paddr_w),
+      .resp_page_fault_o(mmu_resp_page_fault_w),
+      .pte_req_valid_o(pte_req_valid_o),
+      .pte_req_ready_i(pte_req_ready_i),
+      .pte_req_paddr_o(pte_req_paddr_o),
+      .pte_rsp_valid_i(pte_rsp_valid_i),
+      .pte_rsp_data_i(pte_rsp_data_i),
+      .pte_upd_valid_o(pte_upd_valid_o),
+      .pte_upd_ready_i(pte_upd_ready_i),
+      .pte_upd_paddr_o(pte_upd_paddr_o),
+      .pte_upd_data_o(pte_upd_data_o)
+  );
+
   ftq #(
       .Cfg(Cfg),
       .DEPTH(FTQ_DEPTH),
@@ -270,8 +380,8 @@ module ifu #(
       .alloc_pred_slot_idx_i(bpu2ifu_pred_slot_idx_i),
       .alloc_pred_target_i(bpu2ifu_pred_target_i),
       .alloc_epoch_i(ftq_alloc_epoch_w),
-      .free_valid_i(rsp_capture_w),
-      .free_id_i(inf_head_ftq_id_w),
+      .free_valid_i(ftq_free_valid_w),
+      .free_id_i(ftq_free_id_w),
       .lookup_valid_i(1'b0),
       .lookup_id_i('0),
       .lookup_hit_o(),
@@ -326,6 +436,11 @@ module ifu #(
       inf_head_q <= '0;
       inf_tail_q <= '0;
       inf_count_q <= '0;
+      mmu_state_q <= MMU_ST_IDLE;
+      mmu_translated_paddr_q <= '0;
+      fault_pending_q <= 1'b0;
+      fault_pc_q <= '0;
+      fault_tval_q <= '0;
 
     end else begin
       if (rsp_capture_w && !fq_enq_ready_w) begin
@@ -354,6 +469,11 @@ module ifu #(
         inf_head_q <= '0;
         inf_tail_q <= '0;
         inf_count_q <= '0;
+        mmu_state_q <= MMU_ST_IDLE;
+        mmu_translated_paddr_q <= '0;
+        fault_pending_q <= 1'b0;
+        fault_pc_q <= '0;
+        fault_tval_q <= '0;
       end else begin
         if (req_enq_fire_w) begin
           req_pc_fifo_q[req_tail_q] <= pc_reg;
@@ -366,14 +486,46 @@ module ifu #(
           pc_reg <= bpu2ifu_predicted_pc_i;
         end
 
+        if (!issue_need_mmu_w) begin
+          mmu_state_q <= MMU_ST_IDLE;
+        end else begin
+          if ((mmu_state_q == MMU_ST_IDLE) && can_issue_req_w) begin
+            mmu_state_q <= MMU_ST_REQ;
+          end
+          if (mmu_req_fire_w) begin
+            mmu_state_q <= MMU_ST_WAIT;
+          end
+          if (mmu_resp_fire_w) begin
+            if (mmu_resp_page_fault_w) begin
+              mmu_state_q <= MMU_ST_IDLE;
+              fault_pending_q <= 1'b1;
+              fault_pc_q <= req_head_pc_w;
+              fault_tval_q <= req_head_pc_w;
+            end else begin
+              mmu_state_q <= MMU_ST_READY;
+              mmu_translated_paddr_q <= mmu_resp_paddr_w;
+            end
+          end
+          if (req_issue_fire_w) begin
+            mmu_state_q <= MMU_ST_IDLE;
+          end
+        end
+
+        if (fault_consume_w) begin
+          fault_pending_q <= 1'b0;
+        end
+
         if (req_issue_fire_w) begin
-          inf_pc_fifo_q[inf_tail_q] <= req_pc_fifo_q[req_head_q];
-          inf_pred_slot_valid_fifo_q[inf_tail_q] <= req_pred_slot_valid_fifo_q[req_head_q];
-          inf_pred_slot_idx_fifo_q[inf_tail_q] <= req_pred_slot_idx_fifo_q[req_head_q];
-          inf_pred_target_fifo_q[inf_tail_q] <= req_pred_target_fifo_q[req_head_q];
-          inf_ftq_id_fifo_q[inf_tail_q] <= req_ftq_id_fifo_q[req_head_q];
-          inf_epoch_fifo_q[inf_tail_q] <= req_epoch_fifo_q[req_head_q];
+          inf_pc_fifo_q[inf_tail_q] <= req_head_pc_w;
+          inf_pred_slot_valid_fifo_q[inf_tail_q] <= req_head_pred_slot_valid_w;
+          inf_pred_slot_idx_fifo_q[inf_tail_q] <= req_head_pred_slot_idx_w;
+          inf_pred_target_fifo_q[inf_tail_q] <= req_head_pred_target_w;
+          inf_ftq_id_fifo_q[inf_tail_q] <= req_head_ftq_id_w;
+          inf_epoch_fifo_q[inf_tail_q] <= req_head_epoch_w;
           inf_tail_q <= inf_ptr_inc(inf_tail_q);
+        end
+
+        if (req_pop_w) begin
           req_head_q <= req_ptr_inc(req_head_q);
         end
 
@@ -381,7 +533,7 @@ module ifu #(
           inf_head_q <= inf_ptr_inc(inf_head_q);
         end
 
-        unique case ({req_enq_fire_w, req_issue_fire_w})
+        unique case ({req_enq_fire_w, req_pop_w})
           2'b10: req_count_q <= req_count_q + REQ_CNT_W'(1);
           2'b01: req_count_q <= req_count_q - REQ_CNT_W'(1);
           default: begin

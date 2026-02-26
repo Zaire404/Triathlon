@@ -113,6 +113,7 @@ package decode_pkg;
     logic is_mret;
     logic is_sret;
     logic is_wfi;
+    logic is_sfence_vma;
 
     // CSR 相关字段
     logic [11:0] csr_addr;

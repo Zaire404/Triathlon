@@ -31,6 +31,25 @@ module backend #(
     output logic [Cfg.NRET-1:0] bpu_ras_update_is_call_o,
     output logic [Cfg.NRET-1:0] bpu_ras_update_is_ret_o,
     output logic [Cfg.NRET-1:0][Cfg.PLEN-1:0] bpu_ras_update_pc_o,
+    output logic [31:0] mmu_satp_o,
+    output logic [1:0] mmu_priv_o,
+    output logic mmu_sum_o,
+    output logic mmu_mxr_o,
+    output logic mmu_sfence_vma_o,
+    input logic ifu_pte_ld_req_valid_i,
+    output logic ifu_pte_ld_req_ready_o,
+    input logic [31:0] ifu_pte_ld_req_paddr_i,
+    output logic ifu_pte_ld_rsp_valid_o,
+    output logic [31:0] ifu_pte_ld_rsp_data_o,
+    input logic ifu_pte_st_req_valid_i,
+    output logic ifu_pte_st_req_ready_o,
+    input logic [31:0] ifu_pte_st_req_paddr_i,
+    input logic [31:0] ifu_pte_st_req_data_i,
+    input logic ifetch_fault_valid_i,
+    output logic ifetch_fault_ready_o,
+    input logic [Cfg.PLEN-1:0] ifetch_fault_pc_i,
+    input logic [Cfg.PLEN-1:0] ifetch_fault_tval_i,
+    input logic [4:0] ifetch_fault_cause_i,
 
     // D-Cache miss/refill/writeback interface (to memory system)
     output logic                                  dcache_miss_req_valid_o,
@@ -63,6 +82,7 @@ module backend #(
   localparam int unsigned NUM_FUS = 7;  // ALU0, ALU1, BRU, LSU, ALU2, ALU3, CSR
   localparam int unsigned LSU_GROUP_SIZE = (Cfg.LSU_GROUP_SIZE >= 1) ? Cfg.LSU_GROUP_SIZE : 1;
   localparam int unsigned LSU_LD_ID_WIDTH = (LSU_GROUP_SIZE <= 1) ? 1 : $clog2(LSU_GROUP_SIZE);
+  localparam int unsigned DCACHE_LD_ID_WIDTH = LSU_LD_ID_WIDTH + 1;
   localparam int unsigned DCACHE_MSHR_SIZE = (Cfg.DCACHE_MSHR_SIZE >= 1) ? Cfg.DCACHE_MSHR_SIZE : 1;
   localparam int unsigned RENAME_PENDING_DEPTH_CFG = (Cfg.RENAME_PENDING_DEPTH > 0) ? Cfg.RENAME_PENDING_DEPTH :
       (DISPATCH_WIDTH * 2);
@@ -1399,6 +1419,39 @@ module backend #(
   logic [Cfg.XLEN-1:0] lsu_ld_rsp_data;
   logic lsu_ld_rsp_err;
   logic [LSU_LD_ID_WIDTH-1:0] lsu_ld_rsp_id;
+  logic dcache_ld_req_valid;
+  logic dcache_ld_req_ready;
+  logic [Cfg.PLEN-1:0] dcache_ld_req_addr;
+  decode_pkg::lsu_op_e dcache_ld_req_op;
+  logic [DCACHE_LD_ID_WIDTH-1:0] dcache_ld_req_id;
+  logic dcache_ld_rsp_valid;
+  logic dcache_ld_rsp_ready;
+  logic [Cfg.XLEN-1:0] dcache_ld_rsp_data;
+  logic dcache_ld_rsp_err;
+  logic [DCACHE_LD_ID_WIDTH-1:0] dcache_ld_rsp_id;
+  logic dcache_st_req_valid;
+  logic dcache_st_req_ready;
+  logic [Cfg.PLEN-1:0] dcache_st_req_addr;
+  logic [Cfg.XLEN-1:0] dcache_st_req_data;
+  decode_pkg::lsu_op_e dcache_st_req_op;
+  logic lsu_pte_req_valid;
+  logic lsu_pte_req_ready;
+  logic [31:0] lsu_pte_req_paddr;
+  logic lsu_pte_rsp_valid;
+  logic [31:0] lsu_pte_rsp_data;
+  logic lsu_pte_upd_valid;
+  logic lsu_pte_upd_ready;
+  logic [31:0] lsu_pte_upd_paddr;
+  logic [31:0] lsu_pte_upd_data;
+  logic ifu_pte_req_valid;
+  logic ifu_pte_req_ready;
+  logic [31:0] ifu_pte_req_paddr;
+  logic ifu_pte_rsp_valid;
+  logic [31:0] ifu_pte_rsp_data;
+  logic ifu_pte_upd_valid;
+  logic ifu_pte_upd_ready;
+  logic [31:0] ifu_pte_upd_paddr;
+  logic [31:0] ifu_pte_upd_data;
   logic [$clog2(LSU_LQ_DEPTH + 1)-1:0] lsu_lq_count_dbg;
   logic lsu_lq_head_valid_dbg;
   logic [ROB_IDX_WIDTH-1:0] lsu_lq_head_rob_tag_dbg;
@@ -1415,6 +1468,79 @@ module backend #(
   assign mem_dep_req_fire = lsu_en && lsu_req_ready;
   assign mem_dep_req_addr_xlen = lsu_v1 + lsu_uop.imm;
   assign mem_dep_req_addr = mem_dep_req_addr_xlen[Cfg.PLEN-1:0];
+  assign ifu_pte_req_valid = ifu_pte_ld_req_valid_i;
+  assign ifu_pte_req_paddr = ifu_pte_ld_req_paddr_i;
+  assign ifu_pte_upd_valid = ifu_pte_st_req_valid_i;
+  assign ifu_pte_upd_paddr = ifu_pte_st_req_paddr_i;
+  assign ifu_pte_upd_data = ifu_pte_st_req_data_i;
+  assign ifu_pte_ld_req_ready_o = ifu_pte_req_ready;
+  assign ifu_pte_ld_rsp_valid_o = ifu_pte_rsp_valid;
+  assign ifu_pte_ld_rsp_data_o = ifu_pte_rsp_data;
+  assign ifu_pte_st_req_ready_o = ifu_pte_upd_ready;
+
+  backend_mmu_dcache_mux #(
+      .PLEN(Cfg.PLEN),
+      .XLEN(Cfg.XLEN),
+      .LSU_LD_ID_WIDTH(LSU_LD_ID_WIDTH)
+  ) u_mmu_dcache_mux (
+      .clk_i(clk_i),
+      .rst_ni(rst_ni),
+
+      .lsu_ld_req_valid_i(lsu_ld_req_valid),
+      .lsu_ld_req_ready_o(lsu_ld_req_ready),
+      .lsu_ld_req_addr_i(lsu_ld_req_addr),
+      .lsu_ld_req_op_i(lsu_ld_req_op),
+      .lsu_ld_req_id_i(lsu_ld_req_id),
+      .lsu_ld_rsp_valid_o(lsu_ld_rsp_valid),
+      .lsu_ld_rsp_ready_i(lsu_ld_rsp_ready),
+      .lsu_ld_rsp_data_o(lsu_ld_rsp_data),
+      .lsu_ld_rsp_err_o(lsu_ld_rsp_err),
+      .lsu_ld_rsp_id_o(lsu_ld_rsp_id),
+
+      .pte_ld_req_valid_i(lsu_pte_req_valid),
+      .pte_ld_req_ready_o(lsu_pte_req_ready),
+      .pte_ld_req_paddr_i(lsu_pte_req_paddr),
+      .pte_ld_rsp_valid_o(lsu_pte_rsp_valid),
+      .pte_ld_rsp_data_o(lsu_pte_rsp_data),
+      .ifu_pte_ld_req_valid_i(ifu_pte_req_valid),
+      .ifu_pte_ld_req_ready_o(ifu_pte_req_ready),
+      .ifu_pte_ld_req_paddr_i(ifu_pte_req_paddr),
+      .ifu_pte_ld_rsp_valid_o(ifu_pte_rsp_valid),
+      .ifu_pte_ld_rsp_data_o(ifu_pte_rsp_data),
+
+      .sb_st_req_valid_i(sb_dcache_req_valid),
+      .sb_st_req_ready_o(sb_dcache_req_ready),
+      .sb_st_req_addr_i(sb_dcache_req_addr),
+      .sb_st_req_data_i(sb_dcache_req_data),
+      .sb_st_req_op_i(sb_dcache_req_op),
+
+      .pte_st_req_valid_i(lsu_pte_upd_valid),
+      .pte_st_req_ready_o(lsu_pte_upd_ready),
+      .pte_st_req_paddr_i(lsu_pte_upd_paddr),
+      .pte_st_req_data_i(lsu_pte_upd_data),
+      .ifu_pte_st_req_valid_i(ifu_pte_upd_valid),
+      .ifu_pte_st_req_ready_o(ifu_pte_upd_ready),
+      .ifu_pte_st_req_paddr_i(ifu_pte_upd_paddr),
+      .ifu_pte_st_req_data_i(ifu_pte_upd_data),
+
+      .dcache_ld_req_valid_o(dcache_ld_req_valid),
+      .dcache_ld_req_ready_i(dcache_ld_req_ready),
+      .dcache_ld_req_addr_o(dcache_ld_req_addr),
+      .dcache_ld_req_op_o(dcache_ld_req_op),
+      .dcache_ld_req_id_o(dcache_ld_req_id),
+
+      .dcache_ld_rsp_valid_i(dcache_ld_rsp_valid),
+      .dcache_ld_rsp_ready_o(dcache_ld_rsp_ready),
+      .dcache_ld_rsp_data_i(dcache_ld_rsp_data),
+      .dcache_ld_rsp_err_i(dcache_ld_rsp_err),
+      .dcache_ld_rsp_id_i(dcache_ld_rsp_id),
+
+      .dcache_st_req_valid_o(dcache_st_req_valid),
+      .dcache_st_req_ready_i(dcache_st_req_ready),
+      .dcache_st_req_addr_o(dcache_st_req_addr),
+      .dcache_st_req_data_o(dcache_st_req_data),
+      .dcache_st_req_op_o(dcache_st_req_op)
+  );
 
   mem_dep_predictor #(
       .ROB_IDX_WIDTH(ROB_IDX_WIDTH),
@@ -1454,6 +1580,11 @@ module backend #(
       .rob_tag_i  (lsu_dst),
       .rob_head_i (rob_head_ptr),
       .sb_id_i    (lsu_sb_id),
+      .mmu_satp_i(csr_satp_state),
+      .mmu_priv_i(csr_priv_mode),
+      .mmu_sum_i(csr_mstatus_sum),
+      .mmu_mxr_i(csr_mstatus_mxr),
+      .mmu_sfence_vma_i(csr_sfence_vma_flush),
 
       .sb_ex_valid_o(sb_ex_valid),
       .sb_ex_sb_id_o(sb_ex_sb_id),
@@ -1478,6 +1609,15 @@ module backend #(
       .ld_rsp_ready_o(lsu_ld_rsp_ready),
       .ld_rsp_data_i (lsu_ld_rsp_data),
       .ld_rsp_err_i  (lsu_ld_rsp_err),
+      .pte_req_valid_o(lsu_pte_req_valid),
+      .pte_req_ready_i(lsu_pte_req_ready),
+      .pte_req_paddr_o(lsu_pte_req_paddr),
+      .pte_rsp_valid_i(lsu_pte_rsp_valid),
+      .pte_rsp_data_i(lsu_pte_rsp_data),
+      .pte_upd_valid_o(lsu_pte_upd_valid),
+      .pte_upd_ready_i(lsu_pte_upd_ready),
+      .pte_upd_paddr_o(lsu_pte_upd_paddr),
+      .pte_upd_data_o(lsu_pte_upd_data),
 
       .wb_valid_o      (lsu_wb_valid),
       .wb_rob_idx_o    (lsu_wb_tag),
@@ -1510,25 +1650,46 @@ module backend #(
   logic csr_wb_is_mispred;
   logic [Cfg.PLEN-1:0] csr_wb_redirect_pc;
   logic csr_irq_inject;
+  logic csr_ifetch_fault_inject;
   logic csr_exec_valid;
   decode_pkg::uop_t csr_exec_uop;
   logic [Cfg.XLEN-1:0] csr_exec_v1;
   logic [ROB_IDX_WIDTH-1:0] csr_exec_dst;
   logic [Cfg.PLEN-1:0] csr_exec_trap_pc;
+  logic [4:0] csr_exec_async_ecause;
+  logic [Cfg.PLEN-1:0] csr_exec_async_tval;
+  logic [Cfg.XLEN-1:0] csr_satp_state;
+  logic [1:0] csr_priv_mode;
+  logic csr_mstatus_sum;
+  logic csr_mstatus_mxr;
+  logic csr_sfence_vma_flush;
 
   always_comb begin
-    csr_irq_inject = timer_irq_i && !rob_empty && !csr_en;
-    csr_exec_valid = csr_en || csr_irq_inject;
+    csr_ifetch_fault_inject = ifetch_fault_valid_i && !csr_en;
+    csr_irq_inject = timer_irq_i && !rob_empty && !csr_en && !csr_ifetch_fault_inject;
+    csr_exec_valid = csr_en || csr_irq_inject || csr_ifetch_fault_inject;
     csr_exec_uop = csr_uop;
     csr_exec_v1 = csr_v1;
     csr_exec_dst = csr_dst;
     csr_exec_trap_pc = csr_uop.pc;
+    csr_exec_async_ecause = ifetch_fault_cause_i;
+    csr_exec_async_tval = ifetch_fault_tval_i;
+    ifetch_fault_ready_o = csr_ifetch_fault_inject;
 
-    if (csr_irq_inject) begin
+    if (csr_ifetch_fault_inject) begin
+      csr_exec_uop = '0;
+      csr_exec_v1 = '0;
+      csr_exec_dst = rob_head_ptr;
+      csr_exec_trap_pc = ifetch_fault_pc_i;
+      csr_exec_async_ecause = ifetch_fault_cause_i;
+      csr_exec_async_tval = ifetch_fault_tval_i;
+    end else if (csr_irq_inject) begin
       csr_exec_uop = '0;
       csr_exec_v1 = '0;
       csr_exec_dst = rob_head_ptr;
       csr_exec_trap_pc = rob_head_pc;
+      csr_exec_async_ecause = '0;
+      csr_exec_async_tval = '0;
     end
   end
 
@@ -1544,6 +1705,9 @@ module backend #(
       .rs1_data_i (csr_exec_v1),
       .rob_tag_i  (csr_exec_dst),
       .interrupt_inject_i(csr_irq_inject),
+      .async_exception_inject_i(csr_ifetch_fault_inject),
+      .async_exception_cause_i(csr_exec_async_ecause),
+      .async_exception_tval_i(csr_exec_async_tval),
       .timer_irq_i(timer_irq_i),
       .trap_pc_i(csr_exec_trap_pc),
 
@@ -1557,8 +1721,28 @@ module backend #(
       .irq_trap_o(csr_irq_trap),
       .irq_trap_cause_o(csr_irq_trap_cause),
       .irq_trap_pc_o(csr_irq_trap_pc),
-      .irq_trap_redirect_pc_o(csr_irq_trap_redirect_pc)
+      .irq_trap_redirect_pc_o(csr_irq_trap_redirect_pc),
+      .satp_o(csr_satp_state),
+      .priv_mode_o(csr_priv_mode),
+      .mstatus_sum_o(csr_mstatus_sum),
+      .mstatus_mxr_o(csr_mstatus_mxr),
+      .sfence_vma_flush_o(csr_sfence_vma_flush)
   );
+
+  assign mmu_satp_o = csr_satp_state;
+  assign mmu_priv_o = csr_priv_mode;
+  assign mmu_sum_o = csr_mstatus_sum;
+  assign mmu_mxr_o = csr_mstatus_mxr;
+  assign mmu_sfence_vma_o = csr_sfence_vma_flush;
+
+  wire _unused_csr_state = &{
+      1'b0,
+      csr_satp_state[0],
+      csr_priv_mode,
+      csr_mstatus_sum,
+      csr_mstatus_mxr,
+      csr_sfence_vma_flush
+  };
 
   // =========================================================
   // Writeback (CDB)
@@ -1718,31 +1902,31 @@ module backend #(
   dcache #(
       .Cfg(Cfg),
       .N_MSHR(DCACHE_MSHR_SIZE),
-      .LD_PORT_ID_WIDTH(LSU_LD_ID_WIDTH)
+      .LD_PORT_ID_WIDTH(DCACHE_LD_ID_WIDTH)
   ) u_dcache (
       .clk_i  (clk_i),
       .rst_ni (rst_ni),
       .flush_i(backend_flush),
 
-      // Load port (from LSU)
-      .ld_req_valid_i(lsu_ld_req_valid),
-      .ld_req_ready_o(lsu_ld_req_ready),
-      .ld_req_addr_i (lsu_ld_req_addr),
-      .ld_req_op_i   (lsu_ld_req_op),
-      .ld_req_id_i   (lsu_ld_req_id),
+      // Load port (from LSU/MMU arbiter)
+      .ld_req_valid_i(dcache_ld_req_valid),
+      .ld_req_ready_o(dcache_ld_req_ready),
+      .ld_req_addr_i (dcache_ld_req_addr),
+      .ld_req_op_i   (dcache_ld_req_op),
+      .ld_req_id_i   (dcache_ld_req_id),
 
-      .ld_rsp_valid_o(lsu_ld_rsp_valid),
-      .ld_rsp_ready_i(lsu_ld_rsp_ready),
-      .ld_rsp_data_o (lsu_ld_rsp_data),
-      .ld_rsp_err_o  (lsu_ld_rsp_err),
-      .ld_rsp_id_o   (lsu_ld_rsp_id),
+      .ld_rsp_valid_o(dcache_ld_rsp_valid),
+      .ld_rsp_ready_i(dcache_ld_rsp_ready),
+      .ld_rsp_data_o (dcache_ld_rsp_data),
+      .ld_rsp_err_o  (dcache_ld_rsp_err),
+      .ld_rsp_id_o   (dcache_ld_rsp_id),
 
-      // Store port (from Store Buffer)
-      .st_req_valid_i(sb_dcache_req_valid),
-      .st_req_ready_o(sb_dcache_req_ready),
-      .st_req_addr_i (sb_dcache_req_addr),
-      .st_req_data_i (sb_dcache_req_data),
-      .st_req_op_i   (sb_dcache_req_op),
+      // Store port (from SB/MMU arbiter)
+      .st_req_valid_i(dcache_st_req_valid),
+      .st_req_ready_o(dcache_st_req_ready),
+      .st_req_addr_i (dcache_st_req_addr),
+      .st_req_data_i (dcache_st_req_data),
+      .st_req_op_i   (dcache_st_req_op),
 
       // Miss/Refill interface (to memory)
       .miss_req_valid_o     (dcache_miss_req_valid_o),

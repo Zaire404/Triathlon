@@ -74,6 +74,25 @@ module triathlon #(
   logic [Cfg.NRET-1:0] bpu_ras_update_is_call;
   logic [Cfg.NRET-1:0] bpu_ras_update_is_ret;
   logic [Cfg.NRET-1:0][Cfg.PLEN-1:0] bpu_ras_update_pc;
+  logic [31:0] mmu_satp_state;
+  logic [1:0] mmu_priv_mode;
+  logic mmu_mstatus_sum;
+  logic mmu_mstatus_mxr;
+  logic mmu_sfence_vma_flush;
+  logic ifetch_fault_valid;
+  logic ifetch_fault_ready;
+  logic [Cfg.PLEN-1:0] ifetch_fault_pc;
+  logic [Cfg.PLEN-1:0] ifetch_fault_tval;
+  logic [4:0] ifetch_fault_cause;
+  logic ifu_pte_req_valid;
+  logic ifu_pte_req_ready;
+  logic [31:0] ifu_pte_req_paddr;
+  logic ifu_pte_rsp_valid;
+  logic [31:0] ifu_pte_rsp_data;
+  logic ifu_pte_upd_valid;
+  logic ifu_pte_upd_ready;
+  logic [31:0] ifu_pte_upd_paddr;
+  logic [31:0] ifu_pte_upd_data;
 
   assign fe_ibuf_ready = fe_be_bus.ready;
   assign fe_be_bus.valid = fe_ibuf_valid;
@@ -112,6 +131,25 @@ module triathlon #(
       .bpu_ras_update_is_call_i(bpu_ras_update_is_call),
       .bpu_ras_update_is_ret_i(bpu_ras_update_is_ret),
       .bpu_ras_update_pc_i(bpu_ras_update_pc),
+      .mmu_satp_i(mmu_satp_state),
+      .mmu_priv_i(mmu_priv_mode),
+      .mmu_sum_i(mmu_mstatus_sum),
+      .mmu_mxr_i(mmu_mstatus_mxr),
+      .mmu_sfence_vma_i(mmu_sfence_vma_flush),
+      .ifetch_fault_valid_o(ifetch_fault_valid),
+      .ifetch_fault_ready_i(ifetch_fault_ready),
+      .ifetch_fault_pc_o(ifetch_fault_pc),
+      .ifetch_fault_tval_o(ifetch_fault_tval),
+      .ifetch_fault_cause_o(ifetch_fault_cause),
+      .pte_req_valid_o(ifu_pte_req_valid),
+      .pte_req_ready_i(ifu_pte_req_ready),
+      .pte_req_paddr_o(ifu_pte_req_paddr),
+      .pte_rsp_valid_i(ifu_pte_rsp_valid),
+      .pte_rsp_data_i(ifu_pte_rsp_data),
+      .pte_upd_valid_o(ifu_pte_upd_valid),
+      .pte_upd_ready_i(ifu_pte_upd_ready),
+      .pte_upd_paddr_o(ifu_pte_upd_paddr),
+      .pte_upd_data_o(ifu_pte_upd_data),
 
       .miss_req_valid_o     (icache_miss_req_valid_o),
       .miss_req_ready_i     (icache_miss_req_ready_i),
@@ -159,6 +197,25 @@ module triathlon #(
       .bpu_ras_update_is_call_o(bpu_ras_update_is_call),
       .bpu_ras_update_is_ret_o(bpu_ras_update_is_ret),
       .bpu_ras_update_pc_o(bpu_ras_update_pc),
+      .mmu_satp_o(mmu_satp_state),
+      .mmu_priv_o(mmu_priv_mode),
+      .mmu_sum_o(mmu_mstatus_sum),
+      .mmu_mxr_o(mmu_mstatus_mxr),
+      .mmu_sfence_vma_o(mmu_sfence_vma_flush),
+      .ifu_pte_ld_req_valid_i(ifu_pte_req_valid),
+      .ifu_pte_ld_req_ready_o(ifu_pte_req_ready),
+      .ifu_pte_ld_req_paddr_i(ifu_pte_req_paddr),
+      .ifu_pte_ld_rsp_valid_o(ifu_pte_rsp_valid),
+      .ifu_pte_ld_rsp_data_o(ifu_pte_rsp_data),
+      .ifu_pte_st_req_valid_i(ifu_pte_upd_valid),
+      .ifu_pte_st_req_ready_o(ifu_pte_upd_ready),
+      .ifu_pte_st_req_paddr_i(ifu_pte_upd_paddr),
+      .ifu_pte_st_req_data_i(ifu_pte_upd_data),
+      .ifetch_fault_valid_i(ifetch_fault_valid),
+      .ifetch_fault_ready_o(ifetch_fault_ready),
+      .ifetch_fault_pc_i(ifetch_fault_pc),
+      .ifetch_fault_tval_i(ifetch_fault_tval),
+      .ifetch_fault_cause_i(ifetch_fault_cause),
 
       .dcache_miss_req_valid_o(dcache_miss_req_valid_o),
       .dcache_miss_req_ready_i(dcache_miss_req_ready_i),

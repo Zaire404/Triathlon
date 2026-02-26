@@ -26,6 +26,7 @@ module tb_decoder (
     output logic        check_is_store,
     output logic        check_is_jump,
     output logic        check_is_fence,
+    output logic        check_is_sfence_vma,
     output logic [31:0] check_pred_npc,
     output logic [decode_pkg::FTQ_ID_W-1:0] check_ftq_id,
     output logic [decode_pkg::FETCH_EPOCH_W-1:0] check_fetch_epoch
@@ -93,6 +94,7 @@ module tb_decoder (
   assign check_is_store = dec_uops[0].is_store;
   assign check_is_jump  = dec_uops[0].is_jump;
   assign check_is_fence = dec_uops[0].is_fence;
+  assign check_is_sfence_vma = dec_uops[0].is_sfence_vma;
   assign check_pred_npc = dec_uops[0].pred_npc;
   assign check_ftq_id = dec_uops[0].ftq_id;
   assign check_fetch_epoch = dec_uops[0].fetch_epoch;

@@ -15,12 +15,17 @@ module tb_privilege_csr #(
     input logic is_mret_i,
     input logic is_sret_i,
     input logic is_wfi_i,
+    input logic is_sfence_vma_i,
     input logic [Cfg.PLEN-1:0] uop_pc_i,
     input logic [11:0] csr_addr_i,
     input logic [2:0] csr_op_i,
     input logic [4:0] rs1_idx_i,
     input logic [Cfg.XLEN-1:0] rs1_data_i,
     input logic [TAG_W-1:0] rob_tag_i,
+    input logic async_exception_inject_i,
+    input logic [4:0] async_exception_cause_i,
+    input logic [Cfg.PLEN-1:0] async_exception_tval_i,
+    input logic [Cfg.PLEN-1:0] trap_pc_i,
 
     output logic wb_valid_o,
     output logic [TAG_W-1:0] wb_tag_o,
@@ -28,10 +33,19 @@ module tb_privilege_csr #(
     output logic wb_exception_o,
     output logic [4:0] wb_ecause_o,
     output logic wb_is_mispred_o,
-    output logic [Cfg.PLEN-1:0] wb_redirect_pc_o
+    output logic [Cfg.PLEN-1:0] wb_redirect_pc_o,
+    output logic sfence_vma_flush_o,
+    output logic irq_trap_o,
+    output logic [4:0] irq_trap_cause_o,
+    output logic [Cfg.PLEN-1:0] irq_trap_pc_o,
+    output logic [Cfg.PLEN-1:0] irq_trap_redirect_pc_o
 );
 
   decode_pkg::uop_t uop;
+  logic [Cfg.XLEN-1:0] satp_state;
+  logic [1:0] priv_mode_state;
+  logic mstatus_sum_state;
+  logic mstatus_mxr_state;
 
   always_comb begin
     uop = '0;
@@ -44,6 +58,7 @@ module tb_privilege_csr #(
     uop.is_mret = is_mret_i;
     uop.is_sret = is_sret_i;
     uop.is_wfi = is_wfi_i;
+    uop.is_sfence_vma = is_sfence_vma_i;
     uop.csr_addr = csr_addr_i;
     uop.csr_op = decode_pkg::csr_op_e'(csr_op_i);
     uop.rs1 = rs1_idx_i;
@@ -61,8 +76,11 @@ module tb_privilege_csr #(
       .rs1_data_i(rs1_data_i),
       .rob_tag_i(rob_tag_i),
       .interrupt_inject_i(1'b0),
+      .async_exception_inject_i(async_exception_inject_i),
+      .async_exception_cause_i(async_exception_cause_i),
+      .async_exception_tval_i(async_exception_tval_i),
       .timer_irq_i(1'b0),
-      .trap_pc_i('0),
+      .trap_pc_i(trap_pc_i),
       .csr_valid_o(wb_valid_o),
       .csr_rob_tag_o(wb_tag_o),
       .csr_result_o(wb_data_o),
@@ -70,10 +88,17 @@ module tb_privilege_csr #(
       .csr_ecause_o(wb_ecause_o),
       .csr_is_mispred_o(wb_is_mispred_o),
       .csr_redirect_pc_o(wb_redirect_pc_o),
-      .irq_trap_o(),
-      .irq_trap_cause_o(),
-      .irq_trap_pc_o(),
-      .irq_trap_redirect_pc_o()
+      .sfence_vma_flush_o(sfence_vma_flush_o),
+      .irq_trap_o(irq_trap_o),
+      .irq_trap_cause_o(irq_trap_cause_o),
+      .irq_trap_pc_o(irq_trap_pc_o),
+      .irq_trap_redirect_pc_o(irq_trap_redirect_pc_o),
+      .satp_o(satp_state),
+      .priv_mode_o(priv_mode_state),
+      .mstatus_sum_o(mstatus_sum_state),
+      .mstatus_mxr_o(mstatus_mxr_state)
   );
+
+  wire _unused_state = &{1'b0, satp_state[0], priv_mode_state, mstatus_sum_state, mstatus_mxr_state};
 
 endmodule

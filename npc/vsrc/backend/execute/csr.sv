@@ -15,6 +15,9 @@ module execute_csr #(
     input logic [XLEN-1:0]  rs1_data_i,
     input logic [TAG_W-1:0] rob_tag_i,
     input logic             interrupt_inject_i,
+    input logic             async_exception_inject_i,
+    input logic [4:0]       async_exception_cause_i,
+    input logic [Cfg.PLEN-1:0] async_exception_tval_i,
     input logic             timer_irq_i,
     input logic [Cfg.PLEN-1:0] trap_pc_i,
 
@@ -28,7 +31,12 @@ module execute_csr #(
     output logic             irq_trap_o,
     output logic [4:0]       irq_trap_cause_o,
     output logic [Cfg.PLEN-1:0] irq_trap_pc_o,
-    output logic [Cfg.PLEN-1:0] irq_trap_redirect_pc_o
+    output logic [Cfg.PLEN-1:0] irq_trap_redirect_pc_o,
+    output logic [XLEN-1:0]  satp_o,
+    output logic [1:0]       priv_mode_o,
+    output logic             mstatus_sum_o,
+    output logic             mstatus_mxr_o,
+    output logic             sfence_vma_flush_o
 );
 
   localparam logic [4:0] EXC_ILLEGAL_INSTR = 5'd2;
@@ -66,6 +74,8 @@ module execute_csr #(
   localparam int unsigned MSTATUS_SPP_BIT = 8;
   localparam int unsigned MSTATUS_MPP_LSB = 11;
   localparam int unsigned MSTATUS_MPP_MSB = 12;
+  localparam int unsigned MSTATUS_SUM_BIT = 18;
+  localparam int unsigned MSTATUS_MXR_BIT = 19;
   localparam int unsigned MIE_MTIE_BIT = 7;
   localparam int unsigned MIP_MTIP_BIT = 7;
 
@@ -110,12 +120,14 @@ module execute_csr #(
   logic csr_illegal_exception;
   logic interrupt_pending;
   logic interrupt_take;
+  logic async_exception_take;
   logic system_take_exception;
   logic trap_take;
   logic trap_to_s_mode;
   logic [4:0] trap_ecause;
   logic [XLEN-1:0] trap_mcause;
   logic [XLEN-1:0] trap_scause;
+  logic [Cfg.PLEN-1:0] trap_tval;
   logic [Cfg.PLEN-1:0] trap_pc;
   logic [Cfg.PLEN-1:0] trap_redirect_pc;
   logic regular_valid;
@@ -130,6 +142,8 @@ module execute_csr #(
     csr_sstatus_mask[MSTATUS_SIE_BIT] = 1'b1;
     csr_sstatus_mask[MSTATUS_SPIE_BIT] = 1'b1;
     csr_sstatus_mask[MSTATUS_SPP_BIT] = 1'b1;
+    csr_sstatus_mask[MSTATUS_SUM_BIT] = 1'b1;
+    csr_sstatus_mask[MSTATUS_MXR_BIT] = 1'b1;
   end
 
   assign csr_sstatus_view = csr_mstatus & csr_sstatus_mask;
@@ -216,7 +230,8 @@ module execute_csr #(
   end
 
   always_comb begin
-    sys_op_valid = uop_i.is_ecall | uop_i.is_ebreak | uop_i.is_mret | uop_i.is_sret | uop_i.is_wfi;
+    sys_op_valid = uop_i.is_ecall | uop_i.is_ebreak | uop_i.is_mret | uop_i.is_sret |
+                   uop_i.is_wfi | uop_i.is_sfence_vma;
     sys_exception = 1'b0;
     sys_ecause = '0;
     sys_is_mispred = 1'b0;
@@ -255,22 +270,31 @@ module execute_csr #(
     end else if (uop_i.is_wfi) begin
       // Treat WFI as a nop-like retire point in current model.
       sys_redirect_pc = '0;
+    end else if (uop_i.is_sfence_vma) begin
+      if (current_priv == PRIV_LVL_U) begin
+        sys_exception = 1'b1;
+        sys_ecause = EXC_ILLEGAL_INSTR;
+      end
     end
   end
 
   assign interrupt_pending = timer_irq_i && csr_mstatus[MSTATUS_MIE_BIT] && csr_mie[MIE_MTIE_BIT];
   assign interrupt_take = csr_valid_i && interrupt_inject_i && interrupt_pending;
+  assign async_exception_take = csr_valid_i && async_exception_inject_i;
   assign csr_illegal_exception = csr_valid_i && uop_i.is_csr && !csr_addr_valid;
   assign system_take_exception = csr_valid_i && sys_op_valid && sys_exception;
-  assign trap_take = csr_illegal_exception || system_take_exception || interrupt_take;
+  assign trap_take = csr_illegal_exception || system_take_exception || interrupt_take ||
+                     async_exception_take;
   assign trap_to_s_mode = (current_priv != PRIV_LVL_M) &&
-                          (csr_illegal_exception || system_take_exception) &&
+                          (csr_illegal_exception || system_take_exception ||
+                           async_exception_take) &&
                           csr_medeleg[trap_ecause];
 
   always_comb begin
     trap_ecause = '0;
     trap_mcause = '0;
     trap_scause = '0;
+    trap_tval = '0;
     trap_pc = trap_pc_i;
     trap_redirect_pc = csr_mtvec[Cfg.PLEN-1:0];
 
@@ -283,6 +307,12 @@ module execute_csr #(
       trap_ecause = EXC_M_TIMER;
       trap_mcause = XLEN'((32'h1 << (XLEN - 1)) | EXC_M_TIMER);
       trap_scause = XLEN'((32'h1 << (XLEN - 1)) | EXC_M_TIMER);
+      trap_pc = trap_pc_i;
+    end else if (async_exception_take) begin
+      trap_ecause = async_exception_cause_i;
+      trap_mcause = XLEN'(async_exception_cause_i);
+      trap_scause = XLEN'(async_exception_cause_i);
+      trap_tval = async_exception_tval_i;
       trap_pc = trap_pc_i;
     end else if (system_take_exception) begin
       trap_ecause = sys_ecause;
@@ -362,6 +392,7 @@ module execute_csr #(
         if (trap_to_s_mode) begin
           csr_sepc <= XLEN'(trap_pc);
           csr_scause <= trap_scause;
+          csr_stval <= XLEN'(trap_tval);
           csr_mstatus <= mstatus_s_trap_next;
           current_priv <= PRIV_LVL_S;
         end else begin
@@ -384,16 +415,24 @@ module execute_csr #(
   assign csr_valid_o = regular_valid;
   assign csr_rob_tag_o = rob_tag_i;
   assign csr_result_o = (csr_valid_i && uop_i.is_csr) ? csr_read_val : '0;
-  assign csr_exception_o = trap_take && !interrupt_take;
-  assign csr_ecause_o = (trap_take && !interrupt_take) ? trap_ecause : '0;
+  assign csr_exception_o = regular_valid && trap_take && !interrupt_take && !async_exception_take;
+  assign csr_ecause_o = (regular_valid && trap_take && !interrupt_take &&
+                         !async_exception_take) ? trap_ecause : '0;
   assign csr_is_mispred_o = csr_valid_i && sys_op_valid && sys_is_mispred;
-  assign csr_redirect_pc_o = (trap_take && !interrupt_take) ? trap_redirect_pc :
+  assign csr_redirect_pc_o = (regular_valid && trap_take && !interrupt_take &&
+                              !async_exception_take) ? trap_redirect_pc :
                              ((csr_valid_i && sys_op_valid && sys_is_mispred) ?
                              sys_redirect_pc :
                              ((csr_valid_i && sys_op_valid) ? sys_redirect_pc : '0));
-  assign irq_trap_o = interrupt_take;
-  assign irq_trap_cause_o = interrupt_take ? EXC_M_TIMER : '0;
-  assign irq_trap_pc_o = interrupt_take ? trap_pc_i : '0;
-  assign irq_trap_redirect_pc_o = interrupt_take ? trap_redirect_pc : '0;
+  assign irq_trap_o = interrupt_take || async_exception_take;
+  assign irq_trap_cause_o = interrupt_take ? EXC_M_TIMER :
+                            (async_exception_take ? async_exception_cause_i : '0);
+  assign irq_trap_pc_o = (interrupt_take || async_exception_take) ? trap_pc_i : '0;
+  assign irq_trap_redirect_pc_o = (interrupt_take || async_exception_take) ? trap_redirect_pc : '0;
+  assign satp_o = csr_satp;
+  assign priv_mode_o = current_priv;
+  assign mstatus_sum_o = csr_mstatus[MSTATUS_SUM_BIT];
+  assign mstatus_mxr_o = csr_mstatus[MSTATUS_MXR_BIT];
+  assign sfence_vma_flush_o = csr_valid_i && sys_op_valid && uop_i.is_sfence_vma && !trap_take;
 
 endmodule
