@@ -21,6 +21,12 @@ struct UnifiedMem {
   uint64_t rtc_time_us = 0;
   uint64_t clint_mtime = 0;
   uint64_t clint_mtimecmp = ~0ull;
+  uint32_t plic_priority1 = 0;
+  uint32_t plic_enable_m = 0;
+  uint32_t plic_threshold_m = 0;
+  bool plic_source_pending1 = false;
+  bool plic_pending1 = false;
+  bool plic_claimed1 = false;
   bool uart_stdout_enabled = true;
   uint8_t uart_ier = 0;
   uint8_t uart_fcr = 0;
@@ -123,12 +129,64 @@ struct UnifiedMem {
            aligned == kClintMtimeLow || aligned == kClintMtimeHigh;
   }
 
+  static bool is_plic_word(uint32_t aligned) {
+    return aligned == kPlicPriority1 || aligned == kPlicPending ||
+           aligned == kPlicEnableM || aligned == kPlicThresholdM ||
+           aligned == kPlicClaimCompleteM;
+  }
+
   void set_time_us(uint64_t t) {
     rtc_time_us = t;
     clint_mtime = t;
   }
 
   bool timer_irq_pending() const { return clint_mtime >= clint_mtimecmp; }
+
+  bool plic_source1_enabled() const {
+    return ((plic_enable_m >> 1) & 0x1u) != 0u && plic_priority1 > plic_threshold_m;
+  }
+
+  bool plic_source1_eligible() const {
+    return plic_pending1 && plic_source1_enabled() && !plic_claimed1;
+  }
+
+  void refresh_plic_pending() {
+    if (plic_source_pending1 && !plic_claimed1) {
+      plic_pending1 = true;
+    }
+  }
+
+  uint32_t plic_pending_bits() const { return plic_pending1 ? (1u << 1) : 0u; }
+
+  void set_plic_source_pending(uint32_t source_id, bool pending) {
+    if (source_id != 1u) return;
+    plic_source_pending1 = pending;
+    if (!pending) {
+      plic_pending1 = false;
+      if (!plic_claimed1) {
+        plic_claimed1 = false;
+      }
+      return;
+    }
+    refresh_plic_pending();
+  }
+
+  bool plic_irq_pending() const { return plic_source1_eligible(); }
+
+  uint32_t plic_claim_peek() const { return plic_source1_eligible() ? 1u : 0u; }
+
+  uint32_t plic_claim_read() {
+    if (!plic_source1_eligible()) return 0u;
+    plic_pending1 = false;
+    plic_claimed1 = true;
+    return 1u;
+  }
+
+  void plic_complete_write(uint32_t data) {
+    if (data != 1u) return;
+    plic_claimed1 = false;
+    refresh_plic_pending();
+  }
 
   void write_word(uint32_t addr, uint32_t data) {
     uint32_t aligned = addr & ~0x3u;
@@ -149,6 +207,23 @@ struct UnifiedMem {
     if (aligned == kClintMtimeHigh) {
       clint_mtime = (clint_mtime & 0x00000000FFFFFFFFull) |
                     (static_cast<uint64_t>(data) << 32);
+      return;
+    }
+
+    if (aligned == kPlicPriority1) {
+      plic_priority1 = (data & 0x7u);
+      return;
+    }
+    if (aligned == kPlicEnableM) {
+      plic_enable_m = data;
+      return;
+    }
+    if (aligned == kPlicThresholdM) {
+      plic_threshold_m = (data & 0x7u);
+      return;
+    }
+    if (aligned == kPlicClaimCompleteM) {
+      plic_complete_write(data);
       return;
     }
 
@@ -228,8 +303,7 @@ struct UnifiedMem {
     }
   }
 
-  uint32_t read_word(uint32_t addr) const {
-    uint32_t aligned = addr & ~0x3u;
+  uint32_t read_word_common(uint32_t aligned) const {
     if (aligned == kRtcPortLow) return static_cast<uint32_t>(rtc_time_us & 0xFFFFFFFFu);
     if (aligned == kRtcPortHigh) return static_cast<uint32_t>((rtc_time_us >> 32) & 0xFFFFFFFFu);
 
@@ -237,6 +311,12 @@ struct UnifiedMem {
     if (aligned == kClintMtimecmpHigh) return static_cast<uint32_t>((clint_mtimecmp >> 32) & 0xFFFFFFFFu);
     if (aligned == kClintMtimeLow) return static_cast<uint32_t>(clint_mtime & 0xFFFFFFFFu);
     if (aligned == kClintMtimeHigh) return static_cast<uint32_t>((clint_mtime >> 32) & 0xFFFFFFFFu);
+
+    if (aligned == kPlicPriority1) return plic_priority1;
+    if (aligned == kPlicPending) return plic_pending_bits();
+    if (aligned == kPlicEnableM) return plic_enable_m;
+    if (aligned == kPlicThresholdM) return plic_threshold_m;
+    if (aligned == kPlicClaimCompleteM) return plic_claim_peek();
 
     if (in_uart(aligned)) {
       uint32_t value = 0u;
@@ -260,6 +340,17 @@ struct UnifiedMem {
       return pmem_words[idx];
     }
     return 0u;
+  }
+
+  uint32_t read_word(uint32_t addr) {
+    uint32_t aligned = addr & ~0x3u;
+    if (aligned == kPlicClaimCompleteM) return plic_claim_read();
+    return read_word_common(aligned);
+  }
+
+  uint32_t read_word(uint32_t addr) const {
+    uint32_t aligned = addr & ~0x3u;
+    return read_word_common(aligned);
   }
 
   void fill_line(uint32_t line_addr, std::array<uint32_t, 8> &line) const {
@@ -456,6 +547,7 @@ struct MemSystem {
   template <typename Top>
   void drive(Top *top) {
     top->timer_irq_i = mem.timer_irq_pending() ? 1 : 0;
+    top->ext_irq_i = mem.plic_irq_pending() ? 1 : 0;
     icache.drive(top);
     dcache.drive(top);
   }

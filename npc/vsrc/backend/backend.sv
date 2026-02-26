@@ -8,6 +8,7 @@ module backend #(
     input logic clk_i,
     input logic rst_ni,
     input logic timer_irq_i,
+    input logic ext_irq_i,
     input logic flush_from_backend,
     input logic frontend_ibuf_valid,
     output logic frontend_ibuf_ready,
@@ -1666,7 +1667,8 @@ module backend #(
 
   always_comb begin
     csr_ifetch_fault_inject = ifetch_fault_valid_i && !csr_en;
-    csr_irq_inject = timer_irq_i && !rob_empty && !csr_en && !csr_ifetch_fault_inject;
+    csr_irq_inject = (timer_irq_i || ext_irq_i) && !rob_empty && !csr_en &&
+                     !csr_ifetch_fault_inject;
     csr_exec_valid = csr_en || csr_irq_inject || csr_ifetch_fault_inject;
     csr_exec_uop = csr_uop;
     csr_exec_v1 = csr_v1;
@@ -1709,6 +1711,7 @@ module backend #(
       .async_exception_cause_i(csr_exec_async_ecause),
       .async_exception_tval_i(csr_exec_async_tval),
       .timer_irq_i(timer_irq_i),
+      .external_irq_i(ext_irq_i),
       .trap_pc_i(csr_exec_trap_pc),
 
       .csr_valid_o  (csr_wb_valid),

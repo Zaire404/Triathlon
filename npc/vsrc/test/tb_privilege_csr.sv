@@ -80,6 +80,7 @@ module tb_privilege_csr #(
       .async_exception_cause_i(async_exception_cause_i),
       .async_exception_tval_i(async_exception_tval_i),
       .timer_irq_i(1'b0),
+      .external_irq_i(1'b0),
       .trap_pc_i(trap_pc_i),
       .csr_valid_o(wb_valid_o),
       .csr_rob_tag_o(wb_tag_o),

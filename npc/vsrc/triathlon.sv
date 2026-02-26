@@ -11,6 +11,7 @@ module triathlon #(
     input logic rst_ni,
     // Platform interrupt inputs
     input logic timer_irq_i,
+    input logic ext_irq_i,
 
     // -----------------------------
     // I-Cache miss/refill interface
@@ -173,6 +174,7 @@ module triathlon #(
       .clk_i,
       .rst_ni,
       .timer_irq_i(timer_irq_i),
+      .ext_irq_i(ext_irq_i),
       .flush_from_backend(1'b0),
 
       .frontend_ibuf_valid (fe_be_bus.valid),

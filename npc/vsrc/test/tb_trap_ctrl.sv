@@ -63,6 +63,7 @@ module tb_trap_ctrl #(
       .async_exception_cause_i('0),
       .async_exception_tval_i('0),
       .timer_irq_i(1'b0),
+      .external_irq_i(1'b0),
       .trap_pc_i('0),
       .csr_valid_o(wb_valid_o),
       .csr_rob_tag_o(wb_tag_o),

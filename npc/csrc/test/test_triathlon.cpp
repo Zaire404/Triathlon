@@ -249,6 +249,7 @@ struct MemSystem {
 
   void drive(Vtb_triathlon *top) {
     top->timer_irq_i = 0;
+    top->ext_irq_i = 0;
     icache.drive(top);
     dcache.drive(top);
   }

@@ -9,6 +9,7 @@ module tb_boot_handoff #(
     input logic clk_i,
     input logic rst_ni,
     input logic timer_irq_i,
+    input logic ext_irq_i,
 
     output logic                                  icache_miss_req_valid_o,
     input  logic                                  icache_miss_req_ready_i,
@@ -62,6 +63,7 @@ module tb_boot_handoff #(
       .clk_i,
       .rst_ni,
       .timer_irq_i(timer_irq_i),
+      .ext_irq_i(ext_irq_i),
 
       .icache_miss_req_valid_o,
       .icache_miss_req_ready_i,

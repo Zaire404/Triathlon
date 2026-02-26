@@ -1,7 +1,7 @@
 import config_pkg::*;
 import global_config_pkg::*;
 
-module tb_timer_interrupt #(
+module tb_plic #(
     parameter config_pkg::cfg_t Cfg = global_config_pkg::Cfg
 ) (
     input logic clk_i,
@@ -41,7 +41,16 @@ module tb_timer_interrupt #(
     output logic [Cfg.XLEN-1:0] dbg_csr_mtvec_o,
     output logic [Cfg.XLEN-1:0] dbg_csr_mepc_o,
     output logic [Cfg.XLEN-1:0] dbg_csr_mstatus_o,
+    output logic [Cfg.XLEN-1:0] dbg_csr_mie_o,
+    output logic [Cfg.XLEN-1:0] dbg_csr_mip_o,
     output logic [Cfg.XLEN-1:0] dbg_csr_mcause_o,
+    output logic                dbg_csr_irq_inject_o,
+    output logic                dbg_csr_en_o,
+    output logic                dbg_csr_ifetch_fault_inject_o,
+    output logic                dbg_csr_interrupt_pending_o,
+    output logic                dbg_csr_interrupt_ext_pending_o,
+    output logic                dbg_csr_interrupt_take_o,
+    output logic                dbg_rob_empty_o,
     output logic                dbg_csr_irq_trap_o,
     output logic [Cfg.PLEN-1:0] dbg_csr_irq_redirect_pc_o,
     output logic                dbg_rob_async_valid_o,
@@ -96,7 +105,16 @@ module tb_timer_interrupt #(
   assign dbg_csr_mtvec_o = dut.u_backend.u_csr.csr_mtvec;
   assign dbg_csr_mepc_o = dut.u_backend.u_csr.csr_mepc;
   assign dbg_csr_mstatus_o = dut.u_backend.u_csr.csr_mstatus;
+  assign dbg_csr_mie_o = dut.u_backend.u_csr.csr_mie;
+  assign dbg_csr_mip_o = dut.u_backend.u_csr.csr_mip;
   assign dbg_csr_mcause_o = dut.u_backend.u_csr.csr_mcause;
+  assign dbg_csr_irq_inject_o = dut.u_backend.csr_irq_inject;
+  assign dbg_csr_en_o = dut.u_backend.csr_en;
+  assign dbg_csr_ifetch_fault_inject_o = dut.u_backend.csr_ifetch_fault_inject;
+  assign dbg_csr_interrupt_pending_o = dut.u_backend.u_csr.interrupt_pending;
+  assign dbg_csr_interrupt_ext_pending_o = dut.u_backend.u_csr.interrupt_ext_pending;
+  assign dbg_csr_interrupt_take_o = dut.u_backend.u_csr.interrupt_take;
+  assign dbg_rob_empty_o = dut.u_backend.rob_empty;
   assign dbg_csr_irq_trap_o = dut.u_backend.csr_irq_trap;
   assign dbg_csr_irq_redirect_pc_o = dut.u_backend.csr_irq_trap_redirect_pc;
   assign dbg_rob_async_valid_o = dut.u_backend.u_rob.async_exception_valid_i;
