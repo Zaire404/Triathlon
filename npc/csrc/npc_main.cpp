@@ -31,6 +31,7 @@ int main(int argc, char **argv) {
               << " <IMG> [--max-cycles N] [-d REF_SO] [--trace [vcd]] [--commit-trace]"
               << " [--bru-trace] [--fe-trace] [--stall-trace [N]] [--boot-handoff]"
               << " [--dtb <path>] [--firmware-load-base <addr>]"
+              << " [--virtio-blk-image <path>]"
               << " [--progress [N]]\n";
     return 1;
   }
@@ -61,6 +62,9 @@ int main(int argc, char **argv) {
     npc::install_jump_stub(mem.mem, npc::kBootRomBase, entry_pc);
   } else {
     if (!mem.mem.load_binary(args.img_path, npc::kPmemBase)) return 1;
+  }
+  if (!args.virtio_blk_image.empty()) {
+    if (!mem.mem.load_virtio_blk_image(args.virtio_blk_image)) return 1;
   }
   mem.icache.mem = &mem.mem;
   mem.dcache.mem = &mem.mem;
@@ -160,6 +164,32 @@ int main(int argc, char **argv) {
 
     profile.record_flush(cycles, top, mem.mem);
 
+    if (!args.boot_handoff && top->backend_flush_o && top->dbg_rob_flush_o &&
+        top->dbg_rob_flush_is_exception_o) {
+      uint32_t src_pc = top->dbg_rob_flush_src_pc_o;
+      uint32_t src_inst = mem.mem.read_word(src_pc);
+      if (src_inst == kEbreakInsn) {
+        uint32_t code = rf[10];
+        if (code == 0) {
+          std::cout << "HIT GOOD TRAP\n";
+          double ipc = cycles ? static_cast<double>(profile.total_commits()) / static_cast<double>(cycles) : 0.0;
+          double cpi = profile.total_commits() ? static_cast<double>(cycles) / static_cast<double>(profile.total_commits()) : 0.0;
+          std::cout << "IPC=" << ipc << " CPI=" << cpi
+                    << " cycles=" << cycles
+                    << " commits=" << profile.total_commits() << "\n";
+          profile.emit_summary(cycles, top);
+          if (tfp) tfp->close();
+          delete top;
+          return 0;
+        }
+        std::cout << "HIT BAD TRAP (code=" << code << ")\n";
+        profile.emit_summary(cycles, top);
+        if (tfp) tfp->close();
+        delete top;
+        return 1;
+      }
+    }
+
     if (args.bru_trace && top->dbg_bru_wb_valid_o) {
       std::ios::fmtflags f(std::cout.flags());
       std::cout << "[bruwb ] cycle=" << cycles
@@ -214,7 +244,7 @@ int main(int argc, char **argv) {
         delete top;
         return 1;
       }
-      if (inst == kEbreakInsn) {
+      if (inst == kEbreakInsn && !args.boot_handoff) {
         uint32_t code = rf[10];
         if (code == 0) {
           std::cout << "HIT GOOD TRAP\n";

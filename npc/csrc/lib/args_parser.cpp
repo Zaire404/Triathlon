@@ -56,6 +56,15 @@ SimArgs parse_args(int argc, char **argv) {
       }
       continue;
     }
+    if (arg == "--virtio-blk-image" && i + 1 < argc) {
+      args.virtio_blk_image = argv[i + 1];
+      i++;
+      continue;
+    }
+    if (arg.rfind("--virtio-blk-image=", 0) == 0) {
+      args.virtio_blk_image = arg.substr(std::string("--virtio-blk-image=").size());
+      continue;
+    }
     if (arg.rfind("--difftest=", 0) == 0) {
       args.difftest_so = arg.substr(std::string("--difftest=").size());
       continue;
