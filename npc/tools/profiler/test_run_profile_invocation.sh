@@ -33,8 +33,6 @@ PATH="${FAKE_BIN}:${PATH}" \
 MAKE_LOG="${MAKE_LOG}" \
 PY_LOG="${PY_LOG}" \
 OUT_DIR="${TMP_DIR}/out" \
-ARCH="riscv32e-npc" \
-CROSS_COMPILE="riscv64-elf-" \
   bash "${RUN_SCRIPT}" >/dev/null
 
 if ! grep -q 'benchmarks/dhrystone.* clean' "${MAKE_LOG}"; then
@@ -49,6 +47,16 @@ fi
 
 if ! grep -q 'sim .*DIFFTEST=' "${MAKE_LOG}"; then
   echo "missing DIFFTEST= in sim invocation" >&2
+  exit 1
+fi
+
+if ! grep -q 'benchmarks/dhrystone.*ARCH=riscv32i-npc.*CROSS_COMPILE=riscv64-elf-.* image' "${MAKE_LOG}"; then
+  echo "missing default riscv32i arch for dhrystone image" >&2
+  exit 1
+fi
+
+if ! grep -q 'benchmarks/coremark.*ARCH=riscv32i-npc.*CROSS_COMPILE=riscv64-elf-.* image' "${MAKE_LOG}"; then
+  echo "missing default riscv32i arch for coremark image" >&2
   exit 1
 fi
 
