@@ -3,7 +3,7 @@
 ## One-command run
 
 ```bash
-make -C npc profile-report ARCH=riscv32e-npc CROSS_COMPILE=riscv64-elf-
+make -C npc profile-report ARCH=riscv32i-npc CROSS_COMPILE=riscv64-elf-
 ```
 
 Default output directory:
@@ -15,7 +15,7 @@ Default output directory:
 If you want a fixed output directory (for example `latest`), override it:
 
 ```bash
-make -C npc profile-report ARCH=riscv32e-npc CROSS_COMPILE=riscv64-elf- \
+make -C npc profile-report ARCH=riscv32i-npc CROSS_COMPILE=riscv64-elf- \
   PROFILE_OUT_DIR=$(pwd)/npc/build/profile/latest
 ```
 
