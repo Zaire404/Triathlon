@@ -4,6 +4,7 @@
 #include "difftest_client.h"
 #include "memory_models.h"
 #include "profile_collector.h"
+#include "trap_decode.h"
 #include "verilated.h"
 #include "verilated_vcd_c.h"
 
@@ -16,11 +17,6 @@
 #include <iostream>
 #include <string>
 #include <vector>
-
-namespace {
-
-constexpr uint32_t kEbreakInsn = 0x00100073u;
-}  // namespace
 
 int main(int argc, char **argv) {
   Verilated::commandArgs(argc, argv);
@@ -168,7 +164,7 @@ int main(int argc, char **argv) {
         top->dbg_rob_flush_is_exception_o) {
       uint32_t src_pc = top->dbg_rob_flush_src_pc_o;
       uint32_t src_inst = mem.mem.read_word(src_pc);
-      if (src_inst == kEbreakInsn) {
+      if (npc::is_ebreak_insn_word(src_inst, src_pc)) {
         uint32_t code = rf[10];
         if (code == 0) {
           std::cout << "HIT GOOD TRAP\n";
@@ -244,7 +240,7 @@ int main(int argc, char **argv) {
         delete top;
         return 1;
       }
-      if (inst == kEbreakInsn && !args.boot_handoff) {
+      if (npc::is_ebreak_insn_word(inst, pc) && !args.boot_handoff) {
         uint32_t code = rf[10];
         if (code == 0) {
           std::cout << "HIT GOOD TRAP\n";
