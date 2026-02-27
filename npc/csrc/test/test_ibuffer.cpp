@@ -340,6 +340,54 @@ int main(int argc, char **argv) {
     main_time++;
   }
 
+  // Case 5: non-NOP compressed control path.
+  // slot0 = {c.ebreak, c.jr x1} => {ebreak, jalr x0,x1,0} after expansion.
+  {
+    reset(top);
+    const uint32_t base_pc = 0x80006000;
+    const std::vector<uint32_t> instrs = {0x90028082, 0, 0, 0};
+
+    top->flush_i = 0;
+    top->fe_valid_i = 1;
+    top->ibuf_ready_i = 1;
+    set_fetch_group_mask(top, base_pc, instrs, 0b0001);
+    top->clk_i = 0;
+    top->eval();
+
+    if (!top->ibuf_valid_o) {
+      std::cerr << "[fail] expected ibuf_valid in rvc control expansion case"
+                << std::endl;
+      delete top;
+      return 1;
+    }
+    if (top->ibuf_slot_valid_o != 0b0011) {
+      std::cerr << "[fail] expected two expanded slots in rvc control case, got 0x"
+                << std::hex << static_cast<uint32_t>(top->ibuf_slot_valid_o)
+                << std::dec << std::endl;
+      delete top;
+      return 1;
+    }
+    if (top->ibuf_instrs_o[0] != 0x00008067 || top->ibuf_instrs_o[1] != 0x00100073) {
+      std::cerr << "[fail] rvc control expansion opcode mismatch" << std::endl;
+      delete top;
+      return 1;
+    }
+    if (top->ibuf_pcs_o[0] != base_pc || top->ibuf_pcs_o[1] != base_pc + 2) {
+      std::cerr << "[fail] rvc control expansion pc mismatch" << std::endl;
+      delete top;
+      return 1;
+    }
+    if (top->ibuf_pred_npc_o[0] != base_pc + 2 || top->ibuf_pred_npc_o[1] != base_pc + 4) {
+      std::cerr << "[fail] rvc control expansion pred_npc mismatch" << std::endl;
+      delete top;
+      return 1;
+    }
+
+    top->clk_i = 1;
+    top->eval();
+    main_time++;
+  }
+
   uint32_t current_fetch_pc = 0x80000000;
   int cycles = 100000;
   int accepted_instr_count = 0;

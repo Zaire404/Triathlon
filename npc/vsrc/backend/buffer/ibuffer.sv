@@ -70,6 +70,10 @@ module ibuffer #(
   logic [CNT_W-1:0] fe_push_count_w;
   logic fe_fire_w;
   ibuf_entry_t [FE_EXPAND_MAX-1:0] fe_valid_entries_w;
+  logic [FE_EXPAND_MAX-1:0][15:0] fe_hw_data_w;
+  logic [FE_EXPAND_MAX-1:0][31:0] fe_hw_decoded_w;
+  logic [FE_EXPAND_MAX-1:0][Cfg.PLEN-1:0] fe_hw_pc_w;
+  logic [FE_EXPAND_MAX-1:0][15:0] fe_hw_slot_w;
 
   logic carry_valid_q;
   logic [15:0] carry_half_q;
@@ -78,30 +82,14 @@ module ibuffer #(
   logic [15:0] carry_half_next_w;
   logic [Cfg.PLEN-1:0] carry_pc_next_w;
 
-  function automatic logic [31:0] rvc_decompress(input logic [15:0] c_insn);
-    logic [31:0] dec;
-    logic [11:0] imm12;
-    begin
-      dec = 32'h00000013;  // fallback NOP
-      unique case (c_insn[1:0])
-        2'b01: begin
-          unique case (c_insn[15:13])
-            3'b000: begin  // c.addi / c.nop
-              imm12 = {{6{c_insn[12]}}, c_insn[12], c_insn[6:2]};
-              dec = {imm12, c_insn[11:7], 3'b000, c_insn[11:7], 7'b0010011};
-            end
-            default: begin
-              dec = 32'h00000013;
-            end
-          endcase
-        end
-        default: begin
-          dec = 32'h00000013;
-        end
-      endcase
-      rvc_decompress = dec;
-    end
-  endfunction
+  for (genvar i = 0; i < FE_EXPAND_MAX; i++) begin : gen_ibuf_rvc_dec
+    compressed_decoder u_compressed_decoder (
+        .instr_i({16'b0, fe_hw_data_w[i]}),
+        .instr_o(fe_hw_decoded_w[i]),
+        .is_compressed_o(),
+        .is_illegal_o()
+    );
+  end
 
   assign fe_fire_w = fe_valid_i && fe_ready_o;
   assign fe_push_count_w = fe_fire_w ? fe_valid_entry_count_w : CNT_W'(0);
@@ -113,6 +101,22 @@ module ibuffer #(
   assign consume_from_fe_w = pop_total_w - pop_from_q_w;
   assign push_to_q_w = fe_push_count_w - consume_from_fe_w;
 
+  always_comb begin
+    for (int i = 0; i < FE_EXPAND_MAX; i++) begin
+      fe_hw_data_w[i] = '0;
+      fe_hw_pc_w[i] = '0;
+      fe_hw_slot_w[i] = '0;
+    end
+    for (int i = 0; i < FETCH_WIDTH; i++) begin
+      fe_hw_data_w[2*i] = fe_instrs_i[i][15:0];
+      fe_hw_data_w[2*i+1] = fe_instrs_i[i][31:16];
+      fe_hw_pc_w[2*i] = fe_pc_i + Cfg.PLEN'(INSTR_BYTES * i);
+      fe_hw_pc_w[2*i+1] = fe_pc_i + Cfg.PLEN'(INSTR_BYTES * i + 2);
+      fe_hw_slot_w[2*i] = 16'(i);
+      fe_hw_slot_w[2*i+1] = 16'(i);
+    end
+  end
+
   // FE 输入按半字节流解析，支持 16/32 混合并展开为 32-bit 指令流。
   always_comb begin
     int unsigned wr_idx;
@@ -123,6 +127,7 @@ module ibuffer #(
     logic [15:0] hw_data[FE_EXPAND_MAX-1:0];
     logic [Cfg.PLEN-1:0] hw_pc_arr[FE_EXPAND_MAX-1:0];
     logic [15:0] hw_slot_arr[FE_EXPAND_MAX-1:0];
+    logic [7:0] hw_raw_idx_arr[FE_EXPAND_MAX-1:0];
     logic [15:0] half0;
     logic [15:0] half1;
     logic [31:0] instr32;
@@ -145,6 +150,7 @@ module ibuffer #(
       hw_data[i] = '0;
       hw_pc_arr[i] = '0;
       hw_slot_arr[i] = '0;
+      hw_raw_idx_arr[i] = '0;
       fe_valid_entries_w[i].instr = '0;
       fe_valid_entries_w[i].pc = '0;
       fe_valid_entries_w[i].slot_valid = 1'b0;
@@ -159,15 +165,17 @@ module ibuffer #(
             use_halfword_path = 1'b1;
           end
           if (hw_count < FE_EXPAND_MAX) begin
-            hw_data[hw_count] = fe_instrs_i[i][15:0];
-            hw_pc_arr[hw_count] = fe_pc_i + Cfg.PLEN'(INSTR_BYTES * i);
-            hw_slot_arr[hw_count] = 16'(i);
+            hw_data[hw_count] = fe_hw_data_w[2*i];
+            hw_pc_arr[hw_count] = fe_hw_pc_w[2*i];
+            hw_slot_arr[hw_count] = fe_hw_slot_w[2*i];
+            hw_raw_idx_arr[hw_count] = 8'(2*i);
             hw_count++;
           end
           if (hw_count < FE_EXPAND_MAX) begin
-            hw_data[hw_count] = fe_instrs_i[i][31:16];
-            hw_pc_arr[hw_count] = fe_pc_i + Cfg.PLEN'(INSTR_BYTES * i + 2);
-            hw_slot_arr[hw_count] = 16'(i);
+            hw_data[hw_count] = fe_hw_data_w[2*i+1];
+            hw_pc_arr[hw_count] = fe_hw_pc_w[2*i+1];
+            hw_slot_arr[hw_count] = fe_hw_slot_w[2*i+1];
+            hw_raw_idx_arr[hw_count] = 8'(2*i + 1);
             hw_count++;
           end
         end
@@ -213,7 +221,7 @@ module ibuffer #(
           pc_cur = hw_pc_arr[hw_idx];
           slot_idx = hw_slot_arr[hw_idx];
           if (half0[1:0] != 2'b11) begin
-            instr32 = rvc_decompress(half0);
+            instr32 = fe_hw_decoded_w[hw_raw_idx_arr[hw_idx]];
             fe_valid_entries_w[wr_idx].instr = instr32;
             fe_valid_entries_w[wr_idx].pc = pc_cur;
             fe_valid_entries_w[wr_idx].slot_valid = 1'b1;

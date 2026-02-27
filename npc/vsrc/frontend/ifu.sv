@@ -148,6 +148,7 @@ module ifu #(
 
   logic [Cfg.INSTR_PER_FETCH-1:0] rsp_slot_valid_w;
   logic [Cfg.INSTR_PER_FETCH-1:0][Cfg.PLEN-1:0] rsp_pred_npc_w;
+  logic [Cfg.INSTR_PER_FETCH-1:0] rsp_slot_compressed_w;
   logic [Cfg.INSTR_PER_FETCH-1:0][FTQ_ID_W-1:0] rsp_ftq_id_w;
   logic [Cfg.INSTR_PER_FETCH-1:0][EPOCH_W-1:0] rsp_fetch_epoch_w;
 
@@ -310,10 +311,22 @@ module ifu #(
   assign fq_deq_ready_w = ibuffer_ifu_rsp_ready_i;
   assign ibuf_pop_w = !fq_empty_w && fq_deq_valid_w && fq_deq_ready_w;
 
+  for (genvar i = 0; i < Cfg.INSTR_PER_FETCH; i++) begin : gen_ifu_rvc_probe
+    compressed_decoder u_compressed_decoder (
+        .instr_i({16'b0, icache2ifu_rsp_data_i[i][15:0]}),
+        .instr_o(),
+        .is_compressed_o(rsp_slot_compressed_w[i]),
+        .is_illegal_o()
+    );
+  end
+
   always_comb begin
     for (int i = 0; i < Cfg.INSTR_PER_FETCH; i++) begin
+      logic [Cfg.PLEN-1:0] slot_pc;
       rsp_slot_valid_w[i] = 1'b1;
-      rsp_pred_npc_w[i] = inf_head_pc_w + Cfg.PLEN'(INSTR_BYTES * (i + 1));
+      slot_pc = inf_head_pc_w + Cfg.PLEN'(INSTR_BYTES * i);
+      rsp_pred_npc_w[i] =
+          slot_pc + Cfg.PLEN'(rsp_slot_compressed_w[i] ? 2 : INSTR_BYTES);
       rsp_ftq_id_w[i] = inf_head_ftq_id_w;
       rsp_fetch_epoch_w[i] = inf_head_epoch_w;
       if (inf_head_pred_slot_valid_w) begin
