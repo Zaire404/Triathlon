@@ -8,7 +8,7 @@
 
 namespace {
 
-constexpr uint32_t kEbreakInsn = 0x00100073u;
+constexpr uint32_t kLoopInsn = 0x0000006fu;  // jal x0, 0
 constexpr int kCommitWidth = 4;
 
 uint32_t enc_i(uint32_t imm12, uint32_t rs1, uint32_t funct3, uint32_t rd, uint32_t opcode) {
@@ -53,7 +53,7 @@ int main(int argc, char **argv) {
   // OpenSBI entry stub: capture a0/a1 into x12/x13 then stop.
   mem.mem.write_word(opensbi_entry + 0x00u, insn_addi(12, 10, 0));
   mem.mem.write_word(opensbi_entry + 0x04u, insn_addi(13, 11, 0));
-  mem.mem.write_word(opensbi_entry + 0x08u, kEbreakInsn);
+  mem.mem.write_word(opensbi_entry + 0x08u, kLoopInsn);
 
   npc::reset(&top, mem, nullptr, sim_time);
 
@@ -79,7 +79,7 @@ int main(int argc, char **argv) {
       if (pc == npc::kBootRomBase) saw_bootrom_commit = true;
       if (pc == opensbi_entry) entered_opensbi = true;
 
-      if (inst == kEbreakInsn && pc == opensbi_entry + 0x08u) {
+      if (inst == kLoopInsn && pc == opensbi_entry + 0x08u) {
         if (!saw_bootrom_commit || !entered_opensbi ||
             seen_a0 != handoff.hartid || seen_a1 != handoff.dtb_addr) {
           std::cerr << "[FAIL] boot handoff mismatch: entered=" << entered_opensbi

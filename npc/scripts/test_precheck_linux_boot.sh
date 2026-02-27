@@ -19,7 +19,7 @@ if ! OUTPUT_OK=$("${PRECHECK}" \
   --opensbi-bin "${OPEN_SBI_BIN}" \
   --out-bin "${OUT_BIN}" \
   --dtb "${DTB}" \
-  --firmware-load-base 0x80040000 2>&1); then
+  --firmware-load-base 0x80400000 2>&1); then
   echo "expected success for matching payloads" >&2
   echo "${OUTPUT_OK}" >&2
   exit 1
@@ -48,6 +48,26 @@ fi
 
 if ! grep -q "PASS" <<< "${OUTPUT_TILDE}"; then
   echo "expected PASS message for tilde paths" >&2
+  exit 1
+fi
+
+set +e
+OUTPUT_ALIGN=$("${PRECHECK}" \
+  --opensbi-bin "${OPEN_SBI_BIN}" \
+  --out-bin "${OUT_BIN}" \
+  --dtb "${DTB}" \
+  --firmware-load-base 0x80040000 2>&1)
+RC_ALIGN=$?
+set -e
+
+if [ "${RC_ALIGN}" -eq 0 ]; then
+  echo "expected failure for unaligned firmware-load-base" >&2
+  exit 1
+fi
+
+if ! grep -qi "4MiB aligned" <<< "${OUTPUT_ALIGN}"; then
+  echo "expected alignment error message" >&2
+  echo "${OUTPUT_ALIGN}" >&2
   exit 1
 fi
 

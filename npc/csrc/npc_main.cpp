@@ -46,6 +46,15 @@ int main(int argc, char **argv) {
       std::cerr.flags(f);
       return 1;
     }
+    if ((firmware_base & 0x003fffffu) != 0u) {
+      std::ios::fmtflags f(std::cerr.flags());
+      std::cerr << "[boot] firmware-load-base 0x" << std::hex << firmware_base
+                << " is not 4MiB aligned; RV32 Linux setup_vm() will hit BUG_ON.\n"
+                << "[boot] use 0x80400000 (recommended) or another 0x400000-aligned address."
+                << std::dec << "\n";
+      std::cerr.flags(f);
+      return 1;
+    }
     if (!mem.mem.load_binary(args.img_path, firmware_base)) return 1;
 
     npc::BootHandoff handoff = npc::make_default_boot_handoff();
@@ -111,6 +120,8 @@ int main(int argc, char **argv) {
   std::array<uint32_t, 32> rf{};
   uint64_t no_commit_cycles = 0;
   npc::ProfileCollector profile(args, cfg_instr_per_fetch, cfg_commit_width);
+  uint32_t last_linux_wait_pc = 0xffffffffu;
+  uint64_t last_linux_wait_log_cycle = 0;
 
   for (uint64_t cycles = 0; cycles < args.max_cycles; cycles++) {
     mem.mem.set_time_us(cycles);
@@ -288,11 +299,12 @@ int main(int argc, char **argv) {
 
     if (args.progress_interval > 0 && cycles != 0 &&
         (cycles % args.progress_interval == 0)) {
+      const uint32_t last_pc = profile.last_commit_pc();
       std::ios::fmtflags f(std::cout.flags());
       std::cout << "[progress] cycle=" << cycles
                 << " commits=" << profile.total_commits()
                 << " no_commit=" << no_commit_cycles
-                << " last_pc=0x" << std::hex << profile.last_commit_pc()
+                << " last_pc=0x" << std::hex << last_pc
                 << " last_inst=0x" << profile.last_commit_inst()
                 << " a0=0x" << rf[10]
                 << " rob_head(pc/comp/is_store/fu)=0x" << top->dbg_rob_head_pc_o
@@ -370,6 +382,39 @@ int main(int argc, char **argv) {
                 << static_cast<int>(top->dcache_miss_req_valid_o) << "/"
                 << static_cast<int>(top->dcache_miss_req_ready_i)
                 << std::dec << "\n";
+      if (last_pc >= 0x800408c0u && last_pc < 0x80040900u) {
+        std::cout << "[progress][trap-debug] cycle=" << cycles
+                  << " last_pc=0x" << std::hex << last_pc
+                  << " priv=0x" << static_cast<uint32_t>(top->dbg_csr_priv_mode_o)
+                  << " mtvec=0x" << top->dbg_csr_mtvec_o
+                  << " mepc=0x" << top->dbg_csr_mepc_o
+                  << " mstatus=0x" << top->dbg_csr_mstatus_o
+                  << " mcause=0x" << top->dbg_csr_mcause_o
+                  << std::dec << "\n";
+      }
+      if (last_pc >= 0x804410c0u && last_pc < 0x80441140u) {
+        const bool pc_changed = (last_pc != last_linux_wait_pc);
+        const bool periodic_log = (cycles - last_linux_wait_log_cycle >= 1000000ull);
+        if (pc_changed || periodic_log) {
+          std::cout << "[progress][linux-wait-debug] cycle=" << cycles
+                    << " last_pc=0x" << std::hex << last_pc
+                    << " last_inst=0x" << profile.last_commit_inst()
+                    << " priv=0x" << static_cast<uint32_t>(top->dbg_csr_priv_mode_o)
+                    << " stvec=0x" << top->dbg_csr_stvec_o
+                    << " sepc=0x" << top->dbg_csr_sepc_o
+                    << " scause=0x" << top->dbg_csr_scause_o
+                    << " stval=0x" << top->dbg_csr_stval_o
+                    << " sstatus=0x" << top->dbg_csr_sstatus_o
+                    << " satp=0x" << top->dbg_csr_satp_o
+                    << " mtvec=0x" << top->dbg_csr_mtvec_o
+                    << " mepc=0x" << top->dbg_csr_mepc_o
+                    << " mstatus=0x" << top->dbg_csr_mstatus_o
+                    << " mcause=0x" << top->dbg_csr_mcause_o
+                    << std::dec << "\n";
+          last_linux_wait_pc = last_pc;
+          last_linux_wait_log_cycle = cycles;
+        }
+      }
       std::cout.flags(f);
     }
 

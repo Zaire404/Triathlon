@@ -7,7 +7,7 @@ NPC_HOME=$(cd "${SCRIPT_DIR}/.." && pwd)
 OPEN_SBI_BIN="${HOME}/rv32-linux/src/opensbi/build/platform/generic/firmware/fw_payload.bin"
 OUT_BIN="${HOME}/rv32-linux/out/fw_payload.bin"
 DTB="${HOME}/rv32-linux/out/npc.dtb"
-FIRMWARE_LOAD_BASE="0x80040000"
+FIRMWARE_LOAD_BASE="0x80400000"
 MAX_CYCLES="20000000"
 PROGRESS="1000000"
 
@@ -17,7 +17,7 @@ Usage: precheck_linux_boot.sh [options]
   --opensbi-bin <path>         OpenSBI built fw_payload.bin
   --out-bin <path>             Mirror fw_payload.bin used by npc sim
   --dtb <path>                 DTB file for boot handoff
-  --firmware-load-base <addr>  Firmware load base (default: 0x80040000)
+  --firmware-load-base <addr>  Firmware load base (default: 0x80400000)
   --max-cycles <n>             Max simulation cycles (default: 20000000)
   --progress <n>               Progress interval (default: 1000000)
   -h, --help                   Show this help
@@ -78,6 +78,17 @@ done
 OPEN_SBI_BIN=$(expand_path "${OPEN_SBI_BIN}")
 OUT_BIN=$(expand_path "${OUT_BIN}")
 DTB=$(expand_path "${DTB}")
+
+if [[ ! "${FIRMWARE_LOAD_BASE}" =~ ^(0[xX][0-9a-fA-F]+|[0-9]+)$ ]]; then
+  echo "[precheck] ERROR: invalid --firmware-load-base '${FIRMWARE_LOAD_BASE}'" >&2
+  exit 2
+fi
+base_val=$((FIRMWARE_LOAD_BASE))
+if (( (base_val & 0x3fffff) != 0 )); then
+  echo "[precheck] ERROR: firmware-load-base must be 4MiB aligned for RV32 Linux early MMU setup." >&2
+  echo "[precheck] HINT: use 0x80400000 (default) or another 0x400000-aligned address." >&2
+  exit 2
+fi
 
 if [[ ! -f "${OPEN_SBI_BIN}" ]]; then
   echo "[precheck] ERROR: OpenSBI payload not found: ${OPEN_SBI_BIN}" >&2
