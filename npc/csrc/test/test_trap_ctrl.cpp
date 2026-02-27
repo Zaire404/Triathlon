@@ -82,9 +82,10 @@ int main(int argc, char **argv) {
 
   assert(top.wb_valid_o == 1);
   assert(top.wb_tag_o == 0x13);
-  assert(top.wb_exception_o == 0);
+  assert(top.wb_exception_o == 1);
+  assert(top.wb_ecause_o == 3);
   assert(top.wb_is_mispred_o == 0);
-  assert(top.wb_redirect_pc_o == 0u);
+  assert(top.wb_redirect_pc_o == 0x80000100u);
 
   csr_rw(top, kMepc, 0x80002000u);
 

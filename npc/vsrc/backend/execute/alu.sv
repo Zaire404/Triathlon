@@ -200,7 +200,7 @@ module execute_alu #(
   assign alu_rob_tag_o = rob_tag_i;
 
   // [改进] 使用 PC_W 截断和常量
-  assign alu_result_o = (uop_i.is_jump)   ? XLEN'(uop_i.pc + INSTR_SIZE) : 
+  assign alu_result_o = (uop_i.is_jump)   ? XLEN'(uop_i.pc + INSTR_SIZE) :
                         (uop_i.is_branch) ? '0 : alu_res;
 
 endmodule

@@ -22,6 +22,7 @@ void expect(bool cond, const char *msg) {
 }
 
 void clear_inputs(Vtb_backend_mmu_dcache_mux *top) {
+  top->flush_i = 0;
   top->lsu_ld_req_valid_i = 0;
   top->lsu_ld_req_addr_i = 0;
   top->lsu_ld_req_op_i = 0;
@@ -219,6 +220,34 @@ void test_single_outstanding_mmu_load(Vtb_backend_mmu_dcache_mux *top) {
   eval_comb(top);
   expect(top->ifu_pte_ld_req_ready_o == 1, "single outstanding: next mmu req accepted after drain");
 }
+
+void test_flush_clears_mmu_inflight(Vtb_backend_mmu_dcache_mux *top) {
+  clear_inputs(top);
+  top->dcache_ld_req_ready_i = 1;
+  top->ifu_pte_ld_req_valid_i = 1;
+  top->ifu_pte_ld_req_paddr_i = 0x00100000u;
+  eval_comb(top);
+  expect(top->ifu_pte_ld_req_ready_o == 1, "flush clear: initial ifu mmu req accepted");
+  tick(top);  // Latch inflight as IFU owner.
+
+  clear_inputs(top);
+  top->dcache_ld_req_ready_i = 1;
+  top->pte_ld_req_valid_i = 1;
+  top->pte_ld_req_paddr_i = 0x00101000u;
+  eval_comb(top);
+  expect(top->pte_ld_req_ready_o == 0, "flush clear: lsu mmu req blocked by inflight");
+
+  // Simulate backend flush (mispredict/trap) before dcache response returns.
+  top->flush_i = 1;
+  tick(top);
+
+  clear_inputs(top);
+  top->dcache_ld_req_ready_i = 1;
+  top->pte_ld_req_valid_i = 1;
+  top->pte_ld_req_paddr_i = 0x00101000u;
+  eval_comb(top);
+  expect(top->pte_ld_req_ready_o == 1, "flush clear: lsu mmu req accepted after flush");
+}
 } // namespace
 
 int main(int argc, char **argv) {
@@ -232,6 +261,8 @@ int main(int argc, char **argv) {
   test_ifu_pte_load_path_and_rsp_route(top);
   reset(top);
   test_single_outstanding_mmu_load(top);
+  reset(top);
+  test_flush_clears_mmu_inflight(top);
   reset(top);
   test_pte_store_priority(top);
 

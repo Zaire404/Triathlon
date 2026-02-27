@@ -35,6 +35,8 @@ module ibuffer #(
   import global_config_pkg::ibuf_entry_t;
   localparam int unsigned FETCH_WIDTH = Cfg.INSTR_PER_FETCH;
   localparam int unsigned INSTR_BYTES = Cfg.ILEN / 8;
+  localparam int unsigned FETCH_BYTES = FETCH_WIDTH * INSTR_BYTES;
+  localparam int unsigned FE_EXPAND_MAX = FETCH_WIDTH * 2;
   localparam int unsigned PTR_W = $clog2(IB_DEPTH);
   localparam int unsigned CNT_W = $clog2(IB_DEPTH + 1);
   initial
@@ -67,7 +69,39 @@ module ibuffer #(
   logic [CNT_W-1:0] push_to_q_w;
   logic [CNT_W-1:0] fe_push_count_w;
   logic fe_fire_w;
-  ibuf_entry_t [FETCH_WIDTH-1:0] fe_valid_entries_w;
+  ibuf_entry_t [FE_EXPAND_MAX-1:0] fe_valid_entries_w;
+
+  logic carry_valid_q;
+  logic [15:0] carry_half_q;
+  logic [Cfg.PLEN-1:0] carry_pc_q;
+  logic carry_valid_next_w;
+  logic [15:0] carry_half_next_w;
+  logic [Cfg.PLEN-1:0] carry_pc_next_w;
+
+  function automatic logic [31:0] rvc_decompress(input logic [15:0] c_insn);
+    logic [31:0] dec;
+    logic [11:0] imm12;
+    begin
+      dec = 32'h00000013;  // fallback NOP
+      unique case (c_insn[1:0])
+        2'b01: begin
+          unique case (c_insn[15:13])
+            3'b000: begin  // c.addi / c.nop
+              imm12 = {{6{c_insn[12]}}, c_insn[12], c_insn[6:2]};
+              dec = {imm12, c_insn[11:7], 3'b000, c_insn[11:7], 7'b0010011};
+            end
+            default: begin
+              dec = 32'h00000013;
+            end
+          endcase
+        end
+        default: begin
+          dec = 32'h00000013;
+        end
+      endcase
+      rvc_decompress = dec;
+    end
+  endfunction
 
   assign fe_fire_w = fe_valid_i && fe_ready_o;
   assign fe_push_count_w = fe_fire_w ? fe_valid_entry_count_w : CNT_W'(0);
@@ -79,12 +113,38 @@ module ibuffer #(
   assign consume_from_fe_w = pop_total_w - pop_from_q_w;
   assign push_to_q_w = fe_push_count_w - consume_from_fe_w;
 
-  // 压缩 FE 输入：只保留 slot_valid=1 的 entry
+  // FE 输入按半字节流解析，支持 16/32 混合并展开为 32-bit 指令流。
   always_comb begin
     int unsigned wr_idx;
+    int unsigned hw_count;
+    int unsigned hw_idx;
+    int unsigned slot_idx;
+    logic use_halfword_path;
+    logic [15:0] hw_data[FE_EXPAND_MAX-1:0];
+    logic [Cfg.PLEN-1:0] hw_pc_arr[FE_EXPAND_MAX-1:0];
+    logic [15:0] hw_slot_arr[FE_EXPAND_MAX-1:0];
+    logic [15:0] half0;
+    logic [15:0] half1;
+    logic [31:0] instr32;
+    logic [Cfg.PLEN-1:0] pc_cur;
+
     wr_idx = 0;
+    hw_count = 0;
+    hw_idx = 0;
+    slot_idx = 0;
+    use_halfword_path = carry_valid_q;
+    half0 = '0;
+    half1 = '0;
+    instr32 = '0;
+    pc_cur = '0;
     fe_valid_entry_count_w = '0;
-    for (int i = 0; i < FETCH_WIDTH; i++) begin
+    carry_valid_next_w = carry_valid_q;
+    carry_half_next_w = carry_half_q;
+    carry_pc_next_w = carry_pc_q;
+    for (int i = 0; i < FE_EXPAND_MAX; i++) begin
+      hw_data[i] = '0;
+      hw_pc_arr[i] = '0;
+      hw_slot_arr[i] = '0;
       fe_valid_entries_w[i].instr = '0;
       fe_valid_entries_w[i].pc = '0;
       fe_valid_entries_w[i].slot_valid = 1'b0;
@@ -95,13 +155,92 @@ module ibuffer #(
     if (fe_valid_i) begin
       for (int i = 0; i < FETCH_WIDTH; i++) begin
         if (fe_slot_valid_i[i]) begin
-          fe_valid_entries_w[wr_idx].instr = fe_instrs_i[i];
-          fe_valid_entries_w[wr_idx].pc = fe_pc_i + Cfg.PLEN'(INSTR_BYTES * i);
-          fe_valid_entries_w[wr_idx].slot_valid = 1'b1;
-          fe_valid_entries_w[wr_idx].pred_npc = fe_pred_npc_i[i];
-          fe_valid_entries_w[wr_idx].ftq_id = fe_ftq_id_i[i];
-          fe_valid_entries_w[wr_idx].fetch_epoch = fe_fetch_epoch_i[i];
-          wr_idx++;
+          if (fe_instrs_i[i][1:0] != 2'b11) begin
+            use_halfword_path = 1'b1;
+          end
+          if (hw_count < FE_EXPAND_MAX) begin
+            hw_data[hw_count] = fe_instrs_i[i][15:0];
+            hw_pc_arr[hw_count] = fe_pc_i + Cfg.PLEN'(INSTR_BYTES * i);
+            hw_slot_arr[hw_count] = 16'(i);
+            hw_count++;
+          end
+          if (hw_count < FE_EXPAND_MAX) begin
+            hw_data[hw_count] = fe_instrs_i[i][31:16];
+            hw_pc_arr[hw_count] = fe_pc_i + Cfg.PLEN'(INSTR_BYTES * i + 2);
+            hw_slot_arr[hw_count] = 16'(i);
+            hw_count++;
+          end
+        end
+      end
+
+      if (!use_halfword_path) begin
+        for (int i = 0; i < FETCH_WIDTH; i++) begin
+          if (fe_slot_valid_i[i] && (wr_idx < FE_EXPAND_MAX)) begin
+            fe_valid_entries_w[wr_idx].instr = fe_instrs_i[i];
+            fe_valid_entries_w[wr_idx].pc = fe_pc_i + Cfg.PLEN'(INSTR_BYTES * i);
+            fe_valid_entries_w[wr_idx].slot_valid = 1'b1;
+            fe_valid_entries_w[wr_idx].pred_npc = fe_pred_npc_i[i];
+            fe_valid_entries_w[wr_idx].ftq_id = fe_ftq_id_i[i];
+            fe_valid_entries_w[wr_idx].fetch_epoch = fe_fetch_epoch_i[i];
+            wr_idx++;
+          end
+        end
+        carry_valid_next_w = 1'b0;
+        carry_half_next_w = '0;
+        carry_pc_next_w = '0;
+      end else begin
+        if (carry_valid_q) begin
+          if (hw_count >= 1) begin
+            half1 = hw_data[0];
+            instr32 = {half1, carry_half_q};
+            fe_valid_entries_w[wr_idx].instr = instr32;
+            fe_valid_entries_w[wr_idx].pc = carry_pc_q;
+            fe_valid_entries_w[wr_idx].slot_valid = 1'b1;
+            fe_valid_entries_w[wr_idx].pred_npc = carry_pc_q + Cfg.PLEN'(4);
+            slot_idx = hw_slot_arr[0];
+            fe_valid_entries_w[wr_idx].ftq_id = fe_ftq_id_i[slot_idx];
+            fe_valid_entries_w[wr_idx].fetch_epoch = fe_fetch_epoch_i[slot_idx];
+            wr_idx++;
+            hw_idx = 1;
+            carry_valid_next_w = 1'b0;
+            carry_half_next_w = '0;
+            carry_pc_next_w = '0;
+          end
+        end
+
+        while ((hw_idx < hw_count) && (wr_idx < FE_EXPAND_MAX)) begin
+          half0 = hw_data[hw_idx];
+          pc_cur = hw_pc_arr[hw_idx];
+          slot_idx = hw_slot_arr[hw_idx];
+          if (half0[1:0] != 2'b11) begin
+            instr32 = rvc_decompress(half0);
+            fe_valid_entries_w[wr_idx].instr = instr32;
+            fe_valid_entries_w[wr_idx].pc = pc_cur;
+            fe_valid_entries_w[wr_idx].slot_valid = 1'b1;
+            fe_valid_entries_w[wr_idx].pred_npc = pc_cur + Cfg.PLEN'(2);
+            fe_valid_entries_w[wr_idx].ftq_id = fe_ftq_id_i[slot_idx];
+            fe_valid_entries_w[wr_idx].fetch_epoch = fe_fetch_epoch_i[slot_idx];
+            wr_idx++;
+            hw_idx++;
+          end else begin
+            if (hw_idx + 1 < hw_count) begin
+              half1 = hw_data[hw_idx + 1];
+              instr32 = {half1, half0};
+              fe_valid_entries_w[wr_idx].instr = instr32;
+              fe_valid_entries_w[wr_idx].pc = pc_cur;
+              fe_valid_entries_w[wr_idx].slot_valid = 1'b1;
+              fe_valid_entries_w[wr_idx].pred_npc = pc_cur + Cfg.PLEN'(4);
+              fe_valid_entries_w[wr_idx].ftq_id = fe_ftq_id_i[slot_idx];
+              fe_valid_entries_w[wr_idx].fetch_epoch = fe_fetch_epoch_i[slot_idx];
+              wr_idx++;
+              hw_idx += 2;
+            end else begin
+              carry_valid_next_w = 1'b1;
+              carry_half_next_w = half0;
+              carry_pc_next_w = pc_cur;
+              hw_idx = hw_count;
+            end
+          end
         end
       end
     end
@@ -123,7 +262,7 @@ module ibuffer #(
     end else begin
       // 写入：仅写入未被当拍消费的 FE 有效条目
       if (push_to_q_w != CNT_W'(0)) begin : gen_enqueue
-        for (int i = 0; i < FETCH_WIDTH; i++) begin
+        for (int i = 0; i < FE_EXPAND_MAX; i++) begin
           if (CNT_W'(i) < push_to_q_w) begin
             fifo_d[PTR_W'(wr_ptr_q + PTR_W'(i))] =
                 fe_valid_entries_w[consume_from_fe_w + CNT_W'(i)];
@@ -183,10 +322,22 @@ module ibuffer #(
       wr_ptr_q <= '0;
       rd_ptr_q <= '0;
       count_q  <= '0;
+      carry_valid_q <= 1'b0;
+      carry_half_q <= '0;
+      carry_pc_q <= '0;
     end else begin
       wr_ptr_q <= wr_ptr_d;
       rd_ptr_q <= rd_ptr_d;
       count_q  <= count_d;
+      if (flush_i) begin
+        carry_valid_q <= 1'b0;
+        carry_half_q <= '0;
+        carry_pc_q <= '0;
+      end else begin
+        carry_valid_q <= carry_valid_next_w;
+        carry_half_q <= carry_half_next_w;
+        carry_pc_q <= carry_pc_next_w;
+      end
       // TODO: 优化为只写入被更新的那些位置
       fifo_q   <= fifo_d;
     end

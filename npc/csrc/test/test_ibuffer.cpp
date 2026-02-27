@@ -129,8 +129,8 @@ int main(int argc, char **argv) {
   // Case 1: Empty queue + FE valid + decode ready => same-cycle output (bypass)
   {
     const uint32_t base_pc = 0x80001000;
-    const std::vector<uint32_t> instrs = {0x11111111, 0x22222222, 0x33333333,
-                                          0x44444444};
+    const std::vector<uint32_t> instrs = {0x11111113, 0x22222223, 0x33333333,
+                                          0x44444443};
     top->flush_i = 0;
     top->fe_valid_i = 1;
     top->ibuf_ready_i = 1;
@@ -169,10 +169,10 @@ int main(int argc, char **argv) {
     reset(top);
     const uint32_t old_pc = 0x80002000;
     const uint32_t new_pc = 0x80003000;
-    const std::vector<uint32_t> old_instrs = {0xaaaa0001, 0xaaaa0002, 0xaaaa0003,
-                                              0xaaaa0004};
-    const std::vector<uint32_t> new_instrs = {0xbbbb0001, 0xbbbb0002, 0xbbbb0003,
-                                              0xbbbb0004};
+    const std::vector<uint32_t> old_instrs = {0xaaaa0013, 0xaaaa0023, 0xaaaa0033,
+                                              0xaaaa0043};
+    const std::vector<uint32_t> new_instrs = {0xbbbb0013, 0xbbbb0023, 0xbbbb0033,
+                                              0xbbbb0043};
 
     top->flush_i = 0;
     top->fe_valid_i = 1;
@@ -222,6 +222,124 @@ int main(int argc, char **argv) {
     main_time++;
   }
 
+  // Case 3: RVC expansion in a single 32-bit slot.
+  // slot0 = {c.nop, c.nop} should expand to two ADDI x0,x0,0 instructions.
+  {
+    reset(top);
+    const uint32_t base_pc = 0x80004000;
+    const std::vector<uint32_t> instrs = {0x00010001, 0, 0, 0};
+
+    top->flush_i = 0;
+    top->fe_valid_i = 1;
+    top->ibuf_ready_i = 1;
+    set_fetch_group_mask(top, base_pc, instrs, 0b0001);
+    top->clk_i = 0;
+    top->eval();
+
+    if (!top->ibuf_valid_o) {
+      std::cerr << "[fail] expected ibuf_valid in rvc expansion case"
+                << std::endl;
+      delete top;
+      return 1;
+    }
+    if (top->ibuf_slot_valid_o != 0b0011) {
+      std::cerr << "[fail] expected two expanded slots in rvc case, got 0x"
+                << std::hex << static_cast<uint32_t>(top->ibuf_slot_valid_o)
+                << std::dec << std::endl;
+      delete top;
+      return 1;
+    }
+    if (top->ibuf_instrs_o[0] != 0x00000013 || top->ibuf_instrs_o[1] != 0x00000013) {
+      std::cerr << "[fail] rvc expansion opcode mismatch" << std::endl;
+      delete top;
+      return 1;
+    }
+    if (top->ibuf_pcs_o[0] != base_pc || top->ibuf_pcs_o[1] != base_pc + 2) {
+      std::cerr << "[fail] rvc expansion pc mismatch" << std::endl;
+      delete top;
+      return 1;
+    }
+    if (top->ibuf_pred_npc_o[0] != base_pc + 2 || top->ibuf_pred_npc_o[1] != base_pc + 4) {
+      std::cerr << "[fail] rvc expansion pred_npc mismatch" << std::endl;
+      delete top;
+      return 1;
+    }
+
+    top->clk_i = 1;
+    top->eval();
+    main_time++;
+  }
+
+  // Case 4: Mixed 16/32 stream where a 32-bit instruction high-halfword shares a
+  // 32-bit fetch slot with the following compressed instruction.
+  // Ensure parser consumes at halfword granularity instead of forwarding raw 32-bit slot.
+  {
+    reset(top);
+    const uint32_t base_pc = 0x80005020;
+    // Byte stream:
+    //   0x00: c.nop (0x0001)
+    //   0x02: addi x1, x0, 12 (0x00c00093)
+    //   0x06: addi x2, x0, 1  (0x00100113)
+    //   0x0a: c.nop (0x0001)
+    const std::vector<uint32_t> instrs = {
+        0x00930001, // bytes: 01 00 93 00
+        0x011300c0, // bytes: c0 00 13 01
+        0x00010010, // bytes: 10 00 01 00
+        0x00000000,
+    };
+
+    top->flush_i = 0;
+    top->fe_valid_i = 1;
+    top->ibuf_ready_i = 1;
+    set_fetch_group_mask(top, base_pc, instrs, 0b0111);
+    top->clk_i = 0;
+    top->eval();
+
+    if (!top->ibuf_valid_o) {
+      std::cerr << "[fail] expected ibuf_valid in mixed rvc/rv32 case" << std::endl;
+      delete top;
+      return 1;
+    }
+    if (top->ibuf_slot_valid_o != 0b1111) {
+      std::cerr << "[fail] expected 4 decoded instructions in mixed rvc/rv32 case, got 0x"
+                << std::hex << static_cast<uint32_t>(top->ibuf_slot_valid_o)
+                << std::dec << std::endl;
+      delete top;
+      return 1;
+    }
+
+    const uint32_t kExpInstr[4] = {0x00000013, 0x00c00093, 0x00100113, 0x00000013};
+    const uint32_t kExpPc[4] = {base_pc + 0, base_pc + 2, base_pc + 6, base_pc + 10};
+    const uint32_t kExpPredNpc[4] = {base_pc + 2, base_pc + 6, base_pc + 10, base_pc + 12};
+    for (int i = 0; i < 4; ++i) {
+      if (top->ibuf_instrs_o[i] != kExpInstr[i]) {
+        std::cerr << "[fail] mixed rvc/rv32 inst mismatch at lane " << i << ", got 0x"
+                  << std::hex << top->ibuf_instrs_o[i] << " expected 0x" << kExpInstr[i]
+                  << std::dec << std::endl;
+        delete top;
+        return 1;
+      }
+      if (top->ibuf_pcs_o[i] != kExpPc[i]) {
+        std::cerr << "[fail] mixed rvc/rv32 pc mismatch at lane " << i << ", got 0x"
+                  << std::hex << top->ibuf_pcs_o[i] << " expected 0x" << kExpPc[i]
+                  << std::dec << std::endl;
+        delete top;
+        return 1;
+      }
+      if (top->ibuf_pred_npc_o[i] != kExpPredNpc[i]) {
+        std::cerr << "[fail] mixed rvc/rv32 pred_npc mismatch at lane " << i << ", got 0x"
+                  << std::hex << top->ibuf_pred_npc_o[i] << " expected 0x" << kExpPredNpc[i]
+                  << std::dec << std::endl;
+        delete top;
+        return 1;
+      }
+    }
+
+    top->clk_i = 1;
+    top->eval();
+    main_time++;
+  }
+
   uint32_t current_fetch_pc = 0x80000000;
   int cycles = 100000;
   int accepted_instr_count = 0;
@@ -246,7 +364,7 @@ int main(int argc, char **argv) {
       if (try_fetch) {
         std::vector<uint32_t> instrs(INSTR_PER_FETCH);
         for (int i = 0; i < INSTR_PER_FETCH; ++i)
-          instrs[i] = dist_instr(rng);
+          instrs[i] = (dist_instr(rng) & ~0x3u) | 0x3u;
         set_fetch_group(top, current_fetch_pc, instrs);
       }
     }

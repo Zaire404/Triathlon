@@ -105,6 +105,10 @@ module rob #(
     output logic flush_is_branch_o,
     output logic flush_is_jump_o,
     output logic [Cfg.PLEN-1:0] flush_src_pc_o,
+    output logic sync_exception_valid_o,
+    output logic [4:0] sync_exception_cause_o,
+    output logic [Cfg.PLEN-1:0] sync_exception_pc_o,
+    output logic [Cfg.PLEN-1:0] sync_exception_tval_o,
 
     // =========================================================
     // 4. Operand Query (To Issue/Rename)
@@ -222,6 +226,10 @@ module rob #(
     flush_is_branch_o = 1'b0;
     flush_is_jump_o = 1'b0;
     flush_src_pc_o = '0;
+    sync_exception_valid_o = 1'b0;
+    sync_exception_cause_o = '0;
+    sync_exception_pc_o = '0;
+    sync_exception_tval_o = '0;
 
     commit_valid_o = '0;
     commit_pc_o    = '0;
@@ -290,15 +298,11 @@ module rob #(
           if (head_fast_complete[i]) begin
             if (rob_ram[commit_rob_index_o[i]].exception) begin
               stop_commit   = 1'b1;
-              flush_o       = 1'b1;
-              flush_pc_o    = (head_fast_redirect_pc[i] != '0) ?
-                              head_fast_redirect_pc[i] :
-                              rob_ram[commit_rob_index_o[i]].pc;
-              flush_cause_o = rob_ram[commit_rob_index_o[i]].ecause;
-              flush_is_exception_o = 1'b1;
-              flush_is_branch_o = rob_ram[commit_rob_index_o[i]].is_branch;
-              flush_is_jump_o = rob_ram[commit_rob_index_o[i]].is_jump;
-              flush_src_pc_o = rob_ram[commit_rob_index_o[i]].pc;
+              // Precise sync exception is handled by CSR/trap path at commit head.
+              sync_exception_valid_o = 1'b1;
+              sync_exception_cause_o = rob_ram[commit_rob_index_o[i]].ecause;
+              sync_exception_pc_o = rob_ram[commit_rob_index_o[i]].pc;
+              sync_exception_tval_o = head_fast_data[i][Cfg.PLEN-1:0];
             end else if (rob_ram[commit_rob_index_o[i]].is_mispred) begin
               // 分支/跳转误预测：先退休该指令，再触发 flush
               commit_valid_o[i] = 1'b1;

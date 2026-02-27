@@ -308,6 +308,7 @@ static void test_load_access_fault(Vtb_lsu *top) {
   expect(top->wb_valid_o == 1, "Load access fault: wb_valid");
   expect(top->wb_exception_o == 1, "Load access fault: wb_exception");
   expect(top->wb_ecause_o == 5, "Load access fault: ecause=5");
+  expect(top->wb_data_o == 0x4000, "Load access fault: wb_data carries fault address");
 
   tick(top); // response consumed
   top->ld_rsp_valid_i = 0;
@@ -346,6 +347,7 @@ static void test_mmu_load_page_fault(Vtb_lsu *top) {
     if (top->wb_valid_o) {
       expect(top->wb_exception_o == 1, "MMU load pf: wb exception");
       expect(top->wb_ecause_o == 13, "MMU load pf: ecause=13");
+      expect(top->wb_data_o == vaddr, "MMU load pf: wb_data carries faulting vaddr");
       expect(top->ld_req_valid_o == 0, "MMU load pf: no dcache load req");
       tick(top);
       return;
@@ -393,6 +395,7 @@ static void test_mmu_store_page_fault(Vtb_lsu *top) {
       expect(!saw_sb_ex, "MMU store pf: no store-buffer enqueue");
       expect(top->wb_exception_o == 1, "MMU store pf: wb exception");
       expect(top->wb_ecause_o == 15, "MMU store pf: ecause=15");
+      expect(top->wb_data_o == vaddr, "MMU store pf: wb_data carries faulting vaddr");
       tick(top);
       return;
     }

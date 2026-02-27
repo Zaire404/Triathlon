@@ -55,7 +55,10 @@ module execute_csr #(
   localparam logic [11:0] CSR_SSTATUS = 12'h100;
   localparam logic [11:0] CSR_SIE = 12'h104;
   localparam logic [11:0] CSR_STVEC = 12'h105;
+  localparam logic [11:0] CSR_SSCRATCH = 12'h140;
   localparam logic [11:0] CSR_MSTATUS = 12'h300;
+  localparam logic [11:0] CSR_MISA = 12'h301;
+  localparam logic [11:0] CSR_MSTATUSH = 12'h310;
   localparam logic [11:0] CSR_MEDELEG = 12'h302;
   localparam logic [11:0] CSR_MIDELEG = 12'h303;
   localparam logic [11:0] CSR_MIE = 12'h304;
@@ -64,9 +67,15 @@ module execute_csr #(
   localparam logic [11:0] CSR_SCAUSE = 12'h142;
   localparam logic [11:0] CSR_STVAL = 12'h143;
   localparam logic [11:0] CSR_SIP = 12'h144;
+  localparam logic [11:0] CSR_MSCRATCH = 12'h340;
   localparam logic [11:0] CSR_MEPC = 12'h341;
   localparam logic [11:0] CSR_MCAUSE = 12'h342;
+  localparam logic [11:0] CSR_MTVAL = 12'h343;
   localparam logic [11:0] CSR_MIP = 12'h344;
+  localparam logic [11:0] CSR_MVENDORID = 12'hF11;
+  localparam logic [11:0] CSR_MARCHID = 12'hF12;
+  localparam logic [11:0] CSR_MIMPID = 12'hF13;
+  localparam logic [11:0] CSR_MHARTID = 12'hF14;
   localparam logic [11:0] CSR_SATP = 12'h180;
 
   localparam int unsigned MSTATUS_SIE_BIT = 1;
@@ -82,20 +91,25 @@ module execute_csr #(
   localparam int unsigned MIE_MTIE_BIT = 7;
   localparam int unsigned MIP_MEIP_BIT = 11;
   localparam int unsigned MIP_MTIP_BIT = 7;
+  localparam logic [XLEN-1:0] CSR_MISA_VALUE = XLEN'(32'h40141105);
 
   logic [XLEN-1:0] csr_sie;
   logic [XLEN-1:0] csr_stvec;
+  logic [XLEN-1:0] csr_sscratch;
   logic [XLEN-1:0] csr_sepc;
   logic [XLEN-1:0] csr_scause;
   logic [XLEN-1:0] csr_stval;
   logic [XLEN-1:0] csr_sip;
+  logic [XLEN-1:0] csr_mscratch;
   logic [XLEN-1:0] csr_mstatus;
+  logic [XLEN-1:0] csr_mstatush;
   logic [XLEN-1:0] csr_medeleg;
   logic [XLEN-1:0] csr_mideleg;
   logic [XLEN-1:0] csr_mie;
   logic [XLEN-1:0] csr_mtvec;
   logic [XLEN-1:0] csr_mepc;
   logic [XLEN-1:0] csr_mcause;
+  logic [XLEN-1:0] csr_mtval;
   logic [XLEN-1:0] csr_satp;
   logic [1:0] current_priv;
 
@@ -164,7 +178,10 @@ module execute_csr #(
       CSR_SSTATUS: csr_read_val = csr_sstatus_view;
       CSR_SIE: csr_read_val = csr_sie;
       CSR_STVEC: csr_read_val = csr_stvec;
+      CSR_SSCRATCH: csr_read_val = csr_sscratch;
       CSR_MSTATUS: csr_read_val = csr_mstatus;
+      CSR_MISA: csr_read_val = CSR_MISA_VALUE;
+      CSR_MSTATUSH: csr_read_val = csr_mstatush;
       CSR_MEDELEG: csr_read_val = csr_medeleg;
       CSR_MIDELEG: csr_read_val = csr_mideleg;
       CSR_MIE: csr_read_val = csr_mie;
@@ -173,9 +190,15 @@ module execute_csr #(
       CSR_SCAUSE: csr_read_val = csr_scause;
       CSR_STVAL: csr_read_val = csr_stval;
       CSR_SIP: csr_read_val = csr_sip;
+      CSR_MSCRATCH: csr_read_val = csr_mscratch;
       CSR_MEPC: csr_read_val = csr_mepc;
       CSR_MCAUSE: csr_read_val = csr_mcause;
+      CSR_MTVAL: csr_read_val = csr_mtval;
       CSR_MIP: csr_read_val = csr_mip;
+      CSR_MVENDORID: csr_read_val = '0;
+      CSR_MARCHID: csr_read_val = '0;
+      CSR_MIMPID: csr_read_val = '0;
+      CSR_MHARTID: csr_read_val = '0;
       CSR_SATP: csr_read_val = csr_satp;
       default: begin
         csr_addr_known = 1'b0;
@@ -255,10 +278,8 @@ module execute_csr #(
         default: sys_ecause = EXC_ECALL_UMODE;
       endcase
     end else if (uop_i.is_ebreak) begin
-      // Keep EBREAK as a retire-able stop marker for current bare-metal tests.
-      sys_exception = 1'b0;
+      sys_exception = 1'b1;
       sys_ecause = EXC_BREAKPOINT;
-      sys_redirect_pc = '0;
     end else if (uop_i.is_mret) begin
       if (current_priv == PRIV_LVL_M) begin
         sys_is_mispred = 1'b1;
@@ -365,17 +386,21 @@ module execute_csr #(
     if (!rst_ni) begin
       csr_sie <= '0;
       csr_stvec <= '0;
+      csr_sscratch <= '0;
       csr_sepc <= '0;
       csr_scause <= '0;
       csr_stval <= '0;
       csr_sip <= '0;
+      csr_mscratch <= '0;
       csr_mstatus <= XLEN'(32'h1800);
+      csr_mstatush <= '0;
       csr_medeleg <= '0;
       csr_mideleg <= '0;
       csr_mie <= '0;
       csr_mtvec <= '0;
       csr_mepc <= '0;
       csr_mcause <= '0;
+      csr_mtval <= '0;
       csr_satp <= '0;
       current_priv <= PRIV_LVL_M;
     end else begin
@@ -384,7 +409,9 @@ module execute_csr #(
           CSR_SSTATUS: csr_mstatus <= (csr_mstatus & ~csr_sstatus_mask) | (csr_write_val & csr_sstatus_mask);
           CSR_SIE: csr_sie <= csr_write_val;
           CSR_STVEC: csr_stvec <= csr_write_val;
+          CSR_SSCRATCH: csr_sscratch <= csr_write_val;
           CSR_MSTATUS: csr_mstatus <= csr_write_val;
+          CSR_MSTATUSH: csr_mstatush <= csr_write_val;
           CSR_MEDELEG: csr_medeleg <= csr_write_val;
           CSR_MIDELEG: csr_mideleg <= csr_write_val;
           CSR_MIE: csr_mie <= csr_write_val;
@@ -393,8 +420,10 @@ module execute_csr #(
           CSR_SCAUSE: csr_scause <= csr_write_val;
           CSR_STVAL: csr_stval <= csr_write_val;
           CSR_SIP: csr_sip <= csr_write_val;
+          CSR_MSCRATCH: csr_mscratch <= csr_write_val;
           CSR_MEPC: csr_mepc <= csr_write_val;
           CSR_MCAUSE: csr_mcause <= csr_write_val;
+          CSR_MTVAL: csr_mtval <= csr_write_val;
           CSR_MIP: ;
           CSR_SATP: csr_satp <= csr_write_val;
           default: ;
@@ -411,6 +440,7 @@ module execute_csr #(
         end else begin
           csr_mepc <= XLEN'(trap_pc);
           csr_mcause <= trap_mcause;
+          csr_mtval <= XLEN'(trap_tval);
           csr_mstatus <= mstatus_trap_next;
           current_priv <= PRIV_LVL_M;
         end

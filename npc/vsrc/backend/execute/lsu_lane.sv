@@ -149,6 +149,8 @@ module lsu_lane #(
   logic [Cfg.PLEN-1:0] eff_addr;
   logic misaligned;
   logic [Cfg.XLEN-1:0] fwd_data;
+  logic [Cfg.XLEN-1:0] eff_addr_tval;
+  logic [Cfg.XLEN-1:0] req_addr_tval;
   logic handoff_from_resp_w;
   logic handoff_from_ld_rsp_w;
   logic req_fire_w;
@@ -161,6 +163,8 @@ module lsu_lane #(
   assign misaligned    = is_misaligned(uop_i.lsu_op, eff_addr);
 
   assign fwd_data      = extract_fwd(sb_load_data_i, uop_i.lsu_op);
+  assign eff_addr_tval = Cfg.XLEN'(eff_addr);
+  assign req_addr_tval = Cfg.XLEN'(req_addr_q);
 
   // ---------------------------------------------------------
   // State machine
@@ -241,7 +245,7 @@ module lsu_lane #(
 
   assign rsp_bypass_wb_valid = (state_q == S_LD_RSP) && ld_rsp_valid_i;
   assign rsp_bypass_wb_tag = req_tag_q;
-  assign rsp_bypass_wb_data = ld_rsp_data_i;
+  assign rsp_bypass_wb_data = ld_rsp_err_i ? req_addr_tval : ld_rsp_data_i;
   assign rsp_bypass_wb_exc = ld_rsp_err_i;
   assign rsp_bypass_wb_ecause = ld_rsp_err_i ? EXC_LD_ACCESS_FAULT : '0;
 
@@ -347,11 +351,11 @@ module lsu_lane #(
           end else if (is_load) begin
             resp_tag_q <= rob_tag_i;
             if (misaligned) begin
-              resp_data_q   <= '0;
+              resp_data_q   <= eff_addr_tval;
               resp_exc_q    <= 1'b1;
               resp_ecause_q <= EXC_LD_ADDR_MISALIGNED;
             end else if (force_exception_i) begin
-              resp_data_q   <= '0;
+              resp_data_q   <= eff_addr_tval;
               resp_exc_q    <= 1'b1;
               resp_ecause_q <= force_ecause_i;
             end else if (sb_load_hit_i) begin
@@ -371,7 +375,7 @@ module lsu_lane #(
         // Capture load response
         if (state_q == S_LD_RSP && ld_rsp_valid_i && !wb_ready_i) begin
           resp_tag_q    <= req_tag_q;
-          resp_data_q   <= ld_rsp_data_i;
+          resp_data_q   <= ld_rsp_err_i ? req_addr_tval : ld_rsp_data_i;
           resp_exc_q    <= ld_rsp_err_i;
           resp_ecause_q <= ld_rsp_err_i ? EXC_LD_ACCESS_FAULT : '0;
         end

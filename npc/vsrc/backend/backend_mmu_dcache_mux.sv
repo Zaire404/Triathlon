@@ -7,6 +7,7 @@ module backend_mmu_dcache_mux #(
 ) (
     input  logic                               clk_i,
     input  logic                               rst_ni,
+    input  logic                               flush_i,
 
     input  logic                               lsu_ld_req_valid_i,
     output logic                               lsu_ld_req_ready_o,
@@ -124,6 +125,9 @@ module backend_mmu_dcache_mux #(
 
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (!rst_ni) begin
+      mmu_ld_inflight_q <= 1'b0;
+      mmu_ld_owner_q <= MMU_OWNER_LSU;
+    end else if (flush_i) begin
       mmu_ld_inflight_q <= 1'b0;
       mmu_ld_owner_q <= MMU_OWNER_LSU;
     end else begin

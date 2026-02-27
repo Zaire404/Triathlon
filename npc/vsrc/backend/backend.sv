@@ -213,6 +213,14 @@ module backend #(
   logic [                 4:0]                    csr_irq_trap_cause;
   logic [        Cfg.PLEN-1:0]                    csr_irq_trap_pc;
   logic [        Cfg.PLEN-1:0]                    csr_irq_trap_redirect_pc;
+  logic                                           rob_sync_exception_valid;
+  logic [                 4:0]                    rob_sync_exception_cause;
+  logic [        Cfg.PLEN-1:0]                    rob_sync_exception_pc;
+  logic [        Cfg.PLEN-1:0]                    rob_sync_exception_tval;
+  logic                                           rob_sync_exception_pending_q;
+  logic [                 4:0]                    rob_sync_exception_cause_q;
+  logic [        Cfg.PLEN-1:0]                    rob_sync_exception_pc_q;
+  logic [        Cfg.PLEN-1:0]                    rob_sync_exception_tval_q;
   logic [            FTQ_ID_W-1:0]                bpu_update_ftq_id_dbg;
   logic [       FETCH_EPOCH_W-1:0]                bpu_update_fetch_epoch_dbg;
   logic [         COMMIT_SEL_W-1:0]               bpu_update_sel_idx_dbg;
@@ -305,6 +313,10 @@ module backend #(
       .flush_is_branch_o   (rob_flush_is_branch),
       .flush_is_jump_o     (rob_flush_is_jump),
       .flush_src_pc_o      (rob_flush_src_pc),
+      .sync_exception_valid_o(rob_sync_exception_valid),
+      .sync_exception_cause_o(rob_sync_exception_cause),
+      .sync_exception_pc_o(rob_sync_exception_pc),
+      .sync_exception_tval_o(rob_sync_exception_tval),
 
       .query_rob_idx_i(rob_query_idx),
       .query_ready_o  (rob_query_ready),
@@ -358,6 +370,30 @@ module backend #(
       .bpu_ras_update_is_ret_o(bpu_ras_update_is_ret_o),
       .bpu_ras_update_pc_o(bpu_ras_update_pc_o)
   );
+
+  always_ff @(posedge clk_i or negedge rst_ni) begin
+    if (!rst_ni) begin
+      rob_sync_exception_pending_q <= 1'b0;
+      rob_sync_exception_cause_q <= '0;
+      rob_sync_exception_pc_q <= '0;
+      rob_sync_exception_tval_q <= '0;
+    end else if (backend_flush) begin
+      rob_sync_exception_pending_q <= 1'b0;
+      rob_sync_exception_cause_q <= '0;
+      rob_sync_exception_pc_q <= '0;
+      rob_sync_exception_tval_q <= '0;
+    end else if (!rob_sync_exception_pending_q && rob_sync_exception_valid) begin
+      rob_sync_exception_pending_q <= 1'b1;
+      rob_sync_exception_cause_q <= rob_sync_exception_cause;
+      rob_sync_exception_pc_q <= rob_sync_exception_pc;
+      rob_sync_exception_tval_q <= rob_sync_exception_tval;
+    end else if (rob_sync_exception_pending_q && csr_irq_trap) begin
+      rob_sync_exception_pending_q <= 1'b0;
+      rob_sync_exception_cause_q <= '0;
+      rob_sync_exception_pc_q <= '0;
+      rob_sync_exception_tval_q <= '0;
+    end
+  end
   assign backend_flush_o = backend_flush;
 
   // =========================================================
@@ -1486,6 +1522,7 @@ module backend #(
   ) u_mmu_dcache_mux (
       .clk_i(clk_i),
       .rst_ni(rst_ni),
+      .flush_i(backend_flush),
 
       .lsu_ld_req_valid_i(lsu_ld_req_valid),
       .lsu_ld_req_ready_o(lsu_ld_req_ready),
@@ -1651,7 +1688,9 @@ module backend #(
   logic csr_wb_is_mispred;
   logic [Cfg.PLEN-1:0] csr_wb_redirect_pc;
   logic csr_irq_inject;
+  logic csr_rob_exception_inject;
   logic csr_ifetch_fault_inject;
+  logic csr_async_exception_inject;
   logic csr_exec_valid;
   decode_pkg::uop_t csr_exec_uop;
   logic [Cfg.XLEN-1:0] csr_exec_v1;
@@ -1666,19 +1705,29 @@ module backend #(
   logic csr_sfence_vma_flush;
 
   always_comb begin
-    csr_ifetch_fault_inject = ifetch_fault_valid_i && !csr_en;
+    csr_rob_exception_inject = rob_sync_exception_pending_q && !csr_en;
+    csr_ifetch_fault_inject = ifetch_fault_valid_i && !csr_en && !csr_rob_exception_inject;
+    csr_async_exception_inject = csr_rob_exception_inject || csr_ifetch_fault_inject;
     csr_irq_inject = (timer_irq_i || ext_irq_i) && !rob_empty && !csr_en &&
-                     !csr_ifetch_fault_inject;
-    csr_exec_valid = csr_en || csr_irq_inject || csr_ifetch_fault_inject;
+                     !csr_rob_exception_inject && !csr_ifetch_fault_inject;
+    csr_exec_valid = csr_en || csr_rob_exception_inject || csr_irq_inject ||
+                     csr_ifetch_fault_inject;
     csr_exec_uop = csr_uop;
     csr_exec_v1 = csr_v1;
     csr_exec_dst = csr_dst;
     csr_exec_trap_pc = csr_uop.pc;
-    csr_exec_async_ecause = ifetch_fault_cause_i;
-    csr_exec_async_tval = ifetch_fault_tval_i;
+    csr_exec_async_ecause = rob_sync_exception_cause_q;
+    csr_exec_async_tval = rob_sync_exception_tval_q;
     ifetch_fault_ready_o = csr_ifetch_fault_inject;
 
-    if (csr_ifetch_fault_inject) begin
+    if (csr_rob_exception_inject) begin
+      csr_exec_uop = '0;
+      csr_exec_v1 = '0;
+      csr_exec_dst = rob_head_ptr;
+      csr_exec_trap_pc = rob_sync_exception_pc_q;
+      csr_exec_async_ecause = rob_sync_exception_cause_q;
+      csr_exec_async_tval = rob_sync_exception_tval_q;
+    end else if (csr_ifetch_fault_inject) begin
       csr_exec_uop = '0;
       csr_exec_v1 = '0;
       csr_exec_dst = rob_head_ptr;
@@ -1707,7 +1756,7 @@ module backend #(
       .rs1_data_i (csr_exec_v1),
       .rob_tag_i  (csr_exec_dst),
       .interrupt_inject_i(csr_irq_inject),
-      .async_exception_inject_i(csr_ifetch_fault_inject),
+      .async_exception_inject_i(csr_async_exception_inject),
       .async_exception_cause_i(csr_exec_async_ecause),
       .async_exception_tval_i(csr_exec_async_tval),
       .timer_irq_i(timer_irq_i),

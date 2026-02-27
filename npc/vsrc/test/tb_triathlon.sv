@@ -57,6 +57,13 @@ module tb_triathlon #(
     output logic [Cfg.XLEN-1:0]                dbg_csr_mepc_o,
     output logic [Cfg.XLEN-1:0]                dbg_csr_mstatus_o,
     output logic [Cfg.XLEN-1:0]                dbg_csr_mcause_o,
+    output logic [Cfg.XLEN-1:0]                dbg_csr_sstatus_o,
+    output logic [Cfg.XLEN-1:0]                dbg_csr_stvec_o,
+    output logic [Cfg.XLEN-1:0]                dbg_csr_sepc_o,
+    output logic [Cfg.XLEN-1:0]                dbg_csr_scause_o,
+    output logic [Cfg.XLEN-1:0]                dbg_csr_stval_o,
+    output logic [Cfg.XLEN-1:0]                dbg_csr_satp_o,
+    output logic [1:0]                         dbg_csr_priv_mode_o,
     output logic                               backend_flush_o,
     output logic [Cfg.PLEN-1:0]                backend_redirect_pc_o,
     output logic [Cfg.PLEN-1:0]                dbg_retire_redirect_pc_o,
@@ -97,6 +104,20 @@ module tb_triathlon #(
     output logic                               dbg_ifu_block_reqq_empty_o,
     output logic                               dbg_ifu_block_inf_full_o,
     output logic                               dbg_ifu_block_storage_budget_o,
+    output logic                               dbg_ifu_fault_pending_o,
+    output logic [1:0]                         dbg_ifu_mmu_state_o,
+    output logic [2:0]                         dbg_ifu_mmu_core_state_o,
+    output logic                               dbg_ifu_pte_req_valid_o,
+    output logic                               dbg_ifu_pte_req_ready_o,
+    output logic                               dbg_ifu_pte_rsp_valid_o,
+    output logic                               dbg_ifu_pte_upd_valid_o,
+    output logic                               dbg_ifu_pte_upd_ready_o,
+    output logic                               dbg_mux_mmu_ld_inflight_o,
+    output logic                               dbg_mux_mmu_ld_owner_o,
+    output logic                               dbg_ifetch_fault_valid_o,
+    output logic                               dbg_ifetch_fault_ready_o,
+    output logic                               dbg_csr_en_o,
+    output logic                               dbg_csr_ifetch_fault_inject_o,
     output logic                               dbg_dec_valid_o,
     output logic                               dbg_dec_ready_o,
     output logic                               dbg_rob_ready_o,
@@ -155,7 +176,7 @@ module tb_triathlon #(
     output logic                               dbg_lsu_issue_valid_o,
     output logic                               dbg_lsu_req_ready_o,
     output logic                               dbg_lsu_issue_ready_o,
-    output logic [4:0]                         dbg_lsu_free_count_o,
+    output logic [$clog2(Cfg.RS_DEPTH+1)-1:0]  dbg_lsu_free_count_o,
     output logic [3:0]                         dbg_lsu_grp_lane_busy_o,
     output logic                               dbg_lsu_grp_alloc_fire_o,
     output logic [1:0]                         dbg_lsu_grp_alloc_lane_o,
@@ -319,6 +340,13 @@ module tb_triathlon #(
   assign dbg_csr_mepc_o    = dut.u_backend.u_csr.csr_mepc;
   assign dbg_csr_mstatus_o = dut.u_backend.u_csr.csr_mstatus;
   assign dbg_csr_mcause_o  = dut.u_backend.u_csr.csr_mcause;
+  assign dbg_csr_sstatus_o = dut.u_backend.u_csr.csr_sstatus_view;
+  assign dbg_csr_stvec_o   = dut.u_backend.u_csr.csr_stvec;
+  assign dbg_csr_sepc_o    = dut.u_backend.u_csr.csr_sepc;
+  assign dbg_csr_scause_o  = dut.u_backend.u_csr.csr_scause;
+  assign dbg_csr_stval_o   = dut.u_backend.u_csr.csr_stval;
+  assign dbg_csr_satp_o    = dut.u_backend.u_csr.csr_satp;
+  assign dbg_csr_priv_mode_o = dut.u_backend.csr_priv_mode;
   assign backend_flush_o = dut.u_backend.backend_flush_o;
   assign backend_redirect_pc_o = dut.u_backend.backend_redirect_pc_o;
   assign dbg_retire_redirect_pc_o = dut.u_backend.retire_redirect_pc_dbg;
@@ -361,6 +389,20 @@ module tb_triathlon #(
   assign dbg_ifu_block_reqq_empty_o = dut.u_frontend.i_ifu.req_block_reqq_empty_w;
   assign dbg_ifu_block_inf_full_o = dut.u_frontend.i_ifu.req_block_inf_full_w;
   assign dbg_ifu_block_storage_budget_o = dut.u_frontend.i_ifu.req_block_storage_budget_w;
+  assign dbg_ifu_fault_pending_o = dut.u_frontend.i_ifu.fault_pending_q;
+  assign dbg_ifu_mmu_state_o = dut.u_frontend.i_ifu.mmu_state_q;
+  assign dbg_ifu_mmu_core_state_o = dut.u_frontend.i_ifu.u_ifu_mmu.state_q;
+  assign dbg_ifu_pte_req_valid_o = dut.ifu_pte_req_valid;
+  assign dbg_ifu_pte_req_ready_o = dut.ifu_pte_req_ready;
+  assign dbg_ifu_pte_rsp_valid_o = dut.ifu_pte_rsp_valid;
+  assign dbg_ifu_pte_upd_valid_o = dut.ifu_pte_upd_valid;
+  assign dbg_ifu_pte_upd_ready_o = dut.ifu_pte_upd_ready;
+  assign dbg_mux_mmu_ld_inflight_o = dut.u_backend.u_mmu_dcache_mux.mmu_ld_inflight_q;
+  assign dbg_mux_mmu_ld_owner_o = dut.u_backend.u_mmu_dcache_mux.mmu_ld_owner_q;
+  assign dbg_ifetch_fault_valid_o = dut.ifetch_fault_valid;
+  assign dbg_ifetch_fault_ready_o = dut.ifetch_fault_ready;
+  assign dbg_csr_en_o = dut.u_backend.csr_en;
+  assign dbg_csr_ifetch_fault_inject_o = dut.u_backend.csr_ifetch_fault_inject;
   assign dbg_dec_valid_o = dut.u_backend.decode_ibuf_valid;
   assign dbg_dec_ready_o = dut.u_backend.decode_ibuf_ready;
   assign dbg_rob_ready_o = dut.u_backend.rob_ready;

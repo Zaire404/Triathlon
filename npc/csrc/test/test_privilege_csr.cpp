@@ -10,14 +10,23 @@ constexpr uint32_t kCsrRw = 0u;
 constexpr uint32_t kCsrRs = 1u;
 
 constexpr uint32_t kMstatus = 0x300u;
+constexpr uint32_t kMisa = 0x301u;
+constexpr uint32_t kMstatush = 0x310u;
 constexpr uint32_t kMedeleg = 0x302u;
 constexpr uint32_t kMideleg = 0x303u;
 constexpr uint32_t kMtvec = 0x305u;
+constexpr uint32_t kMvendorid = 0xF11u;
+constexpr uint32_t kMarchid = 0xF12u;
+constexpr uint32_t kMimpid = 0xF13u;
+constexpr uint32_t kMhartid = 0xF14u;
+constexpr uint32_t kMscratch = 0x340u;
 constexpr uint32_t kMepc = 0x341u;
+constexpr uint32_t kMtval = 0x343u;
 
 constexpr uint32_t kSstatus = 0x100u;
 constexpr uint32_t kSie = 0x104u;
 constexpr uint32_t kStvec = 0x105u;
+constexpr uint32_t kSscratch = 0x140u;
 constexpr uint32_t kSepc = 0x141u;
 constexpr uint32_t kScause = 0x142u;
 constexpr uint32_t kStval = 0x143u;
@@ -28,6 +37,7 @@ constexpr uint32_t kEcallFromS = 9u;
 constexpr uint32_t kInstPageFault = 12u;
 constexpr uint32_t kMstatusSumBit = 18u;
 constexpr uint32_t kMstatusMxrBit = 19u;
+constexpr uint32_t kExpectedMisa = 0x40141105u;  // RV32 + ACIMSU
 
 struct Resp {
   uint32_t data = 0;
@@ -133,6 +143,14 @@ Resp sys_ecall(Vtb_privilege_csr &top, uint32_t pc) {
   return issue(top);
 }
 
+Resp sys_ebreak(Vtb_privilege_csr &top, uint32_t pc) {
+  clear_inputs(top);
+  top.valid_i = 1;
+  top.is_ebreak_i = 1;
+  top.uop_pc_i = pc;
+  return issue(top);
+}
+
 Resp sys_sfence_vma(Vtb_privilege_csr &top) {
   clear_inputs(top);
   top.valid_i = 1;
@@ -185,6 +203,7 @@ int main(int argc, char **argv) {
 
   expect_csr_rw(top, kSstatus, 0x00000122u, "sstatus");
   expect_csr_rw(top, kStvec, 0x80000200u, "stvec");
+  expect_csr_rw(top, kSscratch, 0x80002000u, "sscratch");
   expect_csr_rw(top, kSepc, 0x80003000u, "sepc");
   expect_csr_rw(top, kScause, 0x00000009u, "scause");
   expect_csr_rw(top, kStval, 0x12345678u, "stval");
@@ -192,6 +211,21 @@ int main(int argc, char **argv) {
   expect_csr_rw(top, kSip, 0x00000222u, "sip");
   expect_csr_rw(top, kMedeleg, (1u << kEcallFromS) | (1u << kInstPageFault), "medeleg");
   expect_csr_rw(top, kMideleg, (1u << 7), "mideleg");
+  expect_csr_rw(top, kMstatush, 0x00000020u, "mstatush");
+  Resp misa = csr_read(top, kMisa);
+  expect(!misa.exception, "misa read should not trap");
+  expect(misa.data == kExpectedMisa, "misa value mismatch");
+  Resp mhartid = csr_read(top, kMhartid);
+  expect(!mhartid.exception, "mhartid read should not trap");
+  expect(mhartid.data == 0u, "mhartid should be hart0");
+  Resp mvendorid = csr_read(top, kMvendorid);
+  expect(!mvendorid.exception, "mvendorid read should not trap");
+  Resp marchid = csr_read(top, kMarchid);
+  expect(!marchid.exception, "marchid read should not trap");
+  Resp mimpid = csr_read(top, kMimpid);
+  expect(!mimpid.exception, "mimpid read should not trap");
+  expect_csr_rw(top, kMscratch, 0x80001000u, "mscratch");
+  expect_csr_rw(top, kMtval, 0xdeadbeefu, "mtval");
   expect_csr_rw(top, kSatp, 0x80000000u, "satp");
 
   // SSTATUS should expose SUM/MXR bits.
@@ -200,6 +234,15 @@ int main(int argc, char **argv) {
 
   // Enter S-mode via mret with MPP=S.
   expect_csr_rw(top, kMtvec, 0x80000100u, "mtvec");
+  Resp ebreak = sys_ebreak(top, 0x80001234u);
+  expect(ebreak.exception, "ebreak should raise exception");
+  expect(ebreak.ecause == 3u, "ebreak cause should be breakpoint");
+  expect(ebreak.redirect == 0x80000100u, "ebreak should redirect to mtvec");
+
+  Resp mepc_after_ebreak = csr_read(top, kMepc);
+  expect(!mepc_after_ebreak.exception, "mepc read after ebreak should not trap");
+  expect(mepc_after_ebreak.data == 0x80001234u, "mepc should record ebreak pc");
+
   expect_csr_rw(top, kMepc, 0x80001000u, "mepc");
   expect_csr_rw(top, kMstatus, (1u << 11), "mstatus.mpp=s");
   Resp mret = sys_mret(top);

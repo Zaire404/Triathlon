@@ -3,6 +3,7 @@ import decode_pkg::*;
 module tb_backend_mmu_dcache_mux (
     input logic clk_i,
     input logic rst_ni,
+    input logic flush_i,
 
     input logic lsu_ld_req_valid_i,
     output logic lsu_ld_req_ready_o,
@@ -70,6 +71,7 @@ module tb_backend_mmu_dcache_mux (
   ) dut (
       .clk_i,
       .rst_ni,
+      .flush_i,
 
       .lsu_ld_req_valid_i,
       .lsu_ld_req_ready_o,

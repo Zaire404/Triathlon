@@ -834,7 +834,8 @@ module lsu_group #(
         pend_rs2_data_q <= mmu_rs2_data_q;
         pend_rob_tag_q <= mmu_rob_tag_q;
         pend_sb_id_q <= mmu_sb_id_q;
-        pend_addr_q <= mmu_resp_paddr[Cfg.PLEN-1:0];
+        pend_addr_q <= mmu_resp_page_fault ? mmu_vaddr_q[Cfg.PLEN-1:0] :
+                                            mmu_resp_paddr[Cfg.PLEN-1:0];
         pend_force_fault_q <= mmu_resp_page_fault;
         if (mmu_resp_page_fault && mmu_uop_q.is_store) begin
           pend_force_ecause_q <= EXC_ST_PAGE_FAULT;
@@ -852,7 +853,9 @@ module lsu_group #(
       if (store_req_fire) begin
         store_wb_valid_q[store_wb_tail_q] <= 1'b1;
         store_wb_rob_idx_q[store_wb_tail_q] <= pend_valid_q ? pend_rob_tag_q : rob_tag_i;
-        store_wb_data_q[store_wb_tail_q] <= '0;
+        store_wb_data_q[store_wb_tail_q] <= (store_misaligned || store_page_fault) ?
+                                            Cfg.XLEN'(pend_valid_q ? pend_addr_q : req_in_eff_addr) :
+                                            '0;
         store_wb_exception_q[store_wb_tail_q] <= store_misaligned || store_page_fault;
         store_wb_ecause_q[store_wb_tail_q] <= store_misaligned ? EXC_ST_ADDR_MISALIGNED :
                                               (store_page_fault ? EXC_ST_PAGE_FAULT : '0);
