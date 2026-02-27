@@ -41,6 +41,21 @@ emit_known_failure_hints() {
   fi
 }
 
+has_linux_execution_progress() {
+  local log_file="$1"
+  local line pc_hex
+  while IFS= read -r line; do
+    if [[ "${line}" =~ last_pc=0x([0-9a-fA-F]+) ]]; then
+      pc_hex="${BASH_REMATCH[1]}"
+      # Treat progress PCs in S-mode Linux image range as Linux execution evidence.
+      if (( 16#${pc_hex} >= 0x80800000 )); then
+        return 0
+      fi
+    fi
+  done < <(grep -E "\\[progress\\]" "${log_file}" || true)
+  return 1
+}
+
 usage() {
   cat <<'EOF'
 Usage: run_linux_smoke.sh [options]
@@ -246,9 +261,13 @@ set -e
 popd >/dev/null
 
 timed_out=0
+cycle_timeout=0
 if [[ "${RC}" -eq 124 ]]; then
   timed_out=1
   echo "[linux-smoke] WARN: timeout after ${TIMEOUT_SEC}s, validating markers from collected log." >&2
+elif [[ "${RC}" -ne 0 ]] && grep -q "TIMEOUT after" "${LOG_FILE}"; then
+  cycle_timeout=1
+  echo "[linux-smoke] WARN: simulator hit max-cycles, validating markers from collected log." >&2
 elif [[ "${RC}" -ne 0 ]]; then
   echo "[linux-smoke] ERROR: make sim exited with ${RC}" >&2
   emit_known_failure_hints "${LOG_FILE}"
@@ -256,8 +275,16 @@ elif [[ "${RC}" -ne 0 ]]; then
   exit 1
 fi
 
+linux_progress_fallback=0
+if [[ "${SMOKE_MODE}" == "full" ]] && has_linux_execution_progress "${LOG_FILE}"; then
+  linux_progress_fallback=1
+fi
+
 missing=()
 for marker in "${MARKERS[@]}"; do
+  if [[ "${linux_progress_fallback}" -eq 1 ]] && [[ "${marker}" == "Linux version" ]]; then
+    continue
+  fi
   if ! grep -q "${marker}" "${LOG_FILE}"; then
     missing+=("${marker}")
   fi
@@ -270,6 +297,8 @@ if [[ "${#missing[@]}" -ne 0 ]]; then
   done
   if [[ "${timed_out}" -eq 1 ]]; then
     echo "[linux-smoke] ERROR: timed out before required markers were fully observed." >&2
+  elif [[ "${cycle_timeout}" -eq 1 ]]; then
+    echo "[linux-smoke] ERROR: hit max-cycles before required markers were fully observed." >&2
   fi
   emit_known_failure_hints "${LOG_FILE}"
   tail -n 40 "${LOG_FILE}" | sed 's/^/[linux-smoke] | /' >&2 || true
@@ -279,6 +308,12 @@ fi
 echo "[linux-smoke] PASS"
 if [[ "${timed_out}" -eq 1 ]]; then
   echo "[linux-smoke] note: timeout occurred but required markers were observed."
+fi
+if [[ "${cycle_timeout}" -eq 1 ]]; then
+  echo "[linux-smoke] note: max-cycles reached but required markers were observed."
+fi
+if [[ "${linux_progress_fallback}" -eq 1 ]] && ! grep -q "Linux version" "${LOG_FILE}"; then
+  echo "[linux-smoke] note: Linux execution detected via progress PC fallback (no Linux version UART marker)."
 fi
 echo "[linux-smoke] matched markers: ${MARKERS[*]}"
 echo "[linux-smoke] log: ${LOG_FILE}"

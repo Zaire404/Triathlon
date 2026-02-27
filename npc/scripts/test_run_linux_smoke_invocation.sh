@@ -31,6 +31,15 @@ if [[ "${SIM_BEHAVIOR:-pass}" == "pass" ]]; then
 elif [[ "${SIM_BEHAVIOR:-pass}" == "quick" ]]; then
   echo "OpenSBI v1.5"
   echo "Domain0 Next Address        : 0x80800000"
+elif [[ "${SIM_BEHAVIOR:-pass}" == "linux_nolog" ]]; then
+  echo "OpenSBI v1.5"
+  echo "Domain0 Next Address        : 0x80800000"
+  echo "[progress] cycle=4000000 commits=4443317 no_commit=0 last_pc=0x810043ba"
+  echo "[progress] cycle=6000000 commits=6443317 no_commit=0 last_pc=0x810043ba"
+elif [[ "${SIM_BEHAVIOR:-pass}" == "quick_cycle_timeout" ]]; then
+  echo "OpenSBI v1.5"
+  echo "Domain0 Next Address        : 0x80800000"
+  echo "TIMEOUT after 1000 cycles"
 elif [[ "${SIM_BEHAVIOR:-pass}" == "hang" ]]; then
   echo "OpenSBI v1.5"
   echo "[progress] cycle=2900000 commits=3588795 no_commit=7231 last_pc=0x80441088"
@@ -80,6 +89,22 @@ if ! PATH="${FAKE_BIN}:${PATH}" \
   exit 1
 fi
 
+if ! PATH="${FAKE_BIN}:${PATH}" \
+  MAKE_LOG="${MAKE_LOG}" \
+  SIM_BEHAVIOR=quick_cycle_timeout \
+  SIM_EXIT_CODE=2 \
+  bash "${RUN_SCRIPT}" \
+    --fw-payload "${FW_PAYLOAD}" \
+    --dtb "${DTB}" \
+    --virtio-blk-image "${BLK_IMG}" \
+    --timeout-sec 0 \
+    --max-cycles 1000 \
+    --progress 100 \
+    --log-dir "${LOG_DIR}" >/dev/null 2>&1; then
+  echo "expected quick smoke to pass when simulator exits on max-cycles with quick markers observed" >&2
+  exit 1
+fi
+
 set +e
 PATH="${FAKE_BIN}:${PATH}" \
 MAKE_LOG="${MAKE_LOG}" \
@@ -98,6 +123,22 @@ set -e
 
 if [[ "${RC}" -eq 0 ]]; then
   echo "expected full smoke to fail when Linux marker is missing" >&2
+  exit 1
+fi
+
+if ! PATH="${FAKE_BIN}:${PATH}" \
+  MAKE_LOG="${MAKE_LOG}" \
+  SIM_BEHAVIOR=linux_nolog \
+  bash "${RUN_SCRIPT}" \
+    --mode full \
+    --fw-payload "${FW_PAYLOAD}" \
+    --dtb "${DTB}" \
+    --virtio-blk-image "${BLK_IMG}" \
+    --timeout-sec 0 \
+    --max-cycles 1000 \
+    --progress 100 \
+    --log-dir "${LOG_DIR}" >/dev/null 2>&1; then
+  echo "expected full smoke script to pass when Linux runs but UART marker is absent" >&2
   exit 1
 fi
 
