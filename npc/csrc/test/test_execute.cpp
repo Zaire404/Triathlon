@@ -25,6 +25,7 @@ struct TestCase {
     uint32_t expected_res;
     bool     expected_mispred;
     uint32_t expected_redir_pc;
+    bool     is_rvc = false;
 };
 
 void run_test(Vtb_execute *top, const TestCase &tc) {
@@ -32,6 +33,7 @@ void run_test(Vtb_execute *top, const TestCase &tc) {
     top->br_op_i     = tc.br_op;
     top->is_branch_i = tc.is_branch;
     top->is_jump_i   = tc.is_jump;
+    top->is_rvc_i    = tc.is_rvc;
     top->has_rs2_i   = tc.has_rs2;
     top->rs1_data_i  = tc.rs1;
     top->rs2_data_i  = tc.rs2;
@@ -93,6 +95,8 @@ int main(int argc, char **argv) {
         {"BNE (NotTk)",  0, 1, 1, 0, 1, 100, 100, 0x40, 0x8000, 0x8004, 0, 0, 0},
         {"BLT (Taken)",  0, 2, 1, 0, 1, (uint32_t)-2, (uint32_t)-1, 0x10, 0x8000, 0x8004, 0, 1, 0x8010},
         {"BGEU (Taken)", 0, 5, 1, 0, 1, (uint32_t)-1, 100, 0x10, 0x8000, 0x8004, 0, 1, 0x8010},
+        // compressed conditional branch (e.g. c.bnez) not-taken should fallthrough by +2
+        {"CBNE_NotTk_Fallthrough2", 0, 1, 1, 0, 1, 1, 1, 0x40, 0x81004260, 0x81004262, 0, 0, 0, true},
 
         // --- 新增: 预测正确的控制流不应误判 ---
         {"BEQ_TK_PRED_OK", 0, 0, 1, 0, 1, 7, 7, 0x20, 0x9000, 0x9020, 0, 0, 0},

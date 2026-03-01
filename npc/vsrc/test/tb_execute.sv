@@ -20,6 +20,7 @@ module tb_execute #(
     input logic [      2:0] br_op_i,      // BR OP 宽度通常固定，暂保持 3
     input logic             is_branch_i,
     input logic             is_jump_i,
+    input logic             is_rvc_i,
     input logic [ XLEN-1:0] rs1_data_i,   // [修改] 参数化位宽
     input logic [ XLEN-1:0] rs2_data_i,   // [修改] 参数化位宽
     input logic [TAG_W-1:0] rob_tag_in,   // [修改] 参数化位宽
@@ -45,6 +46,7 @@ module tb_execute #(
     uop.br_op     = decode_pkg::branch_op_e'(br_op_i);
     uop.is_branch = is_branch_i;
     uop.is_jump   = is_jump_i;
+    uop.is_rvc    = is_rvc_i;
     uop.valid     = 1'b1;
     uop.has_rs2   = has_rs2_i;
   end
