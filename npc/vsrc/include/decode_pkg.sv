@@ -97,6 +97,7 @@ package decode_pkg;
     // PC & 控制流信息
     logic [Cfg.PLEN-1:0] pc;
     logic [Cfg.PLEN-1:0] pred_npc;
+    logic is_rvc;
     logic [FTQ_ID_W-1:0] ftq_id;
     logic [FETCH_EPOCH_W-1:0] fetch_epoch;
 

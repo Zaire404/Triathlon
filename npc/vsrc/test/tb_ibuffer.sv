@@ -28,6 +28,7 @@ module tb_ibuffer #(
     output logic [Cfg.INSTR_PER_FETCH*Cfg.PLEN-1:0] ibuf_pcs_o,
     output logic [Cfg.INSTR_PER_FETCH-1:0]          ibuf_slot_valid_o,
     output logic [Cfg.INSTR_PER_FETCH*Cfg.PLEN-1:0] ibuf_pred_npc_o,
+    output logic [Cfg.INSTR_PER_FETCH-1:0]          ibuf_is_rvc_o,
     output logic [Cfg.INSTR_PER_FETCH*((Cfg.IFU_INF_DEPTH >= 2) ? $clog2(Cfg.IFU_INF_DEPTH) : 1)-1:0] ibuf_ftq_id_o,
     output logic [Cfg.INSTR_PER_FETCH*3-1:0] ibuf_fetch_epoch_o,
 
@@ -59,6 +60,7 @@ module tb_ibuffer #(
       .ibuf_pcs_o(ibuf_pcs_o),
       .ibuf_slot_valid_o(ibuf_slot_valid_o),
       .ibuf_pred_npc_o(ibuf_pred_npc_o),
+      .ibuf_is_rvc_o(ibuf_is_rvc_o),
       .ibuf_ftq_id_o(ibuf_ftq_id_o),
       .ibuf_fetch_epoch_o(ibuf_fetch_epoch_o),
 

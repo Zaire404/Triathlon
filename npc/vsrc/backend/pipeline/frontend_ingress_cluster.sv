@@ -35,6 +35,7 @@ module frontend_ingress_cluster #(
   logic [Cfg.INSTR_PER_FETCH-1:0][Cfg.PLEN-1:0] decode_ibuf_pcs;
   logic [Cfg.INSTR_PER_FETCH-1:0] decode_ibuf_slot_valid;
   logic [Cfg.INSTR_PER_FETCH-1:0][Cfg.PLEN-1:0] decode_ibuf_pred_npc;
+  logic [Cfg.INSTR_PER_FETCH-1:0] decode_ibuf_is_rvc;
   logic [Cfg.INSTR_PER_FETCH-1:0][((Cfg.IFU_INF_DEPTH >= 2) ? $clog2(Cfg.IFU_INF_DEPTH) : 1)-1:0] decode_ibuf_ftq_id;
   logic [Cfg.INSTR_PER_FETCH-1:0][2:0] decode_ibuf_fetch_epoch;
 
@@ -61,6 +62,7 @@ module frontend_ingress_cluster #(
       .ibuf_pcs_o   (decode_ibuf_pcs),
       .ibuf_slot_valid_o(decode_ibuf_slot_valid),
       .ibuf_pred_npc_o(decode_ibuf_pred_npc),
+      .ibuf_is_rvc_o(decode_ibuf_is_rvc),
       .ibuf_ftq_id_o(decode_ibuf_ftq_id),
       .ibuf_fetch_epoch_o(decode_ibuf_fetch_epoch),
 
@@ -80,6 +82,7 @@ module frontend_ingress_cluster #(
       .ibuf_pcs_i       (decode_ibuf_pcs),
       .ibuf_slot_valid_i(decode_ibuf_slot_valid),
       .ibuf_pred_npc_i  (decode_ibuf_pred_npc),
+      .ibuf_is_rvc_i    (decode_ibuf_is_rvc),
       .ibuf_ftq_id_i(decode_ibuf_ftq_id),
       .ibuf_fetch_epoch_i(decode_ibuf_fetch_epoch),
 

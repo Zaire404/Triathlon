@@ -26,6 +26,7 @@ module ibuffer #(
     output logic [DECODE_WIDTH-1:0][Cfg.PLEN-1:0] ibuf_pcs_o,
     output logic [DECODE_WIDTH-1:0]               ibuf_slot_valid_o,
     output logic [DECODE_WIDTH-1:0][Cfg.PLEN-1:0] ibuf_pred_npc_o,
+    output logic [DECODE_WIDTH-1:0]               ibuf_is_rvc_o,
     output logic [DECODE_WIDTH-1:0][((Cfg.IFU_INF_DEPTH >= 2) ? $clog2(Cfg.IFU_INF_DEPTH) : 1)-1:0] ibuf_ftq_id_o,
     output logic [DECODE_WIDTH-1:0][2:0] ibuf_fetch_epoch_o,
 
@@ -155,6 +156,7 @@ module ibuffer #(
       fe_valid_entries_w[i].pc = '0;
       fe_valid_entries_w[i].slot_valid = 1'b0;
       fe_valid_entries_w[i].pred_npc = '0;
+      fe_valid_entries_w[i].is_rvc = 1'b0;
       fe_valid_entries_w[i].ftq_id = '0;
       fe_valid_entries_w[i].fetch_epoch = '0;
     end
@@ -188,6 +190,7 @@ module ibuffer #(
             fe_valid_entries_w[wr_idx].pc = fe_pc_i + Cfg.PLEN'(INSTR_BYTES * i);
             fe_valid_entries_w[wr_idx].slot_valid = 1'b1;
             fe_valid_entries_w[wr_idx].pred_npc = fe_pred_npc_i[i];
+            fe_valid_entries_w[wr_idx].is_rvc = 1'b0;
             fe_valid_entries_w[wr_idx].ftq_id = fe_ftq_id_i[i];
             fe_valid_entries_w[wr_idx].fetch_epoch = fe_fetch_epoch_i[i];
             wr_idx++;
@@ -205,6 +208,7 @@ module ibuffer #(
             fe_valid_entries_w[wr_idx].pc = carry_pc_q;
             fe_valid_entries_w[wr_idx].slot_valid = 1'b1;
             fe_valid_entries_w[wr_idx].pred_npc = carry_pc_q + Cfg.PLEN'(4);
+            fe_valid_entries_w[wr_idx].is_rvc = 1'b0;
             slot_idx = hw_slot_arr[0];
             fe_valid_entries_w[wr_idx].ftq_id = fe_ftq_id_i[slot_idx];
             fe_valid_entries_w[wr_idx].fetch_epoch = fe_fetch_epoch_i[slot_idx];
@@ -226,6 +230,7 @@ module ibuffer #(
             fe_valid_entries_w[wr_idx].pc = pc_cur;
             fe_valid_entries_w[wr_idx].slot_valid = 1'b1;
             fe_valid_entries_w[wr_idx].pred_npc = pc_cur + Cfg.PLEN'(2);
+            fe_valid_entries_w[wr_idx].is_rvc = 1'b1;
             fe_valid_entries_w[wr_idx].ftq_id = fe_ftq_id_i[slot_idx];
             fe_valid_entries_w[wr_idx].fetch_epoch = fe_fetch_epoch_i[slot_idx];
             wr_idx++;
@@ -238,6 +243,7 @@ module ibuffer #(
               fe_valid_entries_w[wr_idx].pc = pc_cur;
               fe_valid_entries_w[wr_idx].slot_valid = 1'b1;
               fe_valid_entries_w[wr_idx].pred_npc = pc_cur + Cfg.PLEN'(4);
+              fe_valid_entries_w[wr_idx].is_rvc = 1'b0;
               fe_valid_entries_w[wr_idx].ftq_id = fe_ftq_id_i[slot_idx];
               fe_valid_entries_w[wr_idx].fetch_epoch = fe_fetch_epoch_i[slot_idx];
               wr_idx++;
@@ -299,6 +305,7 @@ module ibuffer #(
       ibuf_pcs_o[j] = '0;
       ibuf_slot_valid_o[j] = 1'b0;
       ibuf_pred_npc_o[j] = '0;
+      ibuf_is_rvc_o[j] = 1'b0;
       ibuf_ftq_id_o[j] = '0;
       ibuf_fetch_epoch_o[j] = '0;
 
@@ -309,6 +316,7 @@ module ibuffer #(
           ibuf_pcs_o[j] = fifo_q[ridx].pc;
           ibuf_slot_valid_o[j] = fifo_q[ridx].slot_valid;
           ibuf_pred_npc_o[j] = fifo_q[ridx].pred_npc;
+          ibuf_is_rvc_o[j] = fifo_q[ridx].is_rvc;
           ibuf_ftq_id_o[j] = fifo_q[ridx].ftq_id;
           ibuf_fetch_epoch_o[j] = fifo_q[ridx].fetch_epoch;
         end else begin
@@ -317,6 +325,7 @@ module ibuffer #(
           ibuf_pcs_o[j] = fe_valid_entries_w[fe_idx].pc;
           ibuf_slot_valid_o[j] = fe_valid_entries_w[fe_idx].slot_valid;
           ibuf_pred_npc_o[j] = fe_valid_entries_w[fe_idx].pred_npc;
+          ibuf_is_rvc_o[j] = fe_valid_entries_w[fe_idx].is_rvc;
           ibuf_ftq_id_o[j] = fe_valid_entries_w[fe_idx].ftq_id;
           ibuf_fetch_epoch_o[j] = fe_valid_entries_w[fe_idx].fetch_epoch;
         end

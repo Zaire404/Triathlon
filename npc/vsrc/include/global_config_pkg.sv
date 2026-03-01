@@ -30,6 +30,7 @@ package global_config_pkg;
     logic [Cfg.ILEN-1:0] instr;
     logic [Cfg.PLEN-1:0] pc;
     logic [Cfg.PLEN-1:0] pred_npc;
+    logic                is_rvc;
     logic [FTQ_ID_W-1:0] ftq_id;
     logic [FETCH_EPOCH_W-1:0] fetch_epoch;
   } ibuf_entry_t;
