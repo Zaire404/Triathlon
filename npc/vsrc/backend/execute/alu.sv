@@ -29,8 +29,6 @@ module execute_alu #(
     output logic [PC_W-1:0] alu_redirect_pc_o
 );
 
-  // [改进] 定义常量，方便后续扩展（如支持压缩指令时可改为变量）
-  localparam logic [PC_W-1:0] INSTR_SIZE = 'd4;
   localparam SHAMT_W = $clog2(XLEN);  // 移位量位宽 (32位为5, 64位为6)
 
   // --- 1. 操作数准备 ---
@@ -180,10 +178,12 @@ module execute_alu #(
 
   // --- 4. 预测错误判断 (给 ROB) ---
   logic            control_uop;
+  logic [PC_W-1:0] instr_size;
   logic [PC_W-1:0] actual_npc;
 
   assign control_uop = uop_i.is_branch || uop_i.is_jump;
-  assign actual_npc = br_take ? br_target : (uop_i.pc + INSTR_SIZE);
+  assign instr_size = uop_i.is_rvc ? PC_W'(2) : PC_W'(4);
+  assign actual_npc = br_take ? br_target : (uop_i.pc + instr_size);
 
   always_comb begin
     alu_is_mispred_o  = 1'b0;
@@ -200,7 +200,7 @@ module execute_alu #(
   assign alu_rob_tag_o = rob_tag_i;
 
   // [改进] 使用 PC_W 截断和常量
-  assign alu_result_o = (uop_i.is_jump)   ? XLEN'(uop_i.pc + INSTR_SIZE) :
+  assign alu_result_o = (uop_i.is_jump)   ? XLEN'(uop_i.pc + instr_size) :
                         (uop_i.is_branch) ? '0 : alu_res;
 
 endmodule
