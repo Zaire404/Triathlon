@@ -196,6 +196,8 @@ module reservation_station_lsu #(
     for (int m = 0; m < RS_DEPTH; m++) begin
       logic block_load;
       logic src_ready;
+      logic block_spec_low;
+      logic [DATA_W-1:0] eff_addr;
       block_load = 1'b0;
       if (busy[m] && op_arr[m].is_load) begin
         for (int n = 0; n < RS_DEPTH; n++) begin
@@ -208,7 +210,13 @@ module reservation_station_lsu #(
       end
       src_ready = (op_arr[m].has_rs1 ? r1_arr[m] : 1'b1) &&
                   (op_arr[m].has_rs2 ? r2_arr[m] : 1'b1);
-      ready_mask[m] = busy[m] && src_ready && !block_load;
+      eff_addr = v1_arr[m] + op_arr[m].imm;
+      block_spec_low = spec_low_addr_block_en_i &&
+                       busy[m] &&
+                       src_ready &&
+                       is_spec_low_addr(eff_addr) &&
+                       (dst_arr[m] != rob_head_i);
+      ready_mask[m] = busy[m] && src_ready && !block_load && !block_spec_low;
     end
   end
 
