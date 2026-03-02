@@ -408,9 +408,11 @@ module backend #(
   localparam logic [Cfg.PLEN-1:0] DBG_PC_RET = 32'hc0803d60;
   localparam logic [Cfg.PLEN-1:0] DBG_PC_FAULT0 = 32'hc0803dae;
   localparam logic [Cfg.PLEN-1:0] DBG_PC_FAULT1 = 32'hc080ab72;
+  logic be_trace_en_q;
+  initial be_trace_en_q = $test$plusargs("npc_diag_trace");
 
   always_ff @(posedge clk_i) begin
-    if (rst_ni) begin
+    if (rst_ni && be_trace_en_q) begin
       for (int i = 0; i < COMMIT_WIDTH; i++) begin
         if (commit_valid[i] &&
             ((commit_pc[i] == DBG_PC_RET) ||
@@ -944,9 +946,7 @@ module backend #(
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (!rst_ni) begin
       be_opr_trace_cnt_q <= '0;
-    end else if (backend_flush) begin
-      be_opr_trace_cnt_q <= '0;
-    end else if (be_opr_trace_cnt_q < BE_OPR_TRACE_BUDGET) begin
+    end else if (be_trace_en_q && (be_opr_trace_cnt_q < BE_OPR_TRACE_BUDGET)) begin
       int unsigned trace_inc;
       trace_inc = 0;
       for (int i = 0; i < DISPATCH_WIDTH; i++) begin

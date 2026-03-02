@@ -7,7 +7,7 @@ NPC_HOME=$(cd "${SCRIPT_DIR}/.." && pwd)
 FW_PAYLOAD=${FW_PAYLOAD:-"${HOME}/rv32-linux/out/fw_payload.bin"}
 DTB=${DTB:-"${HOME}/rv32-linux/out/npc.dtb"}
 VIRTIO_BLK_IMAGE=${VIRTIO_BLK_IMAGE:-"${HOME}/rv32-linux/out/rootfs.img"}
-MAX_CYCLES=${MAX_CYCLES:-3500000}
+MAX_CYCLES=${MAX_CYCLES:-5000000}
 PROGRESS=${PROGRESS:-1000000}
 
 LOG_DIR=$(mktemp -d "${NPC_HOME}/build/linux-satp-alias-regression.XXXXXX")

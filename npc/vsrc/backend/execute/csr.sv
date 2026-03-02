@@ -42,6 +42,8 @@ module execute_csr #(
 
   localparam logic [4:0] EXC_ILLEGAL_INSTR = 5'd2;
   localparam logic [4:0] EXC_BREAKPOINT = 5'd3;
+  localparam logic [4:0] EXC_LD_ADDR_MISALIGNED = 5'd4;
+  localparam logic [4:0] EXC_ST_ADDR_MISALIGNED = 5'd6;
   localparam logic [4:0] EXC_ECALL_UMODE = 5'd8;
   localparam logic [4:0] EXC_ECALL_SMODE = 5'd9;
   localparam logic [4:0] EXC_ECALL_MMODE = 5'd11;
@@ -162,6 +164,7 @@ module execute_csr #(
   logic [Cfg.PLEN-1:0] trap_tval;
   logic [Cfg.PLEN-1:0] trap_pc;
   logic [Cfg.PLEN-1:0] trap_redirect_pc;
+  logic trap_delegate_to_s;
   logic regular_valid;
   logic satp_write_flush;
 
@@ -358,10 +361,13 @@ module execute_csr #(
   assign system_take_exception = csr_valid_i && sys_op_valid && sys_exception;
   assign trap_take = csr_illegal_exception || system_take_exception || interrupt_take ||
                      async_exception_take;
+  assign trap_delegate_to_s = csr_medeleg[trap_ecause] ||
+                              (trap_ecause == EXC_LD_ADDR_MISALIGNED) ||
+                              (trap_ecause == EXC_ST_ADDR_MISALIGNED);
   assign trap_to_s_mode = (current_priv != PRIV_LVL_M) &&
                           (csr_illegal_exception || system_take_exception ||
                            async_exception_take) &&
-                          csr_medeleg[trap_ecause];
+                          trap_delegate_to_s;
   assign satp_write_flush = csr_valid_i && uop_i.is_csr && csr_write_en &&
                             (uop_i.csr_addr == CSR_SATP) && !trap_take;
 
