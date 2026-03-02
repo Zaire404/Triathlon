@@ -80,6 +80,7 @@ module tb_issue #(
       .clk  (clk),
       .rst_n(rst_n),
       .flush_i(flush_i),
+      .rob_head_i('0),
 
       .dispatch_valid(dispatch_valid),
       .dispatch_op   (dispatch_op_fixed),     // 类型匹配：uop_t

@@ -27,7 +27,11 @@ module tb_rob_exception (
     input logic [Cfg.PLEN-1:0] async_exception_pc_i,
     input logic [Cfg.PLEN-1:0] async_exception_redirect_pc_i,
 
+    input logic [(QUERY_WIDTH*$clog2(ROB_DEPTH))-1:0] query_rob_idx_i,
+
     output logic rob_ready_o,
+    output logic [QUERY_WIDTH-1:0] query_ready_o,
+    output logic [(QUERY_WIDTH*Cfg.XLEN)-1:0] query_data_o,
     output logic sync_exception_valid_o,
     output logic [4:0] sync_exception_cause_o,
     output logic [Cfg.PLEN-1:0] sync_exception_pc_o,
@@ -151,9 +155,11 @@ module tb_rob_exception (
   assign fast_bru_data_bus = '0;
   assign fast_bru_redirect_pc_bus = '0;
   assign fast_bru_can_commit_bus = 1'b0;
-  assign query_rob_idx_bus = '0;
+  assign query_rob_idx_bus = query_rob_idx_i;
 
   assign rob_ready_o = rob_ready_bus;
+  assign query_ready_o = query_ready_bus;
+  assign query_data_o = query_data_bus;
   assign sync_exception_valid_o = sync_exception_valid_bus;
   assign sync_exception_cause_o = sync_exception_cause_bus;
   assign sync_exception_pc_o = sync_exception_pc_bus;

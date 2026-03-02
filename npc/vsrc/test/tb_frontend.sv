@@ -28,9 +28,11 @@ module tb_frontend (
     input logic [Cfg.PLEN-1:0] bpu_update_target_i,
     input logic                bpu_update_is_call_i,
     input logic                bpu_update_is_ret_i,
+    input logic                bpu_update_is_rvc_i,
     input logic [Cfg.NRET-1:0] bpu_ras_update_valid_i,
     input logic [Cfg.NRET-1:0] bpu_ras_update_is_call_i,
     input logic [Cfg.NRET-1:0] bpu_ras_update_is_ret_i,
+    input logic [Cfg.NRET-1:0] bpu_ras_update_is_rvc_i,
     input logic [Cfg.NRET-1:0][Cfg.PLEN-1:0] bpu_ras_update_pc_i,
 
     // ============================================
@@ -93,9 +95,11 @@ module tb_frontend (
       .bpu_update_target_i(bpu_update_target_i),
       .bpu_update_is_call_i(bpu_update_is_call_i),
       .bpu_update_is_ret_i(bpu_update_is_ret_i),
+      .bpu_update_is_rvc_i(bpu_update_is_rvc_i),
       .bpu_ras_update_valid_i(bpu_ras_update_valid_i),
       .bpu_ras_update_is_call_i(bpu_ras_update_is_call_i),
       .bpu_ras_update_is_ret_i(bpu_ras_update_is_ret_i),
+      .bpu_ras_update_is_rvc_i(bpu_ras_update_is_rvc_i),
       .bpu_ras_update_pc_i(bpu_ras_update_pc_i),
       .mmu_satp_i('0),
       .mmu_priv_i(2'b11),
