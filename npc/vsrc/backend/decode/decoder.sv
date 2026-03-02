@@ -33,6 +33,11 @@ module decoder #(
     output decode_pkg::uop_t [DECODE_WIDTH-1:0] dec_uops_o
 );
 
+`ifndef SYNTHESIS
+  localparam int unsigned DEC_PC_DBG_BUDGET = 1024;
+  logic [31:0] dec_pc_dbg_cnt_q;
+`endif
+
   // ----------------------------------------------------------------------
   // 0. Static check (current implementation assumes 32-bit instructions)
   // ----------------------------------------------------------------------
@@ -642,5 +647,33 @@ module decoder #(
       dec_uops_o[lane_index] = lane_uop;
     end
   end
+
+`ifndef SYNTHESIS
+  always_ff @(posedge clk_i or negedge rst_ni) begin
+    if (!rst_ni) begin
+      dec_pc_dbg_cnt_q <= '0;
+    end else if (ibuf2dec_valid_i && backend2dec_ready_i) begin
+      logic [31:0] dec_pc_dbg_cnt_n;
+      dec_pc_dbg_cnt_n = dec_pc_dbg_cnt_q;
+      for (int i = 0; i < DECODE_WIDTH; i++) begin
+        logic watch_pc;
+        watch_pc = ibuf_slot_valid_i[i] &&
+                   (((ibuf_pcs_i[i] >= 32'hc0803b30) && (ibuf_pcs_i[i] <= 32'hc0803c20)) ||
+                    ((ibuf_pcs_i[i] >= 32'hc0803d50) && (ibuf_pcs_i[i] <= 32'hc0803d72)) ||
+                    ((ibuf_pcs_i[i] >= 32'hc0803d80) && (ibuf_pcs_i[i] <= 32'hc0803dd0)) ||
+                    ((ibuf_pcs_i[i] >= 32'hc080ab50) && (ibuf_pcs_i[i] <= 32'hc080ab90)) ||
+                    ((ibuf_pcs_i[i] >= 32'hc07872b0) && (ibuf_pcs_i[i] <= 32'hc07873f0)) ||
+                    ((ibuf_pcs_i[i] >= 32'hc0097640) && (ibuf_pcs_i[i] <= 32'hc0097670)));
+        if (watch_pc && (dec_pc_dbg_cnt_n < DEC_PC_DBG_BUDGET)) begin
+          $display("[dec-pc] pc=%h instr=%h lo16=%h is_rvc=%0d pred_npc=%h slot=%0d ftq=%0d epoch=%0d",
+                   ibuf_pcs_i[i], ibuf_instrs_i[i], ibuf_instrs_i[i][15:0], ibuf_is_rvc_i[i],
+                   ibuf_pred_npc_i[i], i, ibuf_ftq_id_i[i], ibuf_fetch_epoch_i[i]);
+          dec_pc_dbg_cnt_n = dec_pc_dbg_cnt_n + 32'd1;
+        end
+      end
+      dec_pc_dbg_cnt_q <= dec_pc_dbg_cnt_n;
+    end
+  end
+`endif
 
 endmodule

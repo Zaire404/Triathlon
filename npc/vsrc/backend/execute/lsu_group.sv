@@ -112,6 +112,12 @@ module lsu_group #(
   localparam logic [1:0] MMU_ST_IDLE = 2'd0;
   localparam logic [1:0] MMU_ST_REQ = 2'd1;
   localparam logic [1:0] MMU_ST_WAIT = 2'd2;
+`ifndef SYNTHESIS
+  localparam int unsigned LSU_PF_LOG_BUDGET = 128;
+  int unsigned lsu_pf_log_cnt_q;
+  localparam int unsigned LSU_TRACE_LOG_BUDGET = 256;
+  int unsigned lsu_trace_log_cnt_q;
+`endif
 
   // Keep these debug names for existing testbench hierarchical probes.
   logic                [               1:0]                    state_q;
@@ -761,6 +767,10 @@ module lsu_group #(
       store_wb_count_q <= '0;
       wb_rr_q <= '0;
       ld_req_rr_q <= '0;
+`ifndef SYNTHESIS
+      lsu_pf_log_cnt_q <= '0;
+      lsu_trace_log_cnt_q <= '0;
+`endif
     end else if (flush_i) begin
       pend_valid_q <= 1'b0;
       pend_uop_q <= '0;
@@ -791,6 +801,18 @@ module lsu_group #(
       ld_req_rr_q <= '0;
     end else begin
       if (req_accept_fire) begin
+`ifndef SYNTHESIS
+        if ((lsu_trace_log_cnt_q < LSU_TRACE_LOG_BUDGET) &&
+            (((uop_i.pc >= 32'hc0803d80) && (uop_i.pc <= 32'hc0803dd0)) ||
+             ((uop_i.pc >= 32'hc080ab50) && (uop_i.pc <= 32'hc080ab90)) ||
+             ((uop_i.pc >= 32'hc07872b0) && (uop_i.pc <= 32'hc07873f0)) ||
+             ((uop_i.pc >= 32'hc0097640) && (uop_i.pc <= 32'hc0097670)))) begin
+          $display("[lsu-req] pc=%h rs1=%h rs2=%h imm=%h eff=%h need_mmu=%0d is_ld=%0d is_st=%0d rob=%0d sb=%0d ftq=%0d epoch=%0d",
+                   uop_i.pc, rs1_data_i, rs2_data_i, uop_i.imm, req_in_eff_addr, req_need_mmu_walk,
+                   uop_i.is_load, uop_i.is_store, rob_tag_i, sb_id_i, uop_i.ftq_id, uop_i.fetch_epoch);
+          lsu_trace_log_cnt_q <= lsu_trace_log_cnt_q + 1'b1;
+        end
+`endif
         if ((uop_i.is_load || uop_i.is_store) && !req_need_mmu_walk) begin
           pend_valid_q <= 1'b1;
           pend_uop_q <= uop_i;
@@ -844,9 +866,43 @@ module lsu_group #(
         end else begin
           pend_force_ecause_q <= '0;
         end
+`ifndef SYNTHESIS
+        if ((lsu_trace_log_cnt_q < LSU_TRACE_LOG_BUDGET) &&
+            (((mmu_uop_q.pc >= 32'hc0803d80) && (mmu_uop_q.pc <= 32'hc0803dd0)) ||
+             ((mmu_uop_q.pc >= 32'hc080ab50) && (mmu_uop_q.pc <= 32'hc080ab90)) ||
+             ((mmu_uop_q.pc >= 32'hc07872b0) && (mmu_uop_q.pc <= 32'hc07873f0)) ||
+             ((mmu_uop_q.pc >= 32'hc0097640) && (mmu_uop_q.pc <= 32'hc0097670)))) begin
+          $display("[lsu-mmu-rsp] pc=%h vaddr=%h paddr=%h pf=%0d satp=%h priv=%0d rob=%0d sb=%0d epoch=%0d flush=%0d",
+                   mmu_uop_q.pc, mmu_vaddr_q, mmu_resp_paddr, mmu_resp_page_fault, mmu_satp_i, mmu_priv_i,
+                   mmu_rob_tag_q, mmu_sb_id_q, mmu_uop_q.fetch_epoch, flush_i);
+          lsu_trace_log_cnt_q <= lsu_trace_log_cnt_q + 1'b1;
+        end
+        if (mmu_resp_page_fault) begin
+          if (lsu_pf_log_cnt_q < LSU_PF_LOG_BUDGET) begin
+            $display("[lsu-mmu-pf] pc=%h vaddr=%h satp=%h priv=%0d access=%0d sum=%0d mxr=%0d rob=%0d sb=%0d epoch=%0d flush=%0d",
+                     mmu_uop_q.pc, mmu_vaddr_q, mmu_satp_i, mmu_priv_i,
+                     mmu_uop_q.is_store ? MMU_ACCESS_STORE : MMU_ACCESS_LOAD,
+                     mmu_sum_i, mmu_mxr_i, mmu_rob_tag_q, mmu_sb_id_q, mmu_uop_q.fetch_epoch, flush_i);
+            lsu_pf_log_cnt_q <= lsu_pf_log_cnt_q + 1'b1;
+          end
+        end
+`endif
       end
 
       if (load_alloc_fire || store_req_fire) begin
+`ifndef SYNTHESIS
+        if (req_has_force_fault) begin
+          if (lsu_pf_log_cnt_q < LSU_PF_LOG_BUDGET) begin
+            $display("[lsu-force-fault] pc=%h addr=%h is_ld=%0d is_st=%0d ecause=%0d rob=%0d pend=%0d epoch=%0d flush=%0d",
+                     pend_valid_q ? pend_uop_q.pc : uop_i.pc,
+                     pend_valid_q ? pend_addr_q : req_in_eff_addr,
+                     req_is_load, req_is_store, req_force_ecause,
+                     pend_valid_q ? pend_rob_tag_q : rob_tag_i, pend_valid_q,
+                     pend_valid_q ? pend_uop_q.fetch_epoch : uop_i.fetch_epoch, flush_i);
+            lsu_pf_log_cnt_q <= lsu_pf_log_cnt_q + 1'b1;
+          end
+        end
+`endif
         pend_valid_q <= 1'b0;
       end
 
@@ -876,6 +932,16 @@ module lsu_group #(
       if (wb_fire && !wb_sel_store && wb_grant_valid) begin
         wb_rr_q <= rr_next_idx(wb_lane_idx);
       end
+`ifndef SYNTHESIS
+      if (wb_fire && wb_exception_o &&
+          ((wb_ecause_o == EXC_LD_PAGE_FAULT) || (wb_ecause_o == EXC_ST_PAGE_FAULT))) begin
+        if (lsu_pf_log_cnt_q < LSU_PF_LOG_BUDGET) begin
+          $display("[lsu-wb-pf] rob=%0d data=%h ecause=%0d sel_store=%0d lane=%0d flush=%0d",
+                   wb_rob_idx_o, wb_data_o, wb_ecause_o, wb_sel_store, wb_lane_idx, flush_i);
+          lsu_pf_log_cnt_q <= lsu_pf_log_cnt_q + 1'b1;
+        end
+      end
+`endif
       if (ld_req_fire) begin
         ld_req_rr_q <= rr_next_idx(ld_req_lane_idx);
       end

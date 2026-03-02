@@ -30,6 +30,10 @@ module execute_alu #(
 );
 
   localparam SHAMT_W = $clog2(XLEN);  // 移位量位宽 (32位为5, 64位为6)
+`ifndef SYNTHESIS
+  localparam int unsigned ALU_TRACE_BUDGET = 256;
+  logic [31:0] alu_trace_cnt_q;
+`endif
 
   // --- 1. 操作数准备 ---
   logic [XLEN-1:0] op_a;
@@ -202,5 +206,26 @@ module execute_alu #(
   // [改进] 使用 PC_W 截断和常量
   assign alu_result_o = (uop_i.is_jump)   ? XLEN'(uop_i.pc + instr_size) :
                         (uop_i.is_branch) ? '0 : alu_res;
+
+`ifndef SYNTHESIS
+  always_ff @(posedge clk_i or negedge rst_ni) begin
+    logic watch_pc;
+    watch_pc = ((uop_i.pc >= 32'hc0803d80) && (uop_i.pc <= 32'hc0803dd0)) ||
+               ((uop_i.pc >= 32'hc080ab50) && (uop_i.pc <= 32'hc080ab90)) ||
+               ((uop_i.pc >= 32'hc080ab20) && (uop_i.pc <= 32'hc080ab44)) ||
+               ((uop_i.pc >= 32'hc0803b30) && (uop_i.pc <= 32'hc0803c20)) ||
+               ((uop_i.pc >= 32'hc0803d50) && (uop_i.pc <= 32'hc0803d72));
+    if (!rst_ni) begin
+      alu_trace_cnt_q <= '0;
+    end else if (alu_valid_i && watch_pc && (alu_trace_cnt_q < ALU_TRACE_BUDGET)) begin
+      $display("[alu-trace] pc=%h alu_op=%0d br_op=%0d is_word=%0d is_j=%0d is_b=%0d rs1=%h rs2=%h imm=%h op_a=%h op_b=%h res=%h pred_npc=%h mispred=%0d redir=%h rob=%0d ftq=%0d epoch=%0d rvc=%0d",
+               uop_i.pc, uop_i.alu_op, uop_i.br_op, uop_i.is_word_op, uop_i.is_jump, uop_i.is_branch,
+               rs1_data_i, rs2_data_i, uop_i.imm,
+               op_a, op_b, alu_result_o, uop_i.pred_npc, alu_is_mispred_o, alu_redirect_pc_o,
+               rob_tag_i, uop_i.ftq_id, uop_i.fetch_epoch, uop_i.is_rvc);
+      alu_trace_cnt_q <= alu_trace_cnt_q + 32'd1;
+    end
+  end
+`endif
 
 endmodule

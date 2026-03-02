@@ -53,6 +53,7 @@ module execute_csr #(
   localparam logic [1:0] PRIV_LVL_U = 2'b00;
 
   localparam logic [11:0] CSR_SSTATUS = 12'h100;
+  localparam logic [11:0] CSR_SCOUNTEREN = 12'h106;
   localparam logic [11:0] CSR_SIE = 12'h104;
   localparam logic [11:0] CSR_STVEC = 12'h105;
   localparam logic [11:0] CSR_SSCRATCH = 12'h140;
@@ -61,8 +62,12 @@ module execute_csr #(
   localparam logic [11:0] CSR_MSTATUSH = 12'h310;
   localparam logic [11:0] CSR_MEDELEG = 12'h302;
   localparam logic [11:0] CSR_MIDELEG = 12'h303;
+  localparam logic [11:0] CSR_MCOUNTEREN = 12'h306;
+  localparam logic [11:0] CSR_MENVCFG = 12'h30A;
+  localparam logic [11:0] CSR_MENVCFGH = 12'h31A;
   localparam logic [11:0] CSR_MIE = 12'h304;
   localparam logic [11:0] CSR_MTVEC = 12'h305;
+  localparam logic [11:0] CSR_MCOUNTINHIBIT = 12'h320;
   localparam logic [11:0] CSR_SEPC = 12'h141;
   localparam logic [11:0] CSR_SCAUSE = 12'h142;
   localparam logic [11:0] CSR_STVAL = 12'h143;
@@ -77,6 +82,9 @@ module execute_csr #(
   localparam logic [11:0] CSR_MIMPID = 12'hF13;
   localparam logic [11:0] CSR_MHARTID = 12'hF14;
   localparam logic [11:0] CSR_SATP = 12'h180;
+  localparam logic [11:0] CSR_SEED = 12'h015;
+  localparam logic [11:0] CSR_TSELECT = 12'h7A0;
+  localparam logic [11:0] CSR_MCONFIGPTR = 12'hFB0;
 
   localparam int unsigned MSTATUS_SIE_BIT = 1;
   localparam int unsigned MSTATUS_MIE_BIT = 3;
@@ -94,6 +102,7 @@ module execute_csr #(
   localparam logic [XLEN-1:0] CSR_MISA_VALUE = XLEN'(32'h40141105);
 
   logic [XLEN-1:0] csr_sie;
+  logic [XLEN-1:0] csr_scounteren;
   logic [XLEN-1:0] csr_stvec;
   logic [XLEN-1:0] csr_sscratch;
   logic [XLEN-1:0] csr_sepc;
@@ -105,6 +114,8 @@ module execute_csr #(
   logic [XLEN-1:0] csr_mstatush;
   logic [XLEN-1:0] csr_medeleg;
   logic [XLEN-1:0] csr_mideleg;
+  logic [XLEN-1:0] csr_mcounteren;
+  logic [XLEN-1:0] csr_mcountinhibit;
   logic [XLEN-1:0] csr_mie;
   logic [XLEN-1:0] csr_mtvec;
   logic [XLEN-1:0] csr_mepc;
@@ -152,6 +163,24 @@ module execute_csr #(
   logic [Cfg.PLEN-1:0] trap_pc;
   logic [Cfg.PLEN-1:0] trap_redirect_pc;
   logic regular_valid;
+  logic satp_write_flush;
+
+  function automatic logic csr_probe_read_as_zero(input logic [11:0] addr);
+    begin
+      csr_probe_read_as_zero = 1'b0;
+      if ((addr >= 12'hB00 && addr <= 12'hB1F) ||
+          (addr >= 12'hB80 && addr <= 12'hB9F) ||
+          (addr >= 12'hC00 && addr <= 12'hC1F) ||
+          (addr >= 12'hC80 && addr <= 12'hC9F) ||
+          (addr >= 12'h3A0 && addr <= 12'h3AF) ||
+          (addr >= 12'h3B0 && addr <= 12'h3EF)) begin
+        csr_probe_read_as_zero = 1'b1;
+      end else if (addr == CSR_TSELECT ||
+                   addr == CSR_MCONFIGPTR || addr == CSR_MENVCFG) begin
+        csr_probe_read_as_zero = 1'b1;
+      end
+    end
+  endfunction
 
   always_comb begin
     csr_mip = '0;
@@ -176,6 +205,7 @@ module execute_csr #(
     csr_addr_known = 1'b1;
     unique case (uop_i.csr_addr)
       CSR_SSTATUS: csr_read_val = csr_sstatus_view;
+      CSR_SCOUNTEREN: csr_read_val = csr_scounteren;
       CSR_SIE: csr_read_val = csr_sie;
       CSR_STVEC: csr_read_val = csr_stvec;
       CSR_SSCRATCH: csr_read_val = csr_sscratch;
@@ -184,8 +214,12 @@ module execute_csr #(
       CSR_MSTATUSH: csr_read_val = csr_mstatush;
       CSR_MEDELEG: csr_read_val = csr_medeleg;
       CSR_MIDELEG: csr_read_val = csr_mideleg;
+      CSR_MCOUNTEREN: csr_read_val = csr_mcounteren;
+      CSR_MENVCFG: csr_read_val = '0;
+      CSR_MENVCFGH: csr_read_val = '0;
       CSR_MIE: csr_read_val = csr_mie;
       CSR_MTVEC: csr_read_val = csr_mtvec;
+      CSR_MCOUNTINHIBIT: csr_read_val = csr_mcountinhibit;
       CSR_SEPC: csr_read_val = csr_sepc;
       CSR_SCAUSE: csr_read_val = csr_scause;
       CSR_STVAL: csr_read_val = csr_stval;
@@ -201,8 +235,13 @@ module execute_csr #(
       CSR_MHARTID: csr_read_val = '0;
       CSR_SATP: csr_read_val = csr_satp;
       default: begin
-        csr_addr_known = 1'b0;
-        csr_read_val = '0;
+        if (csr_probe_read_as_zero(uop_i.csr_addr)) begin
+          csr_addr_known = 1'b1;
+          csr_read_val = '0;
+        end else begin
+          csr_addr_known = 1'b0;
+          csr_read_val = '0;
+        end
       end
     endcase
   end
@@ -323,6 +362,8 @@ module execute_csr #(
                           (csr_illegal_exception || system_take_exception ||
                            async_exception_take) &&
                           csr_medeleg[trap_ecause];
+  assign satp_write_flush = csr_valid_i && uop_i.is_csr && csr_write_en &&
+                            (uop_i.csr_addr == CSR_SATP) && !trap_take;
 
   always_comb begin
     trap_ecause = '0;
@@ -385,6 +426,7 @@ module execute_csr #(
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (!rst_ni) begin
       csr_sie <= '0;
+      csr_scounteren <= '0;
       csr_stvec <= '0;
       csr_sscratch <= '0;
       csr_sepc <= '0;
@@ -396,6 +438,8 @@ module execute_csr #(
       csr_mstatush <= '0;
       csr_medeleg <= '0;
       csr_mideleg <= '0;
+      csr_mcounteren <= '0;
+      csr_mcountinhibit <= '0;
       csr_mie <= '0;
       csr_mtvec <= '0;
       csr_mepc <= '0;
@@ -407,6 +451,7 @@ module execute_csr #(
       if (csr_valid_i && uop_i.is_csr && csr_write_en) begin
         unique case (uop_i.csr_addr)
           CSR_SSTATUS: csr_mstatus <= (csr_mstatus & ~csr_sstatus_mask) | (csr_write_val & csr_sstatus_mask);
+          CSR_SCOUNTEREN: csr_scounteren <= csr_write_val;
           CSR_SIE: csr_sie <= csr_write_val;
           CSR_STVEC: csr_stvec <= csr_write_val;
           CSR_SSCRATCH: csr_sscratch <= csr_write_val;
@@ -414,8 +459,10 @@ module execute_csr #(
           CSR_MSTATUSH: csr_mstatush <= csr_write_val;
           CSR_MEDELEG: csr_medeleg <= csr_write_val;
           CSR_MIDELEG: csr_mideleg <= csr_write_val;
+          CSR_MCOUNTEREN: csr_mcounteren <= csr_write_val;
           CSR_MIE: csr_mie <= csr_write_val;
           CSR_MTVEC: csr_mtvec <= csr_write_val;
+          CSR_MCOUNTINHIBIT: csr_mcountinhibit <= csr_write_val;
           CSR_SEPC: csr_sepc <= csr_write_val;
           CSR_SCAUSE: csr_scause <= csr_write_val;
           CSR_STVAL: csr_stval <= csr_write_val;
@@ -461,12 +508,13 @@ module execute_csr #(
   assign csr_exception_o = regular_valid && trap_take && !interrupt_take && !async_exception_take;
   assign csr_ecause_o = (regular_valid && trap_take && !interrupt_take &&
                          !async_exception_take) ? trap_ecause : '0;
-  assign csr_is_mispred_o = csr_valid_i && sys_op_valid && sys_is_mispred;
+  assign csr_is_mispred_o = (csr_valid_i && sys_op_valid && sys_is_mispred) || satp_write_flush;
   assign csr_redirect_pc_o = (regular_valid && trap_take && !interrupt_take &&
                               !async_exception_take) ? trap_redirect_pc :
+                             (satp_write_flush ? (uop_i.pc + Cfg.PLEN'(4)) :
                              ((csr_valid_i && sys_op_valid && sys_is_mispred) ?
                              sys_redirect_pc :
-                             ((csr_valid_i && sys_op_valid) ? sys_redirect_pc : '0));
+                             ((csr_valid_i && sys_op_valid) ? sys_redirect_pc : '0)));
   assign irq_trap_o = interrupt_take || async_exception_take;
   assign irq_trap_cause_o = interrupt_take ? interrupt_cause :
                             (async_exception_take ? async_exception_cause_i : '0);
@@ -477,5 +525,21 @@ module execute_csr #(
   assign mstatus_sum_o = csr_mstatus[MSTATUS_SUM_BIT];
   assign mstatus_mxr_o = csr_mstatus[MSTATUS_MXR_BIT];
   assign sfence_vma_flush_o = csr_valid_i && sys_op_valid && uop_i.is_sfence_vma && !trap_take;
+
+`ifndef SYNTHESIS
+  always_ff @(posedge clk_i) begin
+    if (csr_valid_i && uop_i.is_csr && csr_write_en && (uop_i.csr_addr == CSR_SATP)) begin
+      $display("[csr-satp-wr] pc=%h op=%0d csr=%h rs1_idx=%0d rs1_val=%h imm=%h write=%h priv=%0d trap_take=%0d trap_to_s=%0d",
+               uop_i.pc, uop_i.csr_op, uop_i.csr_addr, uop_i.rs1, rs1_data_i, uop_i.imm, csr_write_val,
+               current_priv, trap_take, trap_to_s_mode);
+    end
+    if (csr_valid_i && uop_i.is_csr &&
+        ((uop_i.csr_addr == CSR_SCOUNTEREN) || (uop_i.csr_addr == CSR_MSCRATCH))) begin
+      $display("[csrdbg] pc=%h csr=%h op=%0d priv=%0d known=%0d valid=%0d illegal=%0d trap_take=%0d trap_to_s=%0d",
+               uop_i.pc, uop_i.csr_addr, uop_i.csr_op, current_priv, csr_addr_known,
+               csr_addr_valid, csr_illegal_exception, trap_take, trap_to_s_mode);
+    end
+  end
+`endif
 
 endmodule

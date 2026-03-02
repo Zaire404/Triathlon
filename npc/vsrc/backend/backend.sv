@@ -28,9 +28,11 @@ module backend #(
     output logic [Cfg.PLEN-1:0] bpu_update_target_o,
     output logic bpu_update_is_call_o,
     output logic bpu_update_is_ret_o,
+    output logic bpu_update_is_rvc_o,
     output logic [Cfg.NRET-1:0] bpu_ras_update_valid_o,
     output logic [Cfg.NRET-1:0] bpu_ras_update_is_call_o,
     output logic [Cfg.NRET-1:0] bpu_ras_update_is_ret_o,
+    output logic [Cfg.NRET-1:0] bpu_ras_update_is_rvc_o,
     output logic [Cfg.NRET-1:0][Cfg.PLEN-1:0] bpu_ras_update_pc_o,
     output logic [31:0] mmu_satp_o,
     output logic [1:0] mmu_priv_o,
@@ -197,6 +199,7 @@ module backend #(
   logic [    COMMIT_WIDTH-1:0]                    commit_is_jump;
   logic [    COMMIT_WIDTH-1:0]                    commit_is_call;
   logic [    COMMIT_WIDTH-1:0]                    commit_is_ret;
+  logic [    COMMIT_WIDTH-1:0]                    commit_is_rvc;
   logic [    COMMIT_WIDTH-1:0][     Cfg.PLEN-1:0] commit_actual_npc;
   logic [    COMMIT_WIDTH-1:0][    FTQ_ID_W-1:0]  commit_ftq_id;
   logic [    COMMIT_WIDTH-1:0][FETCH_EPOCH_W-1:0] commit_fetch_epoch;
@@ -259,6 +262,7 @@ module backend #(
       .dispatch_is_jump_i(rob_dispatch_is_jump),
       .dispatch_is_call_i(rob_dispatch_is_call),
       .dispatch_is_ret_i(rob_dispatch_is_ret),
+      .dispatch_is_rvc_i(rob_dispatch_is_rvc),
       .dispatch_ftq_id_i(rob_dispatch_ftq_id),
       .dispatch_fetch_epoch_i(rob_dispatch_fetch_epoch),
       .dispatch_is_store_i(rob_dispatch_is_store),
@@ -301,6 +305,7 @@ module backend #(
       .commit_is_jump_o   (commit_is_jump),
       .commit_is_call_o   (commit_is_call),
       .commit_is_ret_o    (commit_is_ret),
+      .commit_is_rvc_o    (commit_is_rvc),
       .commit_actual_npc_o(commit_actual_npc),
       .commit_ftq_id_o(commit_ftq_id),
       .commit_fetch_epoch_o(commit_fetch_epoch),
@@ -346,6 +351,7 @@ module backend #(
       .commit_is_jump_i(commit_is_jump),
       .commit_is_call_i(commit_is_call),
       .commit_is_ret_i(commit_is_ret),
+      .commit_is_rvc_i(commit_is_rvc),
       .commit_actual_npc_i(commit_actual_npc),
       .commit_ftq_id_i(commit_ftq_id),
       .commit_fetch_epoch_i(commit_fetch_epoch),
@@ -361,6 +367,7 @@ module backend #(
       .bpu_update_target_o(bpu_update_target_o),
       .bpu_update_is_call_o(bpu_update_is_call_o),
       .bpu_update_is_ret_o(bpu_update_is_ret_o),
+      .bpu_update_is_rvc_o(bpu_update_is_rvc_o),
       .bpu_update_ftq_id_dbg_o(bpu_update_ftq_id_dbg),
       .bpu_update_fetch_epoch_dbg_o(bpu_update_fetch_epoch_dbg),
       .bpu_update_sel_idx_dbg_o(bpu_update_sel_idx_dbg),
@@ -368,6 +375,7 @@ module backend #(
       .bpu_ras_update_valid_o(bpu_ras_update_valid_o),
       .bpu_ras_update_is_call_o(bpu_ras_update_is_call_o),
       .bpu_ras_update_is_ret_o(bpu_ras_update_is_ret_o),
+      .bpu_ras_update_is_rvc_o(bpu_ras_update_is_rvc_o),
       .bpu_ras_update_pc_o(bpu_ras_update_pc_o)
   );
 
@@ -395,6 +403,36 @@ module backend #(
     end
   end
   assign backend_flush_o = backend_flush;
+
+`ifndef SYNTHESIS
+  localparam logic [Cfg.PLEN-1:0] DBG_PC_RET = 32'hc0803d60;
+  localparam logic [Cfg.PLEN-1:0] DBG_PC_FAULT0 = 32'hc0803dae;
+  localparam logic [Cfg.PLEN-1:0] DBG_PC_FAULT1 = 32'hc080ab72;
+
+  always_ff @(posedge clk_i) begin
+    if (rst_ni) begin
+      for (int i = 0; i < COMMIT_WIDTH; i++) begin
+        if (commit_valid[i] &&
+            ((commit_pc[i] == DBG_PC_RET) ||
+             (commit_pc[i] == DBG_PC_FAULT0) ||
+             (commit_pc[i] == DBG_PC_FAULT1))) begin
+          $display(
+              "[be-commit-watch] pc=%h slot=%0d is_ret=%0d is_br=%0d is_j=%0d actual_npc=%h rob_idx=%0d be_flush=%0d rob_flush=%0d rob_src=%h rob_pc=%h",
+              commit_pc[i], i, commit_is_ret[i], commit_is_branch[i], commit_is_jump[i],
+              commit_actual_npc[i], commit_rob_index[i], backend_flush, rob_flush, rob_flush_src_pc,
+              rob_flush_pc);
+        end
+      end
+
+      if (rob_flush && (rob_flush_src_pc == DBG_PC_RET)) begin
+        $display(
+            "[be-flush-watch] rob_flush=%0d backend_flush=%0d src_pc=%h flush_pc=%h mispred=%0d exc=%0d br=%0d j=%0d cause=%0d",
+            rob_flush, backend_flush, rob_flush_src_pc, rob_flush_pc, rob_flush_is_mispred,
+            rob_flush_is_exception, rob_flush_is_branch, rob_flush_is_jump, rob_flush_cause);
+      end
+    end
+  end
+`endif
 
   // =========================================================
   // Store Buffer (allocation + commit + forwarding)
@@ -488,6 +526,7 @@ module backend #(
   logic            [DISPATCH_WIDTH-1:0]                    rob_dispatch_is_jump;
   logic            [DISPATCH_WIDTH-1:0]                    rob_dispatch_is_call;
   logic            [DISPATCH_WIDTH-1:0]                    rob_dispatch_is_ret;
+  logic            [DISPATCH_WIDTH-1:0]                    rob_dispatch_is_rvc;
   logic            [DISPATCH_WIDTH-1:0][    FTQ_ID_W-1:0]  rob_dispatch_ftq_id;
   logic            [DISPATCH_WIDTH-1:0][FETCH_EPOCH_W-1:0] rob_dispatch_fetch_epoch;
   logic            [DISPATCH_WIDTH-1:0]                    rob_dispatch_is_store;
@@ -538,6 +577,8 @@ module backend #(
   logic                                                     lsu_can_accept;
   logic                                                     mdu_can_accept;
   logic                                                     csr_can_accept;
+  logic                                                     lsu_issue_block_mispred;
+  logic                                                     lsu_spec_low_addr_block_en;
 
   always_comb begin
     int left_k;
@@ -738,6 +779,7 @@ module backend #(
       .rob_dispatch_is_jump_o(rob_dispatch_is_jump),
       .rob_dispatch_is_call_o(rob_dispatch_is_call),
       .rob_dispatch_is_ret_o(rob_dispatch_is_ret),
+      .rob_dispatch_is_rvc_o(rob_dispatch_is_rvc),
       .rob_dispatch_ftq_id_o(rob_dispatch_ftq_id),
       .rob_dispatch_fetch_epoch_o(rob_dispatch_fetch_epoch),
       .rob_dispatch_is_store_o(rob_dispatch_is_store),
@@ -799,6 +841,10 @@ module backend #(
   logic [DISPATCH_WIDTH-1:0][ROB_IDX_WIDTH-1:0] issue_q2;
   logic [DISPATCH_WIDTH-1:0] issue_r1;
   logic [DISPATCH_WIDTH-1:0] issue_r2;
+`ifndef SYNTHESIS
+  localparam int unsigned BE_OPR_TRACE_BUDGET = 4096;
+  logic [31:0] be_opr_trace_cnt_q;
+`endif
 
   // Commit -> ARF read bypass (handles same-cycle commit/rename after flush)
   function automatic logic [Cfg.XLEN-1:0] arf_bypass(input logic [4:0] reg_idx,
@@ -878,6 +924,63 @@ module backend #(
       end
     end
   end
+
+`ifndef SYNTHESIS
+  function automatic logic watch_be_lsu_pc(input logic [31:0] pc);
+    begin
+      watch_be_lsu_pc = ((pc >= 32'hc0803d80) && (pc <= 32'hc0803dd0)) ||
+                        ((pc >= 32'hc080ab50) && (pc <= 32'hc080ab90)) ||
+                        ((pc >= 32'hc07872b0) && (pc <= 32'hc07873f0)) ||
+                        ((pc >= 32'hc0097640) && (pc <= 32'hc0097670));
+    end
+  endfunction
+
+  function automatic logic watch_be_alu_pc(input logic [31:0] pc);
+    begin
+      watch_be_alu_pc = ((pc >= 32'hc080ab20) && (pc <= 32'hc080ab44));
+    end
+  endfunction
+
+  always_ff @(posedge clk_i or negedge rst_ni) begin
+    if (!rst_ni) begin
+      be_opr_trace_cnt_q <= '0;
+    end else if (backend_flush) begin
+      be_opr_trace_cnt_q <= '0;
+    end else if (be_opr_trace_cnt_q < BE_OPR_TRACE_BUDGET) begin
+      int unsigned trace_inc;
+      trace_inc = 0;
+      for (int i = 0; i < DISPATCH_WIDTH; i++) begin
+        if (issue_valid[i] && (rename_sel_uops[i].fu == FU_LSU) &&
+            watch_be_lsu_pc(rename_sel_uops[i].pc) &&
+            ((be_opr_trace_cnt_q + trace_inc) < BE_OPR_TRACE_BUDGET)) begin
+          $display("[be-opr-lsu] slot=%0d pc=%h rs1=%0d rs2=%0d rs1_in_rob=%0d rs1_idx=%0d rs1_tag=%0d rob_q1_ready=%0d rob_q1_data=%h rs1_tag_alloc=%0d arf_r1=%h issue_r1=%0d issue_v1=%h issue_q1=%0d rs2_in_rob=%0d rs2_idx=%0d rs2_tag=%0d rob_q2_ready=%0d rob_q2_data=%h rs2_tag_alloc=%0d arf_r2=%h issue_r2=%0d issue_v2=%h issue_q2=%0d dst=%0d ftq=%0d epoch=%0d flush=%0d",
+                   i, rename_sel_uops[i].pc, rename_sel_uops[i].rs1, rename_sel_uops[i].rs2,
+                   issue_rs1_in_rob[i], issue_rs1_idx[i], issue_rs1_rob_idx[i], rob_query_ready[i], rob_query_data[i],
+                   rs1_tag_allocated[i], arf_rdata[i], issue_r1[i], issue_v1[i], issue_q1[i],
+                   issue_rs2_in_rob[i], issue_rs2_idx[i], issue_rs2_rob_idx[i], rob_query_ready[i+4], rob_query_data[i+4],
+                   rs2_tag_allocated[i], arf_rdata[i+4], issue_r2[i], issue_v2[i], issue_q2[i],
+                   issue_rd_rob_idx[i], rename_sel_uops[i].ftq_id, rename_sel_uops[i].fetch_epoch, backend_flush);
+          trace_inc++;
+        end
+        if (issue_valid[i] && (rename_sel_uops[i].fu == FU_ALU) &&
+            watch_be_alu_pc(rename_sel_uops[i].pc) &&
+            ((be_opr_trace_cnt_q + trace_inc) < BE_OPR_TRACE_BUDGET)) begin
+          $display("[be-opr-alu] slot=%0d pc=%h rs1=%0d rs2=%0d rs1_in_rob=%0d rs1_idx=%0d rs1_tag=%0d rob_q1_ready=%0d rob_q1_data=%h rs1_tag_alloc=%0d arf_r1=%h issue_r1=%0d issue_v1=%h issue_q1=%0d rs2_in_rob=%0d rs2_idx=%0d rs2_tag=%0d rob_q2_ready=%0d rob_q2_data=%h rs2_tag_alloc=%0d arf_r2=%h issue_r2=%0d issue_v2=%h issue_q2=%0d dst=%0d ftq=%0d epoch=%0d flush=%0d",
+                   i, rename_sel_uops[i].pc, rename_sel_uops[i].rs1, rename_sel_uops[i].rs2,
+                   issue_rs1_in_rob[i], issue_rs1_idx[i], issue_rs1_rob_idx[i], rob_query_ready[i], rob_query_data[i],
+                   rs1_tag_allocated[i], arf_rdata[i], issue_r1[i], issue_v1[i], issue_q1[i],
+                   issue_rs2_in_rob[i], issue_rs2_idx[i], issue_rs2_rob_idx[i], rob_query_ready[i+4], rob_query_data[i+4],
+                   rs2_tag_allocated[i], arf_rdata[i+4], issue_r2[i], issue_v2[i], issue_q2[i],
+                   issue_rd_rob_idx[i], rename_sel_uops[i].ftq_id, rename_sel_uops[i].fetch_epoch, backend_flush);
+          trace_inc++;
+        end
+      end
+      if (trace_inc != 0) begin
+        be_opr_trace_cnt_q <= be_opr_trace_cnt_q + trace_inc;
+      end
+    end
+  end
+`endif
 
   // =========================================================
   // FU Demux + Packing
@@ -1121,6 +1224,7 @@ module backend #(
       .clk(clk_i),
       .rst_n(rst_ni),
       .flush_i(backend_flush),
+      .rob_head_i(rob_head_ptr),
 
       .dispatch_valid(alu_dispatch_valid),
       .dispatch_op   (alu_dispatch_op),
@@ -1176,7 +1280,7 @@ module backend #(
       .rst_n(rst_ni),
       .flush_i(backend_flush),
       .head_en_i(1'b0),
-      .head_tag_i('0),
+      .head_tag_i(rob_head_ptr),
 
       .dispatch_valid(bru_dispatch_valid),
       .dispatch_op   (bru_dispatch_op),
@@ -1227,6 +1331,8 @@ module backend #(
       .dispatch_sb_id(lsu_dispatch_sb_id),
 
       .rob_head_i(rob_head_ptr),
+      .mispred_block_i(lsu_issue_block_mispred),
+      .spec_low_addr_block_en_i(lsu_spec_low_addr_block_en),
 
       .fu_ready_i(lsu_req_ready),
 
@@ -1427,6 +1533,11 @@ module backend #(
       .alu_is_mispred_o (bru_mispred),
       .alu_redirect_pc_o(bru_redirect_pc)
   );
+
+  // Block LSU issue in cycles where any branch/jump mispredict is resolved.
+  // This prevents same-cycle wrong-path memory ops from escaping before flush.
+  assign lsu_issue_block_mispred = alu0_mispred | alu1_mispred | alu2_mispred | alu3_mispred |
+                                   bru_mispred;
 
   // LSU
   logic lsu_en;
@@ -1786,6 +1897,8 @@ module backend #(
   assign mmu_sum_o = csr_mstatus_sum;
   assign mmu_mxr_o = csr_mstatus_mxr;
   assign mmu_sfence_vma_o = csr_sfence_vma_flush;
+  // Only apply speculative low-address LSU guard when address translation is active.
+  assign lsu_spec_low_addr_block_en = csr_satp_state[31] && (csr_priv_mode != 2'b11);
 
   wire _unused_csr_state = &{
       1'b0,

@@ -29,7 +29,7 @@ module tage #(
 
   localparam int unsigned NUM_TABLES = 4;
   localparam int unsigned INSTR_BYTES = Cfg.ILEN / 8;
-  localparam int unsigned INSTR_ADDR_LSB = (INSTR_BYTES > 1) ? $clog2(INSTR_BYTES) : 0;
+  localparam int unsigned INSTR_ADDR_LSB = 1;
   localparam int unsigned IDX_W = (TABLE_ENTRIES > 1) ? $clog2(TABLE_ENTRIES) : 1;
   localparam int unsigned GHR_W = (GHR_BITS > 0) ? GHR_BITS : 1;
   localparam int unsigned SLOT_IDX_W = (INSTR_PER_FETCH > 1) ? $clog2(INSTR_PER_FETCH) : 1;

@@ -92,6 +92,10 @@ module sv32_mmu #(
   logic [31:0] l1_pte_addr_w;
   logic [31:0] l0_pte_addr_w;
   logic [31:0] leaf_pte_updated_w;
+`ifndef SYNTHESIS
+  localparam int unsigned MMU_PF_LOG_BUDGET = 128;
+  int unsigned mmu_pf_log_cnt_q;
+`endif
 
   function automatic logic pte_invalid(input logic [31:0] pte);
     pte_invalid = (!pte[0]) || (pte[2] && !pte[1]);
@@ -260,6 +264,9 @@ module sv32_mmu #(
       tlb_pte_q <= '0;
       tlb_pte_addr_q <= '0;
       tlb_repl_ptr_q <= '0;
+`ifndef SYNTHESIS
+      mmu_pf_log_cnt_q <= '0;
+`endif
     end else begin
       pte = pte_rsp_data_i;
       hit_pte_updated = pte_with_ad(tlb_hit_pte_w, req_access_i);
@@ -278,6 +285,11 @@ module sv32_mmu #(
               resp_paddr_q <= req_vaddr_i;
             end else if (tlb_hit_w && !sfence_vma_i) begin
               if (!pte_perm_ok(tlb_hit_pte_w, req_access_i, req_priv_i, req_sum_i, req_mxr_i)) begin
+`ifndef SYNTHESIS
+                $display("[mmu-pf-tlb] vaddr=%h pte=%h pte_addr=%h access=%0d priv=%0d sum=%0d mxr=%0d",
+                         req_vaddr_i, tlb_hit_pte_w, tlb_hit_pte_addr_w, req_access_i,
+                         req_priv_i, req_sum_i, req_mxr_i);
+`endif
                 resp_valid_q <= 1'b1;
                 resp_page_fault_q <= 1'b1;
                 resp_paddr_q <= '0;
@@ -311,7 +323,21 @@ module sv32_mmu #(
 
         ST_WALK_L1: begin
           if (pte_rsp_valid_i) begin
+`ifndef SYNTHESIS
+            if (((req_vaddr_q & 32'hfffff000) == 32'hc0001000) ||
+                ((req_vaddr_q & 32'hfffff000) == 32'hc0401000)) begin
+              $display("[mmu-l1] vaddr=%h satp=%h pte_addr=%h pte=%h leaf=%0d invalid=%0d",
+                       req_vaddr_q, satp_i, l1_pte_addr_w, pte, pte_is_leaf(pte), pte_invalid(pte));
+            end
+`endif
             if (pte_invalid(pte)) begin
+`ifndef SYNTHESIS
+              if (mmu_pf_log_cnt_q < MMU_PF_LOG_BUDGET) begin
+                $display("[mmu-pf-l1] reason=invalid vaddr=%h pte_addr=%h pte=%h access=%0d priv=%0d sum=%0d mxr=%0d",
+                         req_vaddr_q, l1_pte_addr_w, pte, req_access_q, req_priv_q, req_sum_q, req_mxr_q);
+                mmu_pf_log_cnt_q <= mmu_pf_log_cnt_q + 1'b1;
+              end
+`endif
               state_q <= ST_IDLE;
               resp_valid_q <= 1'b1;
               resp_page_fault_q <= 1'b1;
@@ -319,6 +345,15 @@ module sv32_mmu #(
             end else if (pte_is_leaf(pte)) begin
               if ((pte[19:10] != 10'b0) ||
                   !pte_perm_ok(pte, req_access_q, req_priv_q, req_sum_q, req_mxr_q)) begin
+`ifndef SYNTHESIS
+                if (mmu_pf_log_cnt_q < MMU_PF_LOG_BUDGET) begin
+                  $display("[mmu-pf-l1] reason=leaf-check vaddr=%h pte_addr=%h pte=%h super_ok=%0d perm_ok=%0d access=%0d priv=%0d sum=%0d mxr=%0d",
+                           req_vaddr_q, l1_pte_addr_w, pte, (pte[19:10] == 10'b0),
+                           pte_perm_ok(pte, req_access_q, req_priv_q, req_sum_q, req_mxr_q),
+                           req_access_q, req_priv_q, req_sum_q, req_mxr_q);
+                  mmu_pf_log_cnt_q <= mmu_pf_log_cnt_q + 1'b1;
+                end
+`endif
                 state_q <= ST_IDLE;
                 resp_valid_q <= 1'b1;
                 resp_page_fault_q <= 1'b1;
@@ -356,8 +391,26 @@ module sv32_mmu #(
 
         ST_WALK_L0: begin
           if (pte_rsp_valid_i) begin
+`ifndef SYNTHESIS
+            if (((req_vaddr_q & 32'hfffff000) == 32'hc0001000) ||
+                ((req_vaddr_q & 32'hfffff000) == 32'hc0401000)) begin
+              $display("[mmu-l0] vaddr=%h pte_addr=%h pte=%h paddr=%h invalid=%0d leaf=%0d perm_ok=%0d",
+                       req_vaddr_q, l0_pte_addr_w, pte, compose_paddr(pte, req_vaddr_q, 1'b0),
+                       pte_invalid(pte), pte_is_leaf(pte),
+                       pte_perm_ok(pte, req_access_q, req_priv_q, req_sum_q, req_mxr_q));
+            end
+`endif
             if (pte_invalid(pte) || !pte_is_leaf(pte) ||
                 !pte_perm_ok(pte, req_access_q, req_priv_q, req_sum_q, req_mxr_q)) begin
+`ifndef SYNTHESIS
+              if (mmu_pf_log_cnt_q < MMU_PF_LOG_BUDGET) begin
+                $display("[mmu-pf-l0] vaddr=%h pte_addr=%h pte=%h invalid=%0d leaf=%0d perm_ok=%0d access=%0d priv=%0d sum=%0d mxr=%0d",
+                         req_vaddr_q, l0_pte_addr_w, pte, pte_invalid(pte), pte_is_leaf(pte),
+                         pte_perm_ok(pte, req_access_q, req_priv_q, req_sum_q, req_mxr_q),
+                         req_access_q, req_priv_q, req_sum_q, req_mxr_q);
+                mmu_pf_log_cnt_q <= mmu_pf_log_cnt_q + 1'b1;
+              end
+`endif
               state_q <= ST_IDLE;
               resp_valid_q <= 1'b1;
               resp_page_fault_q <= 1'b1;

@@ -10,6 +10,7 @@ module issue #(
     input wire clk,
     input wire rst_n,
     input wire flush_i,
+    input wire [ TAG_W-1:0] rob_head_i,
 
     input wire                   [       3:0] dispatch_valid,
     input wire decode_pkg::uop_t              dispatch_op   [0:3],
@@ -177,7 +178,7 @@ module issue #(
       .rst_n(rst_n),
       .flush_i(flush_i),
       .head_en_i(1'b0),
-      .head_tag_i('0),
+      .head_tag_i(rob_head_i),
 
       // 写端口 (连接 Crossbar 的结果)
       .entry_wen (alloc_wen),

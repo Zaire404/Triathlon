@@ -71,9 +71,11 @@ module triathlon #(
   logic [Cfg.PLEN-1:0] bpu_update_target;
   logic bpu_update_is_call;
   logic bpu_update_is_ret;
+  logic bpu_update_is_rvc;
   logic [Cfg.NRET-1:0] bpu_ras_update_valid;
   logic [Cfg.NRET-1:0] bpu_ras_update_is_call;
   logic [Cfg.NRET-1:0] bpu_ras_update_is_ret;
+  logic [Cfg.NRET-1:0] bpu_ras_update_is_rvc;
   logic [Cfg.NRET-1:0][Cfg.PLEN-1:0] bpu_ras_update_pc;
   logic [31:0] mmu_satp_state;
   logic [1:0] mmu_priv_mode;
@@ -128,9 +130,11 @@ module triathlon #(
       .bpu_update_target_i(bpu_update_target),
       .bpu_update_is_call_i(bpu_update_is_call),
       .bpu_update_is_ret_i(bpu_update_is_ret),
+      .bpu_update_is_rvc_i(bpu_update_is_rvc),
       .bpu_ras_update_valid_i(bpu_ras_update_valid),
       .bpu_ras_update_is_call_i(bpu_ras_update_is_call),
       .bpu_ras_update_is_ret_i(bpu_ras_update_is_ret),
+      .bpu_ras_update_is_rvc_i(bpu_ras_update_is_rvc),
       .bpu_ras_update_pc_i(bpu_ras_update_pc),
       .mmu_satp_i(mmu_satp_state),
       .mmu_priv_i(mmu_priv_mode),
@@ -195,9 +199,11 @@ module triathlon #(
       .bpu_update_target_o(bpu_update_target),
       .bpu_update_is_call_o(bpu_update_is_call),
       .bpu_update_is_ret_o(bpu_update_is_ret),
+      .bpu_update_is_rvc_o(bpu_update_is_rvc),
       .bpu_ras_update_valid_o(bpu_ras_update_valid),
       .bpu_ras_update_is_call_o(bpu_ras_update_is_call),
       .bpu_ras_update_is_ret_o(bpu_ras_update_is_ret),
+      .bpu_ras_update_is_rvc_o(bpu_ras_update_is_rvc),
       .bpu_ras_update_pc_o(bpu_ras_update_pc),
       .mmu_satp_o(mmu_satp_state),
       .mmu_priv_o(mmu_priv_mode),
