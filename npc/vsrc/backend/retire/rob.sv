@@ -131,8 +131,10 @@ module rob #(
   localparam logic [Cfg.PLEN-1:0] DBG_PC_FAULT1 = 32'hc080ab72;
   localparam logic [PTR_WIDTH-1:0] DBG_ROB_TAG0 = PTR_WIDTH'(22);
   localparam logic [PTR_WIDTH-1:0] DBG_ROB_TAG1 = PTR_WIDTH'(44);
-  localparam int unsigned ROB_TAG_TRACE_BUDGET = 20000;
+  localparam int unsigned ROB_TAG_TRACE_BUDGET = 1024;
   logic [31:0] rob_tag_trace_cnt_q;
+  logic rob_trace_en_q;
+  initial rob_trace_en_q = $test$plusargs("npc_diag_trace");
 
   function automatic logic watch_kernel_pc(input logic [Cfg.PLEN-1:0] pc);
     begin
@@ -434,7 +436,7 @@ module rob #(
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (!rst_ni) begin
       rob_tag_trace_cnt_q <= '0;
-    end else begin
+    end else if (rob_trace_en_q) begin
       automatic int unsigned trace_inc;
       trace_inc = 0;
 
@@ -442,37 +444,44 @@ module rob #(
         if (wb_valid_i[k] && rob_ram[wb_rob_index_i[k]].valid &&
             ((rob_ram[wb_rob_index_i[k]].pc == DBG_PC_RET) ||
              (rob_ram[wb_rob_index_i[k]].pc == DBG_PC_FAULT0) ||
-             (rob_ram[wb_rob_index_i[k]].pc == DBG_PC_FAULT1))) begin
+             (rob_ram[wb_rob_index_i[k]].pc == DBG_PC_FAULT1)) &&
+            ((rob_tag_trace_cnt_q + trace_inc) < ROB_TAG_TRACE_BUDGET)) begin
           $display(
               "[rob-wb-watch] pc=%h rob=%0d wb_exc=%0d wb_ec=%0d wb_misp=%0d wb_redir=%h old_comp=%0d old_exc=%0d old_misp=%0d old_redir=%h",
               rob_ram[wb_rob_index_i[k]].pc, wb_rob_index_i[k], wb_exception_i[k], wb_ecause_i[k],
               wb_is_mispred_i[k], wb_redirect_pc_i[k], rob_ram[wb_rob_index_i[k]].complete,
               rob_ram[wb_rob_index_i[k]].exception, rob_ram[wb_rob_index_i[k]].is_mispred,
               rob_ram[wb_rob_index_i[k]].redirect_pc);
+          trace_inc++;
         end
+
       end
 
       for (int i = 0; i < COMMIT_WIDTH; i++) begin
         if (commit_valid_o[i] &&
             ((commit_pc_o[i] == DBG_PC_RET) ||
              (commit_pc_o[i] == DBG_PC_FAULT0) ||
-             (commit_pc_o[i] == DBG_PC_FAULT1))) begin
+             (commit_pc_o[i] == DBG_PC_FAULT1)) &&
+            ((rob_tag_trace_cnt_q + trace_inc) < ROB_TAG_TRACE_BUDGET)) begin
           $display(
               "[rob-commit-watch] pc=%h rob=%0d we=%0d actual_npc=%h is_mispred=%0d is_exc=%0d ec=%0d head=%0d tail=%0d cnt=%0d",
               commit_pc_o[i], commit_rob_index_o[i], commit_we_o[i], commit_actual_npc_o[i],
               rob_ram[commit_rob_index_o[i]].is_mispred, rob_ram[commit_rob_index_o[i]].exception,
               rob_ram[commit_rob_index_o[i]].ecause, head_ptr_q, tail_ptr_q, count_q);
+          trace_inc++;
         end
       end
 
       if (flush_o &&
           ((flush_src_pc_o == DBG_PC_RET) ||
            (flush_src_pc_o == DBG_PC_FAULT0) ||
-           (flush_src_pc_o == DBG_PC_FAULT1))) begin
+           (flush_src_pc_o == DBG_PC_FAULT1)) &&
+          ((rob_tag_trace_cnt_q + trace_inc) < ROB_TAG_TRACE_BUDGET)) begin
         $display(
             "[rob-flush-watch] src_pc=%h flush_pc=%h is_mispred=%0d is_exc=%0d is_br=%0d is_j=%0d cause=%0d head=%0d tail=%0d cnt=%0d",
             flush_src_pc_o, flush_pc_o, flush_is_mispred_o, flush_is_exception_o,
             flush_is_branch_o, flush_is_jump_o, flush_cause_o, head_ptr_q, tail_ptr_q, count_q);
+        trace_inc++;
       end
 
       if (rob_tag_trace_cnt_q < ROB_TAG_TRACE_BUDGET) begin

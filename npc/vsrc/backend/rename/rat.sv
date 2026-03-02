@@ -58,8 +58,10 @@ module rat #(
   rat_entry_t map_table[AREG_NUM];
 `ifndef SYNTHESIS
   localparam logic [4:0] RAT_WATCH_AREG = 5'd18;
-  localparam int unsigned RAT_TRACE_BUDGET = 100000;
+  localparam int unsigned RAT_TRACE_BUDGET = 1024;
   logic [31:0] rat_trace_cnt_q;
+  logic rat_trace_en_q;
+  initial rat_trace_en_q = $test$plusargs("npc_diag_trace");
   function automatic logic watch_tag(input logic [ROB_IDX_WIDTH-1:0] tag);
     begin
       watch_tag = (tag == ROB_IDX_WIDTH'(22)) || (tag == ROB_IDX_WIDTH'(44));
@@ -112,7 +114,8 @@ module rat #(
         map_table[i].in_rob <= 1'b0;
       end
 `ifndef SYNTHESIS
-      if ((rat_trace_cnt_q < RAT_TRACE_BUDGET) && map_table[RAT_WATCH_AREG].in_rob &&
+      if (rat_trace_en_q &&
+          (rat_trace_cnt_q < RAT_TRACE_BUDGET) && map_table[RAT_WATCH_AREG].in_rob &&
           watch_tag(map_table[RAT_WATCH_AREG].tag)) begin
         $display("[rat-watch-flush] areg=%0d old_in_rob=%0d old_tag=%0d", RAT_WATCH_AREG,
                  map_table[RAT_WATCH_AREG].in_rob, map_table[RAT_WATCH_AREG].tag);
@@ -131,7 +134,8 @@ module rat #(
           if (map_table[rd].in_rob && map_table[rd].tag == commit_rob_idx_i[i]) begin
             map_table[rd].in_rob <= 1'b0;  // 现在去 ARF 找这个数据
 `ifndef SYNTHESIS
-            if ((rat_trace_cnt_q < RAT_TRACE_BUDGET) && (rd == RAT_WATCH_AREG) &&
+            if (rat_trace_en_q &&
+                (rat_trace_cnt_q < RAT_TRACE_BUDGET) && (rd == RAT_WATCH_AREG) &&
                 watch_tag(commit_rob_idx_i[i])) begin
               $display("[rat-watch-commit-clear] areg=%0d commit_tag=%0d old_in_rob=%0d old_tag=%0d",
                        rd, commit_rob_idx_i[i], map_table[rd].in_rob, map_table[rd].tag);
@@ -150,7 +154,8 @@ module rat #(
           map_table[disp_rd_idx_i[i]].in_rob <= 1'b1;
           map_table[disp_rd_idx_i[i]].tag    <= disp_rob_idx_i[i];
 `ifndef SYNTHESIS
-          if ((rat_trace_cnt_q < RAT_TRACE_BUDGET) && (disp_rd_idx_i[i] == RAT_WATCH_AREG) &&
+          if (rat_trace_en_q &&
+              (rat_trace_cnt_q < RAT_TRACE_BUDGET) && (disp_rd_idx_i[i] == RAT_WATCH_AREG) &&
               (watch_tag(disp_rob_idx_i[i]) || watch_tag(map_table[disp_rd_idx_i[i]].tag))) begin
             $display("[rat-watch-disp] areg=%0d new_tag=%0d old_in_rob=%0d old_tag=%0d",
                      disp_rd_idx_i[i], disp_rob_idx_i[i],

@@ -17,12 +17,16 @@ void tick(Vtb_dcache *top, VerilatedVcdC *tfp) {
   top->flush_i = 0;
   top->clk_i = 0;
   top->eval();
-  if (tfp)
-    tfp->dump(sim_time++);
+#if VM_TRACE
+  if (tfp) tfp->dump(sim_time);
+#endif
+  sim_time++;
   top->clk_i = 1;
   top->eval();
-  if (tfp)
-    tfp->dump(sim_time++);
+#if VM_TRACE
+  if (tfp) tfp->dump(sim_time);
+#endif
+  sim_time++;
 }
 
 void reset(Vtb_dcache *top, VerilatedVcdC *tfp) {
@@ -241,10 +245,13 @@ void drain_background_traffic(Vtb_dcache *top, VerilatedVcdC *tfp,
 int main(int argc, char **argv) {
   Verilated::commandArgs(argc, argv);
   Vtb_dcache *top = new Vtb_dcache;
+  VerilatedVcdC *tfp = nullptr;
+#if VM_TRACE
+  tfp = new VerilatedVcdC;
   Verilated::traceEverOn(true);
-  VerilatedVcdC *tfp = new VerilatedVcdC;
   top->trace(tfp, 99);
   tfp->open("dcache_trace.vcd");
+#endif
 
   reset(top, tfp);
 
@@ -1032,7 +1039,10 @@ int main(int argc, char **argv) {
   // Cleanup
   for (int i = 0; i < 20; i++)
     tick(top, tfp);
-  tfp->close();
+#if VM_TRACE
+  if (tfp) tfp->close();
+#endif
+  delete tfp;
   delete top;
   return 0;
 }

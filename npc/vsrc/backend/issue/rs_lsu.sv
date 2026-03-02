@@ -79,6 +79,8 @@ module reservation_station_lsu #(
 `ifndef SYNTHESIS
   localparam int unsigned RS_LSU_TRACE_BUDGET = 512;
   logic [31:0] rs_lsu_trace_cnt_q;
+  logic rs_lsu_trace_en_q;
+  initial rs_lsu_trace_en_q = $test$plusargs("npc_diag_trace");
 `endif
 
   function automatic logic [TAG_W-1:0] rob_age(
@@ -250,7 +252,7 @@ module reservation_station_lsu #(
       rs_lsu_trace_cnt_q <= '0;
     end else if (flush_i) begin
       rs_lsu_trace_cnt_q <= '0;
-    end else if (rs_lsu_trace_cnt_q < RS_LSU_TRACE_BUDGET) begin
+    end else if (rs_lsu_trace_en_q && (rs_lsu_trace_cnt_q < RS_LSU_TRACE_BUDGET)) begin
       int unsigned trace_inc;
       trace_inc = 0;
       for (int i = 0; i < RS_DEPTH; i++) begin
