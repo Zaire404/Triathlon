@@ -28,6 +28,8 @@ module issue_lsu #(
     input wire                   [  SB_W-1:0] dispatch_sb_id[0:3],
 
     input wire                   [ TAG_W-1:0] rob_head_i,
+    input wire                                mispred_block_i,
+    input wire                                spec_low_addr_block_en_i,
 
     input wire fu_ready_i,
 
@@ -58,25 +60,79 @@ module issue_lsu #(
   // B. RS <-> Select Logic 之间的握手线
   wire [RS_DEPTH-1:0] rs_ready_wires;
   wire [RS_DEPTH-1:0] grant_mask_wires;
-  wire [RS_DEPTH-1:0] grant_mask_sel_wires;
 
   // C. Select Logic -> LSU
-  wire [$clog2(RS_DEPTH)-1:0] lsu_sel;
-  localparam int ISSUE_WIDTH = 1;
+  localparam int ISSUE_WIDTH = 2;
   wire [ISSUE_WIDTH-1:0] issue_valid_raw;
-  wire [ISSUE_WIDTH-1:0] issue_valid;
   wire [$clog2(RS_DEPTH)-1:0] issue_rs_idx_raw[0:ISSUE_WIDTH-1];
-  wire [$clog2(RS_DEPTH)-1:0] issue_rs_idx[0:ISSUE_WIDTH-1];
+  wire [DATA_W-1:0] issue_v1_0;
+  wire [DATA_W-1:0] issue_v1_1;
+  wire [DATA_W-1:0] issue_v2_0;
+  wire [DATA_W-1:0] issue_v2_1;
+  wire [ TAG_W-1:0] issue_dst_0;
+  wire [ TAG_W-1:0] issue_dst_1;
+  wire [  SB_W-1:0] issue_sb_id_0;
+  wire [  SB_W-1:0] issue_sb_id_1;
+  decode_pkg::uop_t issue_uop_0;
+  decode_pkg::uop_t issue_uop_1;
+  wire [DATA_W-1:0] issue_effective_addr_0;
+  wire [DATA_W-1:0] issue_effective_addr_1;
+  wire              issue_blocked_low_addr_spec_0;
+  wire              issue_blocked_low_addr_spec_1;
+  wire              issue_pick_0;
+  wire              issue_pick_1;
+  wire              issue_pick_any;
+  wire              issue_fire;
+  wire              issue_base_allow;
+  logic [RS_DEPTH-1:0] issue_grant_selected;
+`ifndef SYNTHESIS
+  localparam int unsigned LSU_ISSUE_TRACE_BUDGET = 256;
+  logic [31:0] lsu_issue_trace_cnt_q;
+  localparam int unsigned LSU_BLOCK_TRACE_BUDGET = 512;
+  logic [31:0] lsu_block_trace_cnt_q;
+  localparam logic [31:0] LSU_BLOCK_WIN_START = 32'hc080aa80;
+  localparam logic [31:0] LSU_BLOCK_WIN_END = 32'hc080add0;
+`endif
 
-  assign lsu_en  = issue_valid[0];
-  assign lsu_sel = issue_rs_idx[0];
-  assign grant_mask_wires = fu_ready_i ? grant_mask_sel_wires : '0;
-  assign issue_valid = issue_valid_raw & {ISSUE_WIDTH{fu_ready_i}};
-  generate
-    for (genvar gi = 0; gi < ISSUE_WIDTH; gi++) begin : g_issue_idx_passthru
-      assign issue_rs_idx[gi] = issue_rs_idx_raw[gi];
+  function automatic logic is_spec_low_addr(input logic [DATA_W-1:0] addr);
+    begin
+      is_spec_low_addr = ((addr[DATA_W-1:12] == '0) || (&addr[DATA_W-1:12]));
     end
-  endgenerate
+  endfunction
+
+  assign issue_effective_addr_0 = issue_v1_0 + issue_uop_0.imm;
+  assign issue_effective_addr_1 = issue_v1_1 + issue_uop_1.imm;
+  assign issue_blocked_low_addr_spec_0 = spec_low_addr_block_en_i &&
+                                         issue_valid_raw[0] &&
+                                         is_spec_low_addr(issue_effective_addr_0) &&
+                                         (issue_dst_0 != rob_head_i);
+  assign issue_blocked_low_addr_spec_1 = spec_low_addr_block_en_i &&
+                                         issue_valid_raw[1] &&
+                                         is_spec_low_addr(issue_effective_addr_1) &&
+                                         (issue_dst_1 != rob_head_i);
+  assign issue_pick_0 = issue_valid_raw[0] && !issue_blocked_low_addr_spec_0;
+  assign issue_pick_1 = !issue_pick_0 && issue_valid_raw[1] && !issue_blocked_low_addr_spec_1;
+  assign issue_pick_any = issue_pick_0 || issue_pick_1;
+  assign issue_base_allow = fu_ready_i && !flush_i && !mispred_block_i;
+  assign issue_fire = issue_base_allow && issue_pick_any;
+  assign lsu_en = issue_fire;
+  assign lsu_uop = issue_pick_1 ? issue_uop_1 : issue_uop_0;
+  assign lsu_v1 = issue_pick_1 ? issue_v1_1 : issue_v1_0;
+  assign lsu_v2 = issue_pick_1 ? issue_v2_1 : issue_v2_0;
+  assign lsu_dst = issue_pick_1 ? issue_dst_1 : issue_dst_0;
+  assign lsu_sb_id = issue_pick_1 ? issue_sb_id_1 : issue_sb_id_0;
+
+  always_comb begin
+    issue_grant_selected = '0;
+    if (issue_pick_0) begin
+      issue_grant_selected[issue_rs_idx_raw[0]] = 1'b1;
+    end else if (issue_pick_1) begin
+      issue_grant_selected[issue_rs_idx_raw[1]] = 1'b1;
+    end
+  end
+
+  // Never let LSU issue in a flush cycle; otherwise wrong-path memory ops can escape.
+  assign grant_mask_wires = issue_base_allow ? issue_grant_selected : '0;
 
   // D. Crossbar inputs
   decode_pkg::uop_t rs_in_op[0:RS_DEPTH-1];
@@ -139,6 +195,7 @@ module issue_lsu #(
       .flush_i(flush_i),
 
       .rob_head_i(rob_head_i),
+      .spec_low_addr_block_en_i(spec_low_addr_block_en_i),
 
       .entry_wen (alloc_wen),
       .in_op     (rs_in_op),
@@ -159,12 +216,18 @@ module issue_lsu #(
       .ready_mask (rs_ready_wires),
       .issue_grant(grant_mask_wires),
 
-      .sel_idx_0    (lsu_sel),
-      .out_op_0     (lsu_uop),
-      .out_v1_0     (lsu_v1),
-      .out_v2_0     (lsu_v2),
-      .out_dst_tag_0(lsu_dst),
-      .out_sb_id_0  (lsu_sb_id)
+      .sel_idx_0    (issue_rs_idx_raw[0]),
+      .sel_idx_1    (issue_rs_idx_raw[1]),
+      .out_op_0     (issue_uop_0),
+      .out_op_1     (issue_uop_1),
+      .out_v1_0     (issue_v1_0),
+      .out_v1_1     (issue_v1_1),
+      .out_v2_0     (issue_v2_0),
+      .out_v2_1     (issue_v2_1),
+      .out_dst_tag_0(issue_dst_0),
+      .out_dst_tag_1(issue_dst_1),
+      .out_sb_id_0  (issue_sb_id_0),
+      .out_sb_id_1  (issue_sb_id_1)
   );
 
   issue_select #(
@@ -172,7 +235,7 @@ module issue_lsu #(
       .ISSUE_WIDTH(ISSUE_WIDTH)
   ) u_select (
       .ready_mask      (rs_ready_wires),
-      .issue_grant_mask(grant_mask_sel_wires),
+      .issue_grant_mask(),
       .issue_valid     (issue_valid_raw),
       .issue_rs_idx    (issue_rs_idx_raw)
   );
@@ -184,5 +247,57 @@ module issue_lsu #(
       if (!rs_busy_wires[i]) free_count_o++;
     end
   end
+
+`ifndef SYNTHESIS
+  always_ff @(posedge clk or negedge rst_n) begin
+    logic watch_pc;
+    logic trace_slot_ok;
+    watch_pc = ((lsu_uop.pc >= 32'hc0803d80) && (lsu_uop.pc <= 32'hc0803dd0)) ||
+               ((lsu_uop.pc >= 32'hc080ab50) && (lsu_uop.pc <= 32'hc080ab90)) ||
+               ((lsu_uop.pc >= 32'hc07872b0) && (lsu_uop.pc <= 32'hc07873f0)) ||
+               ((lsu_uop.pc >= 32'hc0097640) && (lsu_uop.pc <= 32'hc0097670));
+    trace_slot_ok = (lsu_issue_trace_cnt_q < LSU_ISSUE_TRACE_BUDGET);
+    if (!rst_n) begin
+      lsu_issue_trace_cnt_q <= '0;
+      lsu_block_trace_cnt_q <= '0;
+    end else begin
+      if (lsu_en && watch_pc && trace_slot_ok) begin
+        $display("[issue-lsu] pc=%h rs1=%h rs2=%h imm=%h lsu_op=%0d is_ld=%0d is_st=%0d dst=%0d sb=%0d ftq=%0d epoch=%0d rvc=%0d flush=%0d fu_ready=%0d issue0_raw=%0d issue1_raw=%0d pick0=%0d pick1=%0d",
+                 lsu_uop.pc, lsu_v1, lsu_v2, lsu_uop.imm, lsu_uop.lsu_op, lsu_uop.is_load, lsu_uop.is_store,
+                 lsu_dst, lsu_sb_id, lsu_uop.ftq_id, lsu_uop.fetch_epoch, lsu_uop.is_rvc, flush_i, fu_ready_i,
+                 issue_valid_raw[0], issue_valid_raw[1], issue_pick_0, issue_pick_1);
+        if (flush_i) begin
+          $display("[issue-lsu-on-flush] pc=%h rs1=%h rs2=%h dst=%0d sb=%0d ftq=%0d epoch=%0d fu_ready=%0d issue0_raw=%0d issue1_raw=%0d",
+                   lsu_uop.pc, lsu_v1, lsu_v2, lsu_dst, lsu_sb_id, lsu_uop.ftq_id, lsu_uop.fetch_epoch, fu_ready_i,
+                   issue_valid_raw[0], issue_valid_raw[1]);
+        end
+        lsu_issue_trace_cnt_q <= lsu_issue_trace_cnt_q + 32'd1;
+      end else if (flush_i) begin
+        lsu_issue_trace_cnt_q <= '0;
+      end
+      if (flush_i && (issue_valid_raw[0] || issue_valid_raw[1]) && trace_slot_ok && !watch_pc) begin
+        $display("[issue-lsu-on-flush] pc=%h rs1=%h rs2=%h dst=%0d sb=%0d ftq=%0d epoch=%0d",
+                 lsu_uop.pc, lsu_v1, lsu_v2, lsu_dst, lsu_sb_id, lsu_uop.ftq_id, lsu_uop.fetch_epoch);
+      end
+
+      if (issue_valid_raw[0] && issue_blocked_low_addr_spec_0 &&
+          (issue_uop_0.pc >= LSU_BLOCK_WIN_START) && (issue_uop_0.pc <= LSU_BLOCK_WIN_END) &&
+          (lsu_block_trace_cnt_q < LSU_BLOCK_TRACE_BUDGET)) begin
+        $display("[issue-lsu-blocked] slot=0 pc=%h dst=%0d rob_head=%0d vaddr=%h flush=%0d mispred=%0d spec_low=%0d fu_ready=%0d issue_raw=%0d pick0=%0d pick1=%0d",
+                 issue_uop_0.pc, issue_dst_0, rob_head_i, issue_effective_addr_0, flush_i, mispred_block_i,
+                 issue_blocked_low_addr_spec_0, fu_ready_i, issue_valid_raw[0], issue_pick_0, issue_pick_1);
+        lsu_block_trace_cnt_q <= lsu_block_trace_cnt_q + 32'd1;
+      end
+      if (issue_valid_raw[1] && issue_blocked_low_addr_spec_1 &&
+          (issue_uop_1.pc >= LSU_BLOCK_WIN_START) && (issue_uop_1.pc <= LSU_BLOCK_WIN_END) &&
+          (lsu_block_trace_cnt_q < LSU_BLOCK_TRACE_BUDGET)) begin
+        $display("[issue-lsu-blocked] slot=1 pc=%h dst=%0d rob_head=%0d vaddr=%h flush=%0d mispred=%0d spec_low=%0d fu_ready=%0d issue_raw=%0d pick0=%0d pick1=%0d",
+                 issue_uop_1.pc, issue_dst_1, rob_head_i, issue_effective_addr_1, flush_i, mispred_block_i,
+                 issue_blocked_low_addr_spec_1, fu_ready_i, issue_valid_raw[1], issue_pick_0, issue_pick_1);
+        lsu_block_trace_cnt_q <= lsu_block_trace_cnt_q + 32'd1;
+      end
+    end
+  end
+`endif
 
 endmodule
