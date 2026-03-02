@@ -25,9 +25,11 @@ static void reset(Vtb_bpu_tournament *top) {
   top->update_target_i = 0;
   top->update_is_call_i = 0;
   top->update_is_ret_i = 0;
+  top->update_is_rvc_i = 0;
   top->ras_update_valid_i = 0;
   top->ras_update_is_call_i = 0;
   top->ras_update_is_ret_i = 0;
+  top->ras_update_is_rvc_i = 0;
   for (int i = 0; i < NRET; i++) {
     top->ras_update_pc_i[i] = 0;
   }
@@ -47,9 +49,11 @@ static void train(Vtb_bpu_tournament *top, uint32_t pc, bool taken,
   top->update_target_i = target;
   top->update_is_call_i = 0;
   top->update_is_ret_i = 0;
+  top->update_is_rvc_i = 0;
   top->ras_update_valid_i = 0;
   top->ras_update_is_call_i = 0;
   top->ras_update_is_ret_i = 0;
+  top->ras_update_is_rvc_i = 0;
   tick(top, 1);
   top->update_valid_i = 0;
 }

@@ -12,6 +12,9 @@ constexpr uint32_t kCsrRs = 1u;
 constexpr uint32_t kMstatus = 0x300u;
 constexpr uint32_t kMisa = 0x301u;
 constexpr uint32_t kMstatush = 0x310u;
+constexpr uint32_t kMcounteren = 0x306u;
+constexpr uint32_t kMcountinhibit = 0x320u;
+constexpr uint32_t kMenvcfgh = 0x31Au;
 constexpr uint32_t kMedeleg = 0x302u;
 constexpr uint32_t kMideleg = 0x303u;
 constexpr uint32_t kMtvec = 0x305u;
@@ -22,8 +25,18 @@ constexpr uint32_t kMhartid = 0xF14u;
 constexpr uint32_t kMscratch = 0x340u;
 constexpr uint32_t kMepc = 0x341u;
 constexpr uint32_t kMtval = 0x343u;
+constexpr uint32_t kMcycle = 0xB00u;
+constexpr uint32_t kMinstret = 0xB02u;
+constexpr uint32_t kMhpmcounter3 = 0xB03u;
+constexpr uint32_t kMcycleh = 0xB80u;
+constexpr uint32_t kMinstreth = 0xB82u;
+constexpr uint32_t kMhpmcounter3h = 0xB83u;
+constexpr uint32_t kCycle = 0xC00u;
+constexpr uint32_t kTime = 0xC01u;
+constexpr uint32_t kInstret = 0xC02u;
 
 constexpr uint32_t kSstatus = 0x100u;
+constexpr uint32_t kScounteren = 0x106u;
 constexpr uint32_t kSie = 0x104u;
 constexpr uint32_t kStvec = 0x105u;
 constexpr uint32_t kSscratch = 0x140u;
@@ -202,6 +215,7 @@ int main(int argc, char **argv) {
   tick(top);
 
   expect_csr_rw(top, kSstatus, 0x00000122u, "sstatus");
+  expect_csr_rw(top, kScounteren, 0x00000007u, "scounteren");
   expect_csr_rw(top, kStvec, 0x80000200u, "stvec");
   expect_csr_rw(top, kSscratch, 0x80002000u, "sscratch");
   expect_csr_rw(top, kSepc, 0x80003000u, "sepc");
@@ -212,6 +226,12 @@ int main(int argc, char **argv) {
   expect_csr_rw(top, kMedeleg, (1u << kEcallFromS) | (1u << kInstPageFault), "medeleg");
   expect_csr_rw(top, kMideleg, (1u << 7), "mideleg");
   expect_csr_rw(top, kMstatush, 0x00000020u, "mstatush");
+  expect_csr_rw(top, kMcounteren, 0x00000007u, "mcounteren");
+  expect_csr_rw(top, kMcountinhibit, 0x00000003u, "mcountinhibit");
+  Resp menvcfgh_r = csr_read(top, kMenvcfgh);
+  expect(!menvcfgh_r.exception, "menvcfgh read should not trap");
+  Resp menvcfgh_w = csr_write(top, kMenvcfgh, 0x80000000u);
+  expect(!menvcfgh_w.exception, "menvcfgh write should not trap");
   Resp misa = csr_read(top, kMisa);
   expect(!misa.exception, "misa read should not trap");
   expect(misa.data == kExpectedMisa, "misa value mismatch");
@@ -227,6 +247,17 @@ int main(int argc, char **argv) {
   expect_csr_rw(top, kMscratch, 0x80001000u, "mscratch");
   expect_csr_rw(top, kMtval, 0xdeadbeefu, "mtval");
   expect_csr_rw(top, kSatp, 0x80000000u, "satp");
+
+  // Linux/OpenSBI probe these counters in M-mode. They must not trap.
+  expect(!csr_read(top, kMcycle).exception, "mcycle read should not trap");
+  expect(!csr_read(top, kMinstret).exception, "minstret read should not trap");
+  expect(!csr_read(top, kMhpmcounter3).exception, "mhpmcounter3 read should not trap");
+  expect(!csr_read(top, kMcycleh).exception, "mcycleh read should not trap");
+  expect(!csr_read(top, kMinstreth).exception, "minstreth read should not trap");
+  expect(!csr_read(top, kMhpmcounter3h).exception, "mhpmcounter3h read should not trap");
+  expect(!csr_read(top, kCycle).exception, "cycle read should not trap");
+  expect(!csr_read(top, kTime).exception, "time read should not trap");
+  expect(!csr_read(top, kInstret).exception, "instret read should not trap");
 
   // SSTATUS should expose SUM/MXR bits.
   const uint32_t sum_mxr_bits = (1u << kMstatusSumBit) | (1u << kMstatusMxrBit);

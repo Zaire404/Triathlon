@@ -21,6 +21,7 @@ struct SimArgs {
   bool stall_trace = false;
   uint64_t stall_threshold = 200;
   uint64_t progress_interval = 0;
+  bool linux_early_debug = false;
 };
 
 SimArgs parse_args(int argc, char **argv);

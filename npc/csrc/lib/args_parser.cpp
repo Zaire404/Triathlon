@@ -146,6 +146,10 @@ SimArgs parse_args(int argc, char **argv) {
       }
       continue;
     }
+    if (arg == "--linux-early-debug") {
+      args.linux_early_debug = true;
+      continue;
+    }
     if (!arg.empty() && arg[0] == '-') {
       continue;
     }

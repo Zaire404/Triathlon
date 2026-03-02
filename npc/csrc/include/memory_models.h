@@ -53,6 +53,14 @@ struct UnifiedMem {
   uint8_t uart_scr = 0;
   uint8_t uart_dll = 0;
   uint8_t uart_dlm = 0;
+  uint64_t uart_tx_bytes = 0;
+  uint8_t uart_last_tx = 0;
+  bool fw_text_watch_enabled = false;
+  uint32_t fw_text_watch_base = 0x80400000u;
+  uint32_t fw_text_watch_limit = 0x80440000u;
+  uint64_t fw_text_write_count = 0;
+  uint32_t fw_text_last_write_addr = 0;
+  uint32_t fw_text_last_write_data = 0;
 
   UnifiedMem()
       : pmem_words(kPmemSize / sizeof(uint32_t), 0),
@@ -72,6 +80,10 @@ struct UnifiedMem {
 
   static bool in_virtio_blk(uint32_t addr) {
     return addr >= kVirtioBlkBase && addr < (kVirtioBlkBase + kVirtioBlkSize);
+  }
+
+  bool in_fw_text_watch(uint32_t addr) const {
+    return addr >= fw_text_watch_base && addr < fw_text_watch_limit;
   }
 
   static bool access_touches_bootrom(uint32_t addr, uint32_t size) {
@@ -116,8 +128,12 @@ struct UnifiedMem {
       case 0:
         if (uart_dlab()) {
           uart_dll = data;
-        } else if (uart_stdout_enabled) {
-          std::cout << static_cast<char>(data) << std::flush;
+        } else {
+          uart_tx_bytes++;
+          uart_last_tx = data;
+          if (uart_stdout_enabled) {
+            std::cout << static_cast<char>(data) << std::flush;
+          }
         }
         break;
       case 1:
@@ -673,6 +689,11 @@ struct UnifiedMem {
     if (!in_pmem(aligned)) return;
     uint32_t idx = (aligned - kPmemBase) >> 2;
     if (idx < pmem_words.size()) {
+      if (fw_text_watch_enabled && in_fw_text_watch(aligned)) {
+        fw_text_write_count++;
+        fw_text_last_write_addr = aligned;
+        fw_text_last_write_data = data;
+      }
       pmem_words[idx] = data;
     }
   }

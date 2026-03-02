@@ -47,6 +47,8 @@ void clear_inputs(Vtb_rob_exception *top) {
   top->async_exception_cause_i = 0;
   top->async_exception_pc_i = 0;
   top->async_exception_redirect_pc_i = 0;
+
+  top->query_rob_idx_i = 0;
 }
 
 void eval_comb(Vtb_rob_exception *top) {
@@ -113,6 +115,37 @@ void test_async_exception_redirect_flush(Vtb_rob_exception *top) {
   expect(top->flush_src_pc_o == kFaultPc, "async exception source pc");
 }
 
+void test_query_not_ready_after_commit(Vtb_rob_exception *top) {
+  clear_inputs(top);
+  top->dispatch_valid_i = 1;
+  top->dispatch_pc_i = 0x81000000u;
+  top->dispatch_fu_type_i = kFuLsu;
+  top->dispatch_has_rd_i = 1;
+  top->dispatch_areg_i = 5;
+  eval_comb(top);
+  expect(top->rob_ready_o == 1, "dispatch for query test accepted");
+  tick(top);
+
+  clear_inputs(top);
+  top->wb_valid_i = 1;
+  top->wb_rob_index_i = 0;
+  top->wb_data_i = 0x12345678u;
+  eval_comb(top);
+  tick(top);
+
+  // Commit this finished entry so ROB slot 0 is no longer in-flight.
+  clear_inputs(top);
+  eval_comb(top);
+  tick(top);
+
+  // Query old idx=0. Correct behavior: not ready because entry is retired.
+  clear_inputs(top);
+  top->query_rob_idx_i = 0;
+  eval_comb(top);
+  expect((top->query_ready_o & 0x1) == 0,
+         "retired ROB entry must not appear ready on query port");
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -122,6 +155,7 @@ int main(int argc, char **argv) {
   reset(top);
   test_sync_exception_not_direct_flush(top);
   test_async_exception_redirect_flush(top);
+  test_query_not_ready_after_commit(top);
 
   std::cout << "--- ALL TESTS PASSED ---\n";
   delete top;

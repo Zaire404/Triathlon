@@ -28,16 +28,18 @@ int main(int argc, char **argv) {
               << " [--bru-trace] [--fe-trace] [--stall-trace [N]] [--boot-handoff]"
               << " [--dtb <path>] [--firmware-load-base <addr>]"
               << " [--virtio-blk-image <path>]"
-              << " [--progress [N]]\n";
+              << " [--progress [N]] [--linux-early-debug]\n";
     return 1;
   }
 
   npc::MemSystem mem;
   uint32_t entry_pc = npc::kPmemBase;
+  uint32_t firmware_base_for_watch = npc::kOpenSbiLoadBase;
   if (args.boot_handoff) {
     const uint32_t firmware_base = (args.firmware_load_base != 0)
                                        ? static_cast<uint32_t>(args.firmware_load_base)
                                        : npc::kOpenSbiLoadBase;
+    firmware_base_for_watch = firmware_base;
     if (firmware_base == entry_pc) {
       std::ios::fmtflags f(std::cerr.flags());
       std::cerr << "[boot] firmware-load-base 0x" << std::hex << firmware_base
@@ -70,6 +72,11 @@ int main(int argc, char **argv) {
   }
   if (!args.virtio_blk_image.empty()) {
     if (!mem.mem.load_virtio_blk_image(args.virtio_blk_image)) return 1;
+  }
+  if (args.linux_early_debug && args.boot_handoff) {
+    mem.mem.fw_text_watch_base = firmware_base_for_watch;
+    mem.mem.fw_text_watch_limit = firmware_base_for_watch + 0x00040000u;
+    mem.mem.fw_text_watch_enabled = true;
   }
   mem.icache.mem = &mem.mem;
   mem.dcache.mem = &mem.mem;
@@ -122,6 +129,50 @@ int main(int argc, char **argv) {
   npc::ProfileCollector profile(args, cfg_instr_per_fetch, cfg_commit_width);
   uint32_t last_linux_wait_pc = 0xffffffffu;
   uint64_t last_linux_wait_log_cycle = 0;
+  uint64_t last_uart_tx_bytes = 0;
+  uint32_t last_flush_src_pc = 0xffffffffu;
+  uint64_t last_flush_log_cycle = 0;
+  uint64_t setup_vm_step_logs = 0;
+  uint64_t create_pgd_step_logs = 0;
+  uint64_t opensbi_step_logs = 0;
+  uint64_t linux_reloc_step_logs = 0;
+  uint64_t linux_fsctx_step_logs = 0;
+  uint64_t linux_cgroup_step_logs = 0;
+  uint64_t linux_bitops_step_logs = 0;
+  uint64_t linux_reloc_bru_logs = 0;
+  uint64_t linux_flush_any_logs = 0;
+  uint64_t linux_pc_cross_logs = 0;
+  uint64_t linux_opensbi_smode_logs = 0;
+  uint64_t linux_satp_change_logs = 0;
+  uint64_t linux_gp_write_logs = 0;
+  uint64_t last_fw_text_write_count = 0;
+  uint32_t last_commit_pc_seen = 0xffffffffu;
+  uint32_t last_satp_seen = 0xffffffffu;
+  constexpr uint64_t kSetupVmStepLogLimit = 4000;
+  constexpr uint64_t kCreatePgdStepLogLimit = 4000;
+  constexpr uint64_t kOpenSbiStepLogLimit = 1024;
+  constexpr uint64_t kLinuxRelocStepLogLimit = 512;
+  constexpr uint64_t kLinuxFsctxStepLogLimit = 256;
+  constexpr uint64_t kLinuxCgroupStepLogLimit = 256;
+  constexpr uint64_t kLinuxBitopsStepLogLimit = 128;
+  constexpr uint64_t kLinuxRelocBruLogLimit = 256;
+  constexpr uint64_t kLinuxFlushAnyLogLimit = 512;
+  constexpr uint64_t kLinuxPcCrossLogLimit = 128;
+  constexpr uint64_t kLinuxOpenSbiSModeLogLimit = 256;
+  constexpr uint64_t kLinuxSatpChangeLogLimit = 128;
+  constexpr uint64_t kLinuxGpWriteLogLimit = 256;
+  constexpr uint64_t kLinuxPtWriteLogLimit = 2048;
+  constexpr uint32_t kLinuxRelocPcBegin = 0x80801040u;
+  constexpr uint32_t kLinuxRelocPcEnd = 0x808010b0u;
+  constexpr uint32_t kLinuxFsctxPcBegin = 0xc01d0660u;
+  constexpr uint32_t kLinuxFsctxPcEnd = 0xc01d06e0u;
+  constexpr uint32_t kLinuxCgroupPcBegin = 0xc00999b0u;
+  constexpr uint32_t kLinuxCgroupPcEnd = 0xc0099a40u;
+  constexpr uint32_t kLinuxBitopsPcBegin = 0xc03a0320u;
+  constexpr uint32_t kLinuxBitopsPcEnd = 0xc03a0388u;
+  constexpr uint32_t kLinuxPtWatchBase = 0x81402000u;
+  constexpr uint32_t kLinuxPtWatchEnd = 0x81404000u;
+  uint64_t linux_pt_write_logs = 0;
 
   for (uint64_t cycles = 0; cycles < args.max_cycles; cycles++) {
     mem.mem.set_time_us(cycles);
@@ -132,7 +183,39 @@ int main(int argc, char **argv) {
       uint32_t addr = top->dbg_sb_dcache_req_addr_o;
       uint32_t data = top->dbg_sb_dcache_req_data_o;
       uint32_t op = top->dbg_sb_dcache_req_op_o;
+      uint32_t aligned = addr & ~0x3u;
+      bool watch_pt_write = args.linux_early_debug &&
+                            (aligned >= kLinuxPtWatchBase) &&
+                            (aligned < kLinuxPtWatchEnd) &&
+                            (linux_pt_write_logs < kLinuxPtWriteLogLimit);
+      uint32_t old_word = 0;
+      if (watch_pt_write) {
+        old_word = mem.mem.read_word(aligned);
+      }
       mem.mem.write_store(addr, data, op);
+      if (watch_pt_write) {
+        uint32_t new_word = mem.mem.read_word(aligned);
+        std::ios::fmtflags f(std::cout.flags());
+        std::cout << "[debug][pt-write] cycle=" << cycles
+                  << " addr=0x" << std::hex << addr
+                  << " aligned=0x" << aligned
+                  << " data=0x" << data
+                  << " old=0x" << old_word
+                  << " new=0x" << new_word
+                  << " satp=0x" << top->dbg_csr_satp_o
+                  << " rob_head_pc=0x" << top->dbg_rob_head_pc_o
+                  << " c0=0x" << top->commit_pc_o[0]
+                  << " c1=0x" << top->commit_pc_o[1]
+                  << " c2=0x" << top->commit_pc_o[2]
+                  << " c3=0x" << top->commit_pc_o[3]
+                  << std::dec
+                  << " op=" << op
+                  << " priv=" << static_cast<int>(top->dbg_csr_priv_mode_o)
+                  << " commit_v=0x" << std::hex << static_cast<uint32_t>(top->commit_valid_o)
+                  << std::dec << "\n";
+        std::cout.flags(f);
+        linux_pt_write_logs++;
+      }
       if (args.commit_trace) {
         std::ios::fmtflags f(std::cout.flags());
         std::cout << "[stwb  ] cycle=" << cycles
@@ -197,6 +280,61 @@ int main(int argc, char **argv) {
       }
     }
 
+    if (args.linux_early_debug && top->backend_flush_o && top->dbg_rob_flush_o &&
+        top->dbg_rob_flush_is_exception_o) {
+      uint32_t src_pc = top->dbg_rob_flush_src_pc_o;
+      bool pc_changed = (src_pc != last_flush_src_pc);
+      bool periodic_log = (cycles - last_flush_log_cycle >= 100000ull);
+      if (pc_changed || periodic_log) {
+        std::ios::fmtflags f(std::cout.flags());
+        std::cout << "[debug][flush-exc] cycle=" << cycles
+                  << " src_pc=0x" << std::hex << src_pc
+                  << " src_inst=0x" << mem.mem.read_word(src_pc)
+                  << " cause=0x" << static_cast<uint32_t>(top->dbg_rob_flush_cause_o)
+                  << " mcause=0x" << top->dbg_csr_mcause_o
+                  << " mepc=0x" << top->dbg_csr_mepc_o
+                  << " mtval(aliased)=0x" << top->dbg_csr_stval_o
+                  << " mstatus=0x" << top->dbg_csr_mstatus_o
+                  << " scause=0x" << top->dbg_csr_scause_o
+                  << " sepc=0x" << top->dbg_csr_sepc_o
+                  << " stval=0x" << top->dbg_csr_stval_o
+                  << " satp=0x" << top->dbg_csr_satp_o
+                  << " priv=0x" << static_cast<uint32_t>(top->dbg_csr_priv_mode_o)
+                  << std::dec << "\n";
+        std::cout.flags(f);
+        last_flush_src_pc = src_pc;
+        last_flush_log_cycle = cycles;
+      }
+    }
+
+    if (args.linux_early_debug && top->backend_flush_o && top->dbg_rob_flush_o &&
+        linux_flush_any_logs < kLinuxFlushAnyLogLimit) {
+      uint32_t src_pc = top->dbg_rob_flush_src_pc_o;
+      uint32_t redirect_pc = top->backend_redirect_pc_o;
+      bool watch_flush = ((src_pc >= kLinuxRelocPcBegin && src_pc < kLinuxRelocPcEnd) ||
+                          (src_pc >= kLinuxFsctxPcBegin && src_pc < kLinuxFsctxPcEnd) ||
+                          (redirect_pc >= npc::kOpenSbiLoadBase &&
+                           redirect_pc < (npc::kOpenSbiLoadBase + 0x00050000u)));
+      if (watch_flush) {
+        std::ios::fmtflags f(std::cout.flags());
+        std::cout << "[debug][flush-any] cycle=" << cycles
+                  << " src_pc=0x" << std::hex << src_pc
+                  << " src_inst=0x" << mem.mem.read_word(src_pc)
+                  << " backend_rdir=0x" << redirect_pc
+                  << " retire_rdir=0x" << top->dbg_retire_redirect_pc_o
+                  << " cause=0x" << static_cast<uint32_t>(top->dbg_rob_flush_cause_o)
+                  << std::dec
+                  << " is_exc=" << static_cast<int>(top->dbg_rob_flush_is_exception_o)
+                  << " is_mispred=" << static_cast<int>(top->dbg_rob_flush_is_mispred_o)
+                  << " is_branch=" << static_cast<int>(top->dbg_rob_flush_is_branch_o)
+                  << " is_jump=" << static_cast<int>(top->dbg_rob_flush_is_jump_o)
+                  << " priv=" << static_cast<int>(top->dbg_csr_priv_mode_o)
+                  << "\n";
+        std::cout.flags(f);
+        linux_flush_any_logs++;
+      }
+    }
+
     if (args.bru_trace && top->dbg_bru_wb_valid_o) {
       std::ios::fmtflags f(std::cout.flags());
       std::cout << "[bruwb ] cycle=" << cycles
@@ -211,6 +349,30 @@ int main(int argc, char **argv) {
                 << " op=" << static_cast<int>(top->dbg_bru_op_o)
                 << "\n";
       std::cout.flags(f);
+    }
+
+    if (args.linux_early_debug && top->dbg_bru_wb_valid_o &&
+        linux_reloc_bru_logs < kLinuxRelocBruLogLimit) {
+      uint32_t bru_pc = top->dbg_bru_pc_o;
+      if (bru_pc >= kLinuxRelocPcBegin && bru_pc < kLinuxRelocPcEnd) {
+        std::ios::fmtflags f(std::cout.flags());
+        std::cout << "[debug][bruwb-reloc] cycle=" << cycles
+                  << " pc=0x" << std::hex << bru_pc
+                  << " v1=0x" << top->dbg_bru_v1_o
+                  << " v2=0x" << top->dbg_bru_v2_o
+                  << " redirect=0x" << top->dbg_bru_redirect_pc_o
+                  << " backend_rdir=0x" << top->backend_redirect_pc_o
+                  << " retire_rdir=0x" << top->dbg_retire_redirect_pc_o
+                  << std::dec
+                  << " mispred=" << static_cast<int>(top->dbg_bru_mispred_o)
+                  << " is_jump=" << static_cast<int>(top->dbg_bru_is_jump_o)
+                  << " is_branch=" << static_cast<int>(top->dbg_bru_is_branch_o)
+                  << " op=" << static_cast<int>(top->dbg_bru_op_o)
+                  << " flush=" << static_cast<int>(top->backend_flush_o)
+                  << "\n";
+        std::cout.flags(f);
+        linux_reloc_bru_logs++;
+      }
     }
 
     uint32_t commit_this_cycle = 0;
@@ -230,7 +392,275 @@ int main(int argc, char **argv) {
 
       uint32_t pc = top->commit_pc_o[i];
       uint32_t inst = mem.mem.read_word(pc);
+      if (args.linux_early_debug) {
+        if (we && rd == 3 && linux_gp_write_logs < kLinuxGpWriteLogLimit) {
+          std::ios::fmtflags f(std::cout.flags());
+          std::cout << "[debug][gp-write] cycle=" << cycles
+                    << " slot=" << i
+                    << " pc=0x" << std::hex << pc
+                    << " inst=0x" << inst
+                    << " gp_old=0x" << rf_before[3]
+                    << " gp_new=0x" << rf[3]
+                    << " satp=0x" << top->dbg_csr_satp_o
+                    << std::dec
+                    << " priv=" << static_cast<int>(top->dbg_csr_priv_mode_o)
+                    << " flush=" << static_cast<int>(top->backend_flush_o)
+                    << "\n";
+          std::cout.flags(f);
+          linux_gp_write_logs++;
+        }
+        uint32_t satp_now = top->dbg_csr_satp_o;
+        if ((satp_now != last_satp_seen) &&
+            (linux_satp_change_logs < kLinuxSatpChangeLogLimit)) {
+          std::ios::fmtflags f(std::cout.flags());
+          std::cout << "[debug][satp-change] cycle=" << cycles
+                    << " slot=" << i
+                    << " pc=0x" << std::hex << pc
+                    << " inst=0x" << inst
+                    << " satp_old=0x" << last_satp_seen
+                    << " satp_new=0x" << satp_now
+                    << " stvec=0x" << top->dbg_csr_stvec_o
+                    << " sepc=0x" << top->dbg_csr_sepc_o
+                    << " mstatus=0x" << top->dbg_csr_mstatus_o
+                    << " mepc=0x" << top->dbg_csr_mepc_o
+                    << std::dec
+                    << " priv=" << static_cast<int>(top->dbg_csr_priv_mode_o)
+                    << " flush=" << static_cast<int>(top->backend_flush_o)
+                    << " ra=0x" << std::hex << rf[1]
+                    << " a0=0x" << rf[10]
+                    << std::dec << "\n";
+          std::cout.flags(f);
+          linux_satp_change_logs++;
+          if (last_satp_seen != 0u) {
+            uint32_t satp_old = last_satp_seen;
+            uint32_t root_ppn = satp_old & 0x003fffffu;
+            uint32_t root_base = root_ppn << 12;
+            uint32_t vpn1 = pc >> 22;
+            uint32_t vpn0 = (pc >> 12) & 0x3ffu;
+            uint32_t l1_addr = root_base + (vpn1 << 2);
+            uint32_t l1_pte = mem.mem.read_word(l1_addr);
+            bool l1_valid = (l1_pte & 0x1u) != 0u;
+            bool l1_leaf = (l1_pte & 0xau) != 0u;
+            std::ios::fmtflags fw(std::cout.flags());
+            std::cout << "[debug][pt-walk] cycle=" << cycles
+                      << " pc=0x" << std::hex << pc
+                      << " satp_old=0x" << satp_old
+                      << " root_base=0x" << root_base
+                      << " vpn1=0x" << vpn1
+                      << " vpn0=0x" << vpn0
+                      << " l1_addr=0x" << l1_addr
+                      << " l1_pte=0x" << l1_pte
+                      << std::dec
+                      << " l1_valid=" << static_cast<int>(l1_valid)
+                      << " l1_leaf=" << static_cast<int>(l1_leaf);
+            if (l1_valid && !l1_leaf) {
+              uint32_t l0_base = (l1_pte >> 10) << 12;
+              uint32_t l0_addr = l0_base + (vpn0 << 2);
+              uint32_t l0_pte = mem.mem.read_word(l0_addr);
+              std::cout << " l0_base=0x" << std::hex << l0_base
+                        << " l0_addr=0x" << l0_addr
+                        << " l0_pte=0x" << l0_pte
+                        << std::dec;
+            }
+            std::cout << "\n";
+            std::cout.flags(fw);
+          }
+          last_satp_seen = satp_now;
+        }
+        bool cross_high_to_low = (last_commit_pc_seen >= 0xc0000000u) &&
+                                 (pc < 0x90000000u);
+        if (cross_high_to_low && linux_pc_cross_logs < kLinuxPcCrossLogLimit) {
+          std::ios::fmtflags f(std::cout.flags());
+          std::cout << "[debug][pc-cross] cycle=" << cycles
+                    << " slot=" << i
+                    << " prev_pc=0x" << std::hex << last_commit_pc_seen
+                    << " pc=0x" << pc
+                    << " inst=0x" << inst
+                    << " satp=0x" << top->dbg_csr_satp_o
+                    << " stvec=0x" << top->dbg_csr_stvec_o
+                    << " sepc=0x" << top->dbg_csr_sepc_o
+                    << " mstatus=0x" << top->dbg_csr_mstatus_o
+                    << " mepc=0x" << top->dbg_csr_mepc_o
+                    << " backend_rdir=0x" << top->backend_redirect_pc_o
+                    << " retire_rdir=0x" << top->dbg_retire_redirect_pc_o
+                    << std::dec
+                    << " priv=" << static_cast<int>(top->dbg_csr_priv_mode_o)
+                    << " flush=" << static_cast<int>(top->backend_flush_o)
+                    << " rob_flush=" << static_cast<int>(top->dbg_rob_flush_o)
+                    << " rob_flush_exc=" << static_cast<int>(top->dbg_rob_flush_is_exception_o)
+                    << " rob_flush_mispred=" << static_cast<int>(top->dbg_rob_flush_is_mispred_o)
+                    << " ra=0x" << std::hex << rf[1]
+                    << " a0=0x" << rf[10]
+                    << std::dec << "\n";
+          std::cout.flags(f);
+          linux_pc_cross_logs++;
+        }
+        bool opensbi_in_smode = (pc >= npc::kOpenSbiLoadBase) &&
+                                (pc < (npc::kOpenSbiLoadBase + 0x00050000u)) &&
+                                (top->dbg_csr_priv_mode_o != 3);
+        if (opensbi_in_smode && linux_opensbi_smode_logs < kLinuxOpenSbiSModeLogLimit) {
+          std::ios::fmtflags f(std::cout.flags());
+          std::cout << "[debug][opensbi-smode] cycle=" << cycles
+                    << " slot=" << i
+                    << " pc=0x" << std::hex << pc
+                    << " inst=0x" << inst
+                    << " satp=0x" << top->dbg_csr_satp_o
+                    << " stvec=0x" << top->dbg_csr_stvec_o
+                    << " sepc=0x" << top->dbg_csr_sepc_o
+                    << " mstatus=0x" << top->dbg_csr_mstatus_o
+                    << " mepc=0x" << top->dbg_csr_mepc_o
+                    << " backend_rdir=0x" << top->backend_redirect_pc_o
+                    << " retire_rdir=0x" << top->dbg_retire_redirect_pc_o
+                    << " ra=0x" << rf[1]
+                    << " a0=0x" << rf[10]
+                    << std::dec
+                    << " priv=" << static_cast<int>(top->dbg_csr_priv_mode_o)
+                    << " flush=" << static_cast<int>(top->backend_flush_o)
+                    << "\n";
+          std::cout.flags(f);
+          linux_opensbi_smode_logs++;
+        }
+      }
       profile.record_commit(pc, inst);
+      if (args.linux_early_debug &&
+          pc >= 0x810043b0u && pc < 0x81004430u &&
+          setup_vm_step_logs < kSetupVmStepLogLimit) {
+        std::ios::fmtflags f(std::cout.flags());
+          std::cout << "[debug][setup-vm-step] cycle=" << cycles
+                  << " slot=" << i
+                  << " pc=0x" << std::hex << pc
+                  << " inst=0x" << inst
+                  << " we=" << std::dec << static_cast<uint32_t>(we)
+                  << " rd=x" << static_cast<uint32_t>(rd)
+                  << " wdata=0x" << std::hex << data
+                  << " a0=0x" << rf[10]
+                  << " a1=0x" << rf[11]
+                  << " a2=0x" << rf[12]
+                  << " a3=0x" << rf[13]
+                  << " a4=0x" << rf[14]
+                  << " a5=0x" << rf[15]
+                  << " sp=0x" << rf[2]
+                  << " ra=0x" << rf[1]
+                  << " s0=0x" << rf[8]
+                  << " s1=0x" << rf[9]
+                  << " s2=0x" << rf[18]
+                  << " s3=0x" << rf[19]
+                  << std::dec << "\n";
+        std::cout.flags(f);
+        setup_vm_step_logs++;
+      }
+      if (args.linux_early_debug &&
+          pc >= 0x81004230u && pc < 0x810042f0u &&
+          create_pgd_step_logs < kCreatePgdStepLogLimit) {
+        std::ios::fmtflags f(std::cout.flags());
+        std::cout << "[debug][create-pgd-step] cycle=" << cycles
+                  << " slot=" << i
+                  << " pc=0x" << std::hex << pc
+                  << " inst=0x" << inst
+                  << " we=" << std::dec << static_cast<uint32_t>(we)
+                  << " rd=x" << static_cast<uint32_t>(rd)
+                  << " wdata=0x" << std::hex << data
+                  << " a0=0x" << rf[10]
+                  << " a1=0x" << rf[11]
+                  << " a2=0x" << rf[12]
+                  << " a3=0x" << rf[13]
+                  << " a4=0x" << rf[14]
+                  << " a5=0x" << rf[15]
+                  << " s2=0x" << rf[18]
+                  << " s3=0x" << rf[19]
+                  << " s4=0x" << rf[20]
+                  << std::dec << "\n";
+        std::cout.flags(f);
+        create_pgd_step_logs++;
+      }
+      if (args.linux_early_debug &&
+          pc >= 0x804007e0u && pc < 0x80400820u &&
+          opensbi_step_logs < kOpenSbiStepLogLimit) {
+        std::ios::fmtflags f(std::cout.flags());
+        std::cout << "[debug][opensbi-step] cycle=" << cycles
+                  << " slot=" << i
+                  << " pc=0x" << std::hex << pc
+                  << " inst=0x" << inst
+                  << " priv=0x" << static_cast<uint32_t>(top->dbg_csr_priv_mode_o)
+                  << " satp=0x" << top->dbg_csr_satp_o
+                  << " mstatus=0x" << top->dbg_csr_mstatus_o
+                  << " mepc=0x" << top->dbg_csr_mepc_o
+                  << " mtval(aliased)=0x" << top->dbg_csr_stval_o
+                  << std::dec << "\n";
+        std::cout.flags(f);
+        opensbi_step_logs++;
+      }
+      if (args.linux_early_debug) {
+        bool in_reloc = (pc >= kLinuxRelocPcBegin && pc < kLinuxRelocPcEnd);
+        bool in_fsctx = (pc >= kLinuxFsctxPcBegin && pc < kLinuxFsctxPcEnd);
+        bool can_log_reloc = in_reloc && (linux_reloc_step_logs < kLinuxRelocStepLogLimit);
+        bool can_log_fsctx = in_fsctx && (linux_fsctx_step_logs < kLinuxFsctxStepLogLimit);
+        if (can_log_reloc || can_log_fsctx) {
+          std::ios::fmtflags f(std::cout.flags());
+          std::cout << "[debug][linux-step] cycle=" << cycles
+                    << " tag=" << (in_reloc ? "reloc" : "fsctx")
+                    << " slot=" << i
+                    << " pc=0x" << std::hex << pc
+                    << " inst=0x" << inst
+                    << " ra=0x" << rf[1]
+                    << " sp=0x" << rf[2]
+                    << " gp=0x" << rf[3]
+                    << " a0=0x" << rf[10]
+                    << " a1=0x" << rf[11]
+                    << " satp=0x" << top->dbg_csr_satp_o
+                    << " stvec=0x" << top->dbg_csr_stvec_o
+                    << " sepc=0x" << top->dbg_csr_sepc_o
+                    << " scause=0x" << top->dbg_csr_scause_o
+                    << " stval=0x" << top->dbg_csr_stval_o
+                    << " mstatus=0x" << top->dbg_csr_mstatus_o
+                    << " mepc=0x" << top->dbg_csr_mepc_o
+                    << " mcause=0x" << top->dbg_csr_mcause_o
+                    << " backend_rdir=0x" << top->backend_redirect_pc_o
+                    << " retire_rdir=0x" << top->dbg_retire_redirect_pc_o
+                    << std::dec
+                    << " priv=" << static_cast<int>(top->dbg_csr_priv_mode_o)
+                    << " flush=" << static_cast<int>(top->backend_flush_o)
+                    << "\n";
+          std::cout.flags(f);
+          if (in_reloc) linux_reloc_step_logs++;
+          if (in_fsctx) linux_fsctx_step_logs++;
+        }
+        bool in_cgroup = (pc >= kLinuxCgroupPcBegin && pc < kLinuxCgroupPcEnd);
+        bool in_bitops = (pc >= kLinuxBitopsPcBegin && pc < kLinuxBitopsPcEnd);
+        bool can_log_cgroup = in_cgroup && (linux_cgroup_step_logs < kLinuxCgroupStepLogLimit);
+        bool can_log_bitops = in_bitops && (linux_bitops_step_logs < kLinuxBitopsStepLogLimit);
+        if (can_log_cgroup || can_log_bitops) {
+          std::ios::fmtflags f(std::cout.flags());
+          std::cout << "[debug][linux-hotstep] cycle=" << cycles
+                    << " tag=" << (in_cgroup ? "cgroup-init" : "bitops")
+                    << " slot=" << i
+                    << " pc=0x" << std::hex << pc
+                    << " inst=0x" << inst
+                    << " we=" << std::dec << static_cast<uint32_t>(we)
+                    << " rd=x" << static_cast<uint32_t>(rd)
+                    << " wdata=0x" << std::hex << data
+                    << " a0=0x" << rf[10]
+                    << " a1=0x" << rf[11]
+                    << " a2=0x" << rf[12]
+                    << " a3=0x" << rf[13]
+                    << " a4=0x" << rf[14]
+                    << " a5=0x" << rf[15]
+                    << " s0=0x" << rf[8]
+                    << " s1=0x" << rf[9]
+                    << " s2=0x" << rf[18]
+                    << " s3=0x" << rf[19]
+                    << " satp=0x" << top->dbg_csr_satp_o
+                    << " scause=0x" << top->dbg_csr_scause_o
+                    << " stval=0x" << top->dbg_csr_stval_o
+                    << std::dec
+                    << " priv=" << static_cast<int>(top->dbg_csr_priv_mode_o)
+                    << " flush=" << static_cast<int>(top->backend_flush_o)
+                    << "\n";
+          std::cout.flags(f);
+          if (in_cgroup) linux_cgroup_step_logs++;
+          if (in_bitops) linux_bitops_step_logs++;
+        }
+      }
       if (args.commit_trace) {
         std::ios::fmtflags f(std::cout.flags());
         std::cout << "[commit] cycle=" << cycles
@@ -271,6 +701,7 @@ int main(int argc, char **argv) {
         delete top;
         return 1;
       }
+      last_commit_pc_seen = pc;
     }
 
     profile.record_commit_width(commit_this_cycle);
@@ -414,6 +845,47 @@ int main(int argc, char **argv) {
           last_linux_wait_pc = last_pc;
           last_linux_wait_log_cycle = cycles;
         }
+      }
+      if (args.linux_early_debug && last_pc >= 0x810042f2u && last_pc < 0x81004460u) {
+        std::cout << "[debug][setup-vm] cycle=" << cycles
+                  << " last_pc=0x" << std::hex << last_pc
+                  << " last_inst=0x" << profile.last_commit_inst()
+                  << " a0=0x" << rf[10]
+                  << " a1=0x" << rf[11]
+                  << " s2=0x" << rf[18]
+                  << " s3=0x" << rf[19]
+                  << " satp=0x" << top->dbg_csr_satp_o
+                  << " stvec=0x" << top->dbg_csr_stvec_o
+                  << " sepc=0x" << top->dbg_csr_sepc_o
+                  << " scause=0x" << top->dbg_csr_scause_o
+                  << " stval=0x" << top->dbg_csr_stval_o
+                  << " mtvec=0x" << top->dbg_csr_mtvec_o
+                  << " mepc=0x" << top->dbg_csr_mepc_o
+                  << " mcause=0x" << top->dbg_csr_mcause_o
+                  << " priv=0x" << static_cast<uint32_t>(top->dbg_csr_priv_mode_o)
+                  << std::dec << "\n";
+      }
+      if (args.linux_early_debug) {
+        uint64_t uart_total = mem.mem.uart_tx_bytes;
+        uint64_t uart_delta = uart_total - last_uart_tx_bytes;
+        uint64_t fw_writes = mem.mem.fw_text_write_count;
+        uint64_t fw_delta = fw_writes - last_fw_text_write_count;
+        std::cout << "[debug][uart] cycle=" << cycles
+                  << " tx_total=" << uart_total
+                  << " tx_delta=" << uart_delta
+                  << " lcr=0x" << std::hex << static_cast<uint32_t>(mem.mem.uart_lcr)
+                  << " ier=0x" << static_cast<uint32_t>(mem.mem.uart_ier)
+                  << " lsr=0x" << static_cast<uint32_t>(mem.mem.uart_lsr)
+                  << " last=0x" << static_cast<uint32_t>(mem.mem.uart_last_tx)
+                  << " fw_writes=" << std::dec << fw_writes
+                  << " fw_delta=" << fw_delta
+                  << " fw_last_addr=0x" << std::hex << mem.mem.fw_text_last_write_addr
+                  << " fw_last_data=0x" << mem.mem.fw_text_last_write_data
+                  << " fw_word_0x80400800=0x" << mem.mem.read_word(0x80400800u)
+                  << " fw_word_0x80400094=0x" << mem.mem.read_word(0x80400094u)
+                  << std::dec << "\n";
+        last_uart_tx_bytes = uart_total;
+        last_fw_text_write_count = fw_writes;
       }
       std::cout.flags(f);
     }
