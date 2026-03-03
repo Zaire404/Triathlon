@@ -29,9 +29,11 @@ void reset(Vtb_bpu_phase5_red *top) {
   top->update_target_i = 0;
   top->update_is_call_i = 0;
   top->update_is_ret_i = 0;
+  top->update_is_rvc_i = 0;
   top->ras_update_valid_i = 0;
   top->ras_update_is_call_i = 0;
   top->ras_update_is_ret_i = 0;
+  top->ras_update_is_rvc_i = 0;
   for (int i = 0; i < kNret; i++) {
     top->ras_update_pc_i[i] = 0;
   }
@@ -51,17 +53,21 @@ void train(Vtb_bpu_phase5_red *top, uint32_t pc, bool is_cond, bool taken,
   top->update_target_i = target;
   top->update_is_call_i = is_call ? 1 : 0;
   top->update_is_ret_i = is_ret ? 1 : 0;
+  top->update_is_rvc_i = 0;
   top->ras_update_valid_i = (is_call || is_ret) ? 0x1 : 0x0;
   top->ras_update_is_call_i = is_call ? 0x1 : 0x0;
   top->ras_update_is_ret_i = is_ret ? 0x1 : 0x0;
+  top->ras_update_is_rvc_i = 0x0;
   top->ras_update_pc_i[0] = pc;
   tick(top, 1);
   top->update_valid_i = 0;
   top->update_is_call_i = 0;
   top->update_is_ret_i = 0;
+  top->update_is_rvc_i = 0;
   top->ras_update_valid_i = 0;
   top->ras_update_is_call_i = 0;
   top->ras_update_is_ret_i = 0;
+  top->ras_update_is_rvc_i = 0;
   top->ras_update_pc_i[0] = 0;
 }
 

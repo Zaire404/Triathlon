@@ -24,7 +24,7 @@ module ittage #(
     input logic [Cfg.PLEN-1:0] update_target_i
 );
   localparam int unsigned INSTR_BYTES = Cfg.ILEN / 8;
-  localparam int unsigned INSTR_ADDR_LSB = $clog2(INSTR_BYTES);
+  localparam int unsigned INSTR_ADDR_LSB = 1;
   localparam int unsigned IDX_W = (ENTRIES > 1) ? $clog2(ENTRIES) : 1;
   localparam int unsigned TAG_W = (TAG_BITS > 0) ? TAG_BITS : 1;
   localparam int unsigned CONF_W = (CONF_BITS > 0) ? CONF_BITS : 1;

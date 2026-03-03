@@ -243,7 +243,8 @@ int main(int argc, char **argv) {
     std::cout << "\n--- Test 3: RS Full Stall Check ---" << std::endl;
     
     uint32_t OP_STALL = 0x57A11000; // STALL
-    DispatchInstr stall_instr = {true, OP_STALL, 99, 0, 99, 0, 0, 99, 0};
+    // With ROB-age wakeup filtering, producer tag must be older than consumer tag.
+    DispatchInstr stall_instr = {true, OP_STALL, 40, 0, 20, 0, 0, 20, 0};
     std::vector<DispatchInstr> batch(4, stall_instr); 
 
     // 按当前配置动态填满 RS（避免与可配置 RS_DEPTH 脱节）。
@@ -281,8 +282,8 @@ int main(int argc, char **argv) {
     std::cout << "  [Verified] No instructions accepted while FULL." << std::endl;
 
     // 释放一些空间
-    std::cout << "  [Action] Releasing instructions via CDB Tag 99..." << std::endl;
-    set_cdb(top, {{99, 0xDEADBEEF}});
+    std::cout << "  [Action] Releasing instructions via CDB Tag 20..." << std::endl;
+    set_cdb(top, {{20, 0xDEADBEEF}});
     tick(top);
     set_cdb(top, {});
 
@@ -314,7 +315,7 @@ int main(int argc, char **argv) {
     uint32_t OP_BLOCK = 0xB10C0001;
     uint32_t OP_SENTINEL = 0x51E70001;  // 目标：放在高索引，检查是否被饿死
     uint32_t OP_SPAM = 0x5A4D0001;      // 低索引持续补充流量
-    uint32_t WAKE_TAG = 42;
+    uint32_t WAKE_TAG = 2;
 
     auto mk_block = [&](uint32_t op) {
       return DispatchInstr{true, op, 12, 0, WAKE_TAG, 0, 0, WAKE_TAG, 0};

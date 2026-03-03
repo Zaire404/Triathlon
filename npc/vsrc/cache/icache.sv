@@ -66,6 +66,7 @@ module icache #(
   logic [       Cfg.PLEN-1:0] pc_q;
   logic [     SLOT_WIDTH-1:0] start_slot_q;
   logic                       cross_line_q;
+  logic                       halfword_sel_q;
   // Line address (TAG+INDEX) for current PC and the next line
   logic [LINE_ADDR_WIDTH-1:0] line_addr_a_q;
   logic [LINE_ADDR_WIDTH-1:0] line_addr_b_q;  // next line (for cross-line fetch)
@@ -81,6 +82,7 @@ module icache #(
   logic [TAG_WIDTH-1:0] tag_a_expected_d, tag_b_expected_d;
   logic [SLOT_WIDTH-1:0] start_slot_d;
   logic                  cross_line_d;
+  logic                  halfword_sel_d;
 
   // ---------------------------------------------------------------------------
   // Array address mux (fix for synchronous SRAM model)
@@ -111,9 +113,10 @@ module icache #(
       output logic [LINE_ADDR_WIDTH-1:0] line_addr_b, output logic [INDEX_WIDTH-1:0] index_a,
       output logic [INDEX_WIDTH-1:0] index_b, output logic [TAG_WIDTH-1:0] tag_a_exp,
       output logic [TAG_WIDTH-1:0] tag_b_exp, output logic [SLOT_WIDTH-1:0] start_slot,
-      output logic cross_line);
+      output logic cross_line, output logic halfword_sel);
 
     logic [LINE_ADDR_WIDTH-1:0] line_addr_base;
+    int unsigned words_needed;
     line_addr_base = pc[Cfg.PLEN-1:OFFSET_WIDTH];
     line_addr_a    = line_addr_base;
     line_addr_b    = line_addr_base + 1'b1;
@@ -121,6 +124,7 @@ module icache #(
     index_b        = line_addr_b[INDEX_WIDTH-1:0];
     tag_a_exp      = line_addr_a[INDEX_WIDTH+:TAG_WIDTH];
     tag_b_exp      = line_addr_b[INDEX_WIDTH+:TAG_WIDTH];
+    halfword_sel   = pc[1];
 
     // Slot of first instruction within the line (ILEN alignment)
     if (ILEN_BYTES > 1) begin
@@ -129,17 +133,18 @@ module icache #(
       start_slot = '0;
     end
 
-    if (FETCH_NUM >= LINE_WORDS) begin
-      cross_line = 1'b0;
+    words_needed = FETCH_NUM + (halfword_sel ? 1 : 0);
+    if (words_needed > LINE_WORDS) begin
+      cross_line = 1'b1;
     end else begin
-      cross_line = (start_slot > (LINE_WORDS - FETCH_NUM));
+      cross_line = (start_slot > (LINE_WORDS - words_needed));
     end
   endfunction
 
   // Combinational decode logic
   always_comb begin
     decode_pc(ifu_req_pc_i, line_addr_a_d, line_addr_b_d, index_a_d, index_b_d, tag_a_expected_d,
-              tag_b_expected_d, start_slot_d, cross_line_d);
+              tag_b_expected_d, start_slot_d, cross_line_d, halfword_sel_d);
   end
 
   // ---------------------------------------------------------------------------
@@ -321,24 +326,31 @@ module icache #(
   endgenerate
 
   always_comb begin
-    // [Fix] LATCH Warning: Initialize variables
-    int first_cnt = 0;
+    int word_idx;
+    logic [ILEN-1:0] word_cur;
+    logic [ILEN-1:0] word_next;
     assembled_instrs = '0;
 
-    if (!cross_line_q) begin
-      // All instructions from line A
-      for (int i = 0; i < FETCH_NUM; i++) begin
-        assembled_instrs[i] = line_a_words[start_slot_q+i];
+    for (int i = 0; i < FETCH_NUM; i++) begin
+      word_idx = int'(start_slot_q) + i;
+      word_cur = '0;
+      word_next = '0;
+
+      if (word_idx < LINE_WORDS) begin
+        word_cur = line_a_words[word_idx];
+      end else begin
+        word_cur = line_b_words[word_idx - LINE_WORDS];
       end
-    end else begin
-      // Cross line: tail of A + head of B
-      first_cnt = LINE_WORDS - start_slot_q;
-      for (int i = 0; i < FETCH_NUM; i++) begin
-        if (i < first_cnt) begin
-          assembled_instrs[i] = line_a_words[start_slot_q+i];
+
+      if (halfword_sel_q) begin
+        if ((word_idx + 1) < LINE_WORDS) begin
+          word_next = line_a_words[word_idx + 1];
         end else begin
-          assembled_instrs[i] = line_b_words[i-first_cnt];
+          word_next = line_b_words[word_idx + 1 - LINE_WORDS];
         end
+        assembled_instrs[i] = {word_next[15:0], word_cur[31:16]};
+      end else begin
+        assembled_instrs[i] = word_cur;
       end
     end
   end
@@ -413,6 +425,7 @@ module icache #(
       pc_q              <= '0;
       start_slot_q      <= '0;
       cross_line_q      <= 1'b0;
+      halfword_sel_q    <= 1'b0;
       line_addr_a_q     <= '0;
       line_addr_b_q     <= '0;
       index_a_q         <= '0;
@@ -450,6 +463,7 @@ module icache #(
             tag_b_expected_q <= tag_b_expected_d;
             start_slot_q     <= start_slot_d;
             cross_line_q     <= cross_line_d;
+            halfword_sel_q   <= halfword_sel_d;
             rsp_valid_q      <= 1'b0;
             req_killed_q     <= 1'b0;
           end
@@ -476,6 +490,7 @@ module icache #(
                 tag_b_expected_q <= tag_b_expected_d;
                 start_slot_q     <= start_slot_d;
                 cross_line_q     <= cross_line_d;
+                halfword_sel_q   <= halfword_sel_d;
                 req_killed_q     <= 1'b0;
               end
             end else begin

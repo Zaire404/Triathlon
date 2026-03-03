@@ -111,7 +111,7 @@ gdb: $(BIN)
 	$(call git_commit, "debug RTL") # DO NOT REMOVE THIS LINE!!!
 	gdb -s $(BIN) --args $(BIN) $(NPC_EXE)
 
-.PHONY: profile-report profile-parse profile-task profile-baseline
+.PHONY: profile-report profile-parse profile-task profile-baseline linux-smoke
 
 PROFILE_TOOL_DIR := $(abspath ./tools/profiler)
 PROFILE_OUT_DIR ?=
@@ -142,6 +142,9 @@ profile-task:
 
 profile-baseline:
 	$(MAKE) profile-task ARCH=$(ARCH) CROSS_COMPILE=$(CROSS_COMPILE) PROFILE_TAG=baseline
+
+linux-smoke:
+	$(abspath ./scripts/run_linux_smoke.sh)
 
 clean:
 	rm -rf $(BUILD_DIR)

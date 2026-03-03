@@ -32,6 +32,7 @@ module rob #(
     input logic            [DISPATCH_WIDTH-1:0]               dispatch_is_jump_i,
     input logic            [DISPATCH_WIDTH-1:0]               dispatch_is_call_i,
     input logic            [DISPATCH_WIDTH-1:0]               dispatch_is_ret_i,
+    input logic            [DISPATCH_WIDTH-1:0]               dispatch_is_rvc_i,
     input logic [DISPATCH_WIDTH-1:0][decode_pkg::FTQ_ID_W-1:0] dispatch_ftq_id_i,
     input logic [DISPATCH_WIDTH-1:0][decode_pkg::FETCH_EPOCH_W-1:0] dispatch_fetch_epoch_i,
 
@@ -54,6 +55,10 @@ module rob #(
     input logic [WB_WIDTH-1:0][4:0] wb_ecause_i,
     input logic [WB_WIDTH-1:0] wb_is_mispred_i,
     input logic [WB_WIDTH-1:0][Cfg.PLEN-1:0] wb_redirect_pc_i,
+    input logic async_exception_valid_i,
+    input logic [4:0] async_exception_cause_i,
+    input logic [Cfg.PLEN-1:0] async_exception_pc_i,
+    input logic [Cfg.PLEN-1:0] async_exception_redirect_pc_i,
     // Fast-visible path for ALU completion (combinational assist only).
     input logic [DISPATCH_WIDTH-1:0] fast_alu_valid_i,
     input logic [DISPATCH_WIDTH-1:0][$clog2(ROB_DEPTH)-1:0] fast_alu_rob_idx_i,
@@ -88,6 +93,7 @@ module rob #(
     output logic [COMMIT_WIDTH-1:0]                    commit_is_jump_o,
     output logic [COMMIT_WIDTH-1:0]                    commit_is_call_o,
     output logic [COMMIT_WIDTH-1:0]                    commit_is_ret_o,
+    output logic [COMMIT_WIDTH-1:0]                    commit_is_rvc_o,
     output logic [COMMIT_WIDTH-1:0][Cfg.PLEN-1:0]      commit_actual_npc_o,
     output logic [COMMIT_WIDTH-1:0][decode_pkg::FTQ_ID_W-1:0] commit_ftq_id_o,
     output logic [COMMIT_WIDTH-1:0][decode_pkg::FETCH_EPOCH_W-1:0] commit_fetch_epoch_o,
@@ -101,6 +107,10 @@ module rob #(
     output logic flush_is_branch_o,
     output logic flush_is_jump_o,
     output logic [Cfg.PLEN-1:0] flush_src_pc_o,
+    output logic sync_exception_valid_o,
+    output logic [4:0] sync_exception_cause_o,
+    output logic [Cfg.PLEN-1:0] sync_exception_pc_o,
+    output logic [Cfg.PLEN-1:0] sync_exception_tval_o,
 
     // =========================================================
     // 4. Operand Query (To Issue/Rename)
@@ -108,14 +118,37 @@ module rob #(
     input  logic [QUERY_WIDTH-1:0][$clog2(ROB_DEPTH)-1:0] query_rob_idx_i,
     output logic [QUERY_WIDTH-1:0]                        query_ready_o,
     output logic [QUERY_WIDTH-1:0][         Cfg.XLEN-1:0] query_data_o,
+    output logic [QUERY_WIDTH-1:0][decode_pkg::FETCH_EPOCH_W-1:0] query_fetch_epoch_o,
+    output logic [QUERY_WIDTH-1:0][Cfg.PLEN-1:0] query_pc_o,
 
     output logic rob_empty_o,
     output logic rob_full_o,
-    output logic [$clog2(ROB_DEPTH)-1:0] rob_head_o
+    output logic [$clog2(ROB_DEPTH)-1:0] rob_head_o,
+    output logic [Cfg.PLEN-1:0] rob_head_pc_o
 );
   localparam int unsigned PTR_WIDTH = $clog2(ROB_DEPTH);
+`ifndef SYNTHESIS
+  localparam logic [Cfg.PLEN-1:0] DBG_PC_RET = 32'hc0803d60;
+  localparam logic [Cfg.PLEN-1:0] DBG_PC_FAULT0 = 32'hc0803dae;
+  localparam logic [Cfg.PLEN-1:0] DBG_PC_FAULT1 = 32'hc080ab72;
+  localparam logic [PTR_WIDTH-1:0] DBG_ROB_TAG0 = PTR_WIDTH'(22);
+  localparam logic [PTR_WIDTH-1:0] DBG_ROB_TAG1 = PTR_WIDTH'(44);
+  localparam int unsigned ROB_TAG_TRACE_BUDGET = 256;
+  logic [31:0] rob_tag_trace_cnt_q;
+  logic rob_trace_en_q;
+  logic rob_tag_trace_en_q;
+  initial rob_trace_en_q = $test$plusargs("npc_diag_trace");
+  initial rob_tag_trace_en_q = $test$plusargs("npc_diag_robtag");
+
+  function automatic logic watch_kernel_pc(input logic [Cfg.PLEN-1:0] pc);
+    begin
+      watch_kernel_pc = (pc[31:28] == 4'hc);
+    end
+  endfunction
+`endif
 
   typedef struct packed {
+    logic valid;
     logic complete;
     logic exception;
     logic [4:0] ecause;
@@ -128,6 +161,7 @@ module rob #(
     logic is_jump;
     logic is_call;
     logic is_ret;
+    logic is_rvc;
     logic [Cfg.XLEN-1:0] data;
     logic [Cfg.PLEN-1:0] pc;
     logic [decode_pkg::FTQ_ID_W-1:0] ftq_id;
@@ -217,6 +251,10 @@ module rob #(
     flush_is_branch_o = 1'b0;
     flush_is_jump_o = 1'b0;
     flush_src_pc_o = '0;
+    sync_exception_valid_o = 1'b0;
+    sync_exception_cause_o = '0;
+    sync_exception_pc_o = '0;
+    sync_exception_tval_o = '0;
 
     commit_valid_o = '0;
     commit_pc_o    = '0;
@@ -229,6 +267,7 @@ module rob #(
     commit_is_jump_o = '0;
     commit_is_call_o = '0;
     commit_is_ret_o = '0;
+    commit_is_rvc_o = '0;
     commit_actual_npc_o = '0;
     commit_ftq_id_o = '0;
     commit_fetch_epoch_o = '0;
@@ -237,6 +276,17 @@ module rob #(
     // External flush kills all in-flight state and suppresses same-cycle commit.
     if (flush_i) begin
       stop_commit = 1'b1;
+      br_mask = '0;
+      st_mask = '0;
+      ld_mask = '0;
+      commit_permitted_mask = '0;
+    end else if (async_exception_valid_i) begin
+      stop_commit = 1'b1;
+      flush_o = 1'b1;
+      flush_pc_o = async_exception_redirect_pc_i;
+      flush_cause_o = async_exception_cause_i;
+      flush_is_exception_o = 1'b1;
+      flush_src_pc_o = async_exception_pc_i;
       br_mask = '0;
       st_mask = '0;
       ld_mask = '0;
@@ -274,13 +324,11 @@ module rob #(
           if (head_fast_complete[i]) begin
             if (rob_ram[commit_rob_index_o[i]].exception) begin
               stop_commit   = 1'b1;
-              flush_o       = 1'b1;
-              flush_pc_o    = rob_ram[commit_rob_index_o[i]].pc;
-              flush_cause_o = rob_ram[commit_rob_index_o[i]].ecause;
-              flush_is_exception_o = 1'b1;
-              flush_is_branch_o = rob_ram[commit_rob_index_o[i]].is_branch;
-              flush_is_jump_o = rob_ram[commit_rob_index_o[i]].is_jump;
-              flush_src_pc_o = rob_ram[commit_rob_index_o[i]].pc;
+              // Precise sync exception is handled by CSR/trap path at commit head.
+              sync_exception_valid_o = 1'b1;
+              sync_exception_cause_o = rob_ram[commit_rob_index_o[i]].ecause;
+              sync_exception_pc_o = rob_ram[commit_rob_index_o[i]].pc;
+              sync_exception_tval_o = head_fast_data[i][Cfg.PLEN-1:0];
             end else if (rob_ram[commit_rob_index_o[i]].is_mispred) begin
               // 分支/跳转误预测：先退休该指令，再触发 flush
               commit_valid_o[i] = 1'b1;
@@ -299,6 +347,7 @@ module rob #(
               commit_is_jump_o[i] = rob_ram[commit_rob_index_o[i]].is_jump;
               commit_is_call_o[i] = rob_ram[commit_rob_index_o[i]].is_call;
               commit_is_ret_o[i] = rob_ram[commit_rob_index_o[i]].is_ret;
+              commit_is_rvc_o[i] = rob_ram[commit_rob_index_o[i]].is_rvc;
               commit_actual_npc_o[i] = head_fast_redirect_pc[i];
               commit_ftq_id_o[i] = rob_ram[commit_rob_index_o[i]].ftq_id;
               commit_fetch_epoch_o[i] = rob_ram[commit_rob_index_o[i]].fetch_epoch;
@@ -328,6 +377,7 @@ module rob #(
               commit_is_jump_o[i] = rob_ram[commit_rob_index_o[i]].is_jump;
               commit_is_call_o[i] = rob_ram[commit_rob_index_o[i]].is_call;
               commit_is_ret_o[i] = rob_ram[commit_rob_index_o[i]].is_ret;
+              commit_is_rvc_o[i] = rob_ram[commit_rob_index_o[i]].is_rvc;
               commit_actual_npc_o[i] = head_fast_redirect_pc[i];
               commit_ftq_id_o[i] = rob_ram[commit_rob_index_o[i]].ftq_id;
               commit_fetch_epoch_o[i] = rob_ram[commit_rob_index_o[i]].fetch_epoch;
@@ -347,8 +397,11 @@ module rob #(
   // =========================================================
   always_comb begin
     for (int q = 0; q < QUERY_WIDTH; q++) begin
-      query_ready_o[q] = rob_ram[query_rob_idx_i[q]].complete;
+      query_ready_o[q] = rob_ram[query_rob_idx_i[q]].valid &&
+                         rob_ram[query_rob_idx_i[q]].complete;
       query_data_o[q]  = rob_ram[query_rob_idx_i[q]].data;
+      query_fetch_epoch_o[q] = rob_ram[query_rob_idx_i[q]].fetch_epoch;
+      query_pc_o[q] = rob_ram[query_rob_idx_i[q]].pc;
       for (int a = 0; a < DISPATCH_WIDTH; a++) begin
         if (fast_alu_valid_i[a] && (fast_alu_rob_idx_i[a] == query_rob_idx_i[q])) begin
           query_ready_o[q] = 1'b1;
@@ -381,18 +434,152 @@ module rob #(
   assign head_ptr_d = head_ptr_q + PTR_WIDTH'(commit_cnt);
 
   assign rob_head_o = head_ptr_q;
+  assign rob_head_pc_o = rob_ram[head_ptr_q].pc;
   assign count_d    = count_q + dispatch_cnt - commit_cnt;
 
   // ... Sequential Logic ...
+`ifndef SYNTHESIS
+  always_ff @(posedge clk_i or negedge rst_ni) begin
+    if (!rst_ni) begin
+      rob_tag_trace_cnt_q <= '0;
+    end else if (rob_trace_en_q) begin
+      automatic int unsigned trace_inc;
+      trace_inc = 0;
+
+      for (int k = 0; k < WB_WIDTH; k++) begin
+        if (wb_valid_i[k] && rob_ram[wb_rob_index_i[k]].valid &&
+            ((rob_ram[wb_rob_index_i[k]].pc == DBG_PC_RET) ||
+             (rob_ram[wb_rob_index_i[k]].pc == DBG_PC_FAULT0) ||
+             (rob_ram[wb_rob_index_i[k]].pc == DBG_PC_FAULT1)) &&
+            ((rob_tag_trace_cnt_q + trace_inc) < ROB_TAG_TRACE_BUDGET)) begin
+          $display(
+              "[rob-wb-watch] pc=%h rob=%0d wb_exc=%0d wb_ec=%0d wb_misp=%0d wb_redir=%h old_comp=%0d old_exc=%0d old_misp=%0d old_redir=%h",
+              rob_ram[wb_rob_index_i[k]].pc, wb_rob_index_i[k], wb_exception_i[k], wb_ecause_i[k],
+              wb_is_mispred_i[k], wb_redirect_pc_i[k], rob_ram[wb_rob_index_i[k]].complete,
+              rob_ram[wb_rob_index_i[k]].exception, rob_ram[wb_rob_index_i[k]].is_mispred,
+              rob_ram[wb_rob_index_i[k]].redirect_pc);
+          trace_inc++;
+        end
+
+      end
+
+      for (int i = 0; i < COMMIT_WIDTH; i++) begin
+        if (commit_valid_o[i] &&
+            ((commit_pc_o[i] == DBG_PC_RET) ||
+             (commit_pc_o[i] == DBG_PC_FAULT0) ||
+             (commit_pc_o[i] == DBG_PC_FAULT1)) &&
+            ((rob_tag_trace_cnt_q + trace_inc) < ROB_TAG_TRACE_BUDGET)) begin
+          $display(
+              "[rob-commit-watch] pc=%h rob=%0d we=%0d actual_npc=%h is_mispred=%0d is_exc=%0d ec=%0d head=%0d tail=%0d cnt=%0d",
+              commit_pc_o[i], commit_rob_index_o[i], commit_we_o[i], commit_actual_npc_o[i],
+              rob_ram[commit_rob_index_o[i]].is_mispred, rob_ram[commit_rob_index_o[i]].exception,
+              rob_ram[commit_rob_index_o[i]].ecause, head_ptr_q, tail_ptr_q, count_q);
+          trace_inc++;
+        end
+      end
+
+      if (flush_o &&
+          ((flush_src_pc_o == DBG_PC_RET) ||
+           (flush_src_pc_o == DBG_PC_FAULT0) ||
+           (flush_src_pc_o == DBG_PC_FAULT1)) &&
+          ((rob_tag_trace_cnt_q + trace_inc) < ROB_TAG_TRACE_BUDGET)) begin
+        $display(
+            "[rob-flush-watch] src_pc=%h flush_pc=%h is_mispred=%0d is_exc=%0d is_br=%0d is_j=%0d cause=%0d head=%0d tail=%0d cnt=%0d",
+            flush_src_pc_o, flush_pc_o, flush_is_mispred_o, flush_is_exception_o,
+            flush_is_branch_o, flush_is_jump_o, flush_cause_o, head_ptr_q, tail_ptr_q, count_q);
+        trace_inc++;
+      end
+
+      if (rob_tag_trace_en_q && (rob_tag_trace_cnt_q < ROB_TAG_TRACE_BUDGET)) begin
+        for (int i = 0; i < DISPATCH_WIDTH; i++) begin
+          if (dispatch_valid_i[i]) begin
+            logic [PTR_WIDTH-1:0] w_idx;
+            w_idx = tail_ptr_q + i[PTR_WIDTH-1:0];
+            if (((w_idx == DBG_ROB_TAG0) || (w_idx == DBG_ROB_TAG1)) &&
+                watch_kernel_pc(dispatch_pc_i[i])) begin
+              $display(
+                  "[rob-tag-disp] tag=%0d slot=%0d pc=%h areg=%0d has_rd=%0d fu=%0d old_valid=%0d old_comp=%0d old_data=%h old_pc=%h flush_i=%0d flush_o=%0d head=%0d tail=%0d cnt=%0d",
+                  w_idx, i, dispatch_pc_i[i], dispatch_areg_i[i], dispatch_has_rd_i[i],
+                  dispatch_fu_type_i[i], rob_ram[w_idx].valid, rob_ram[w_idx].complete,
+                  rob_ram[w_idx].data, rob_ram[w_idx].pc, flush_i, flush_o, head_ptr_q, tail_ptr_q,
+                  count_q);
+              trace_inc++;
+            end
+          end
+        end
+
+        for (int k = 0; k < WB_WIDTH; k++) begin
+          if (wb_valid_i[k] &&
+              ((wb_rob_index_i[k] == DBG_ROB_TAG0) || (wb_rob_index_i[k] == DBG_ROB_TAG1)) &&
+              watch_kernel_pc(rob_ram[wb_rob_index_i[k]].pc)) begin
+            $display(
+                "[rob-tag-wb] tag=%0d lane=%0d wb_data=%h wb_exc=%0d wb_ec=%0d wb_misp=%0d wb_redir=%h old_valid=%0d old_comp=%0d old_data=%h old_pc=%h flush_i=%0d flush_o=%0d head=%0d tail=%0d cnt=%0d",
+                wb_rob_index_i[k], k, wb_data_i[k], wb_exception_i[k], wb_ecause_i[k],
+                wb_is_mispred_i[k], wb_redirect_pc_i[k], rob_ram[wb_rob_index_i[k]].valid,
+                rob_ram[wb_rob_index_i[k]].complete, rob_ram[wb_rob_index_i[k]].data,
+                rob_ram[wb_rob_index_i[k]].pc, flush_i, flush_o, head_ptr_q, tail_ptr_q, count_q);
+            trace_inc++;
+          end
+        end
+
+        for (int q = 0; q < QUERY_WIDTH; q++) begin
+          logic [PTR_WIDTH-1:0] q_idx;
+          logic ram_ready;
+          logic [Cfg.XLEN-1:0] ram_data;
+          logic fast_alu_hit;
+          logic [Cfg.XLEN-1:0] fast_alu_data;
+          logic fast_bru_hit;
+          q_idx = query_rob_idx_i[q];
+          if ((q_idx == DBG_ROB_TAG0) || (q_idx == DBG_ROB_TAG1)) begin
+            ram_ready = rob_ram[q_idx].valid && rob_ram[q_idx].complete;
+            ram_data = rob_ram[q_idx].data;
+            fast_alu_hit = 1'b0;
+            fast_alu_data = '0;
+            for (int a = 0; a < DISPATCH_WIDTH; a++) begin
+              if (fast_alu_valid_i[a] && (fast_alu_rob_idx_i[a] == q_idx)) begin
+                fast_alu_hit = 1'b1;
+                fast_alu_data = fast_alu_data_i[a];
+              end
+            end
+            fast_bru_hit = fast_bru_valid_i && fast_bru_can_commit_i && (fast_bru_rob_idx_i == q_idx);
+            if (query_ready_o[q] &&
+                (watch_kernel_pc(rob_ram[q_idx].pc) ||
+                 (query_data_o[q] == '0) ||
+                 (fast_alu_hit && (fast_alu_data == '0)))) begin
+              $display(
+                  "[rob-tag-query] q=%0d tag=%0d q_ready=%0d q_data=%h ram_ready=%0d ram_data=%h ram_valid=%0d ram_comp=%0d ram_pc=%h fast_alu_hit=%0d fast_alu_data=%h fast_bru_hit=%0d fast_bru_data=%h head=%0d tail=%0d cnt=%0d",
+                  q, q_idx, query_ready_o[q], query_data_o[q], ram_ready, ram_data,
+                  rob_ram[q_idx].valid, rob_ram[q_idx].complete, rob_ram[q_idx].pc,
+                  fast_alu_hit, fast_alu_data, fast_bru_hit, fast_bru_data_i, head_ptr_q, tail_ptr_q,
+                  count_q);
+              trace_inc++;
+            end
+          end
+        end
+      end
+
+      if (trace_inc != 0) begin
+        rob_tag_trace_cnt_q <= rob_tag_trace_cnt_q + trace_inc[31:0];
+      end
+    end
+  end
+`endif
+
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (!rst_ni) begin
       head_ptr_q <= '0;
       tail_ptr_q <= '0;
       count_q    <= '0;
+      for (int i = 0; i < ROB_DEPTH; i++) begin
+        rob_ram[i].valid <= 1'b0;
+      end
     end else if (flush_i || flush_o) begin
       head_ptr_q <= '0;
       tail_ptr_q <= '0;
       count_q    <= '0;
+      for (int i = 0; i < ROB_DEPTH; i++) begin
+        rob_ram[i].valid <= 1'b0;
+      end
     end else begin
       head_ptr_q <= head_ptr_d;
       tail_ptr_q <= tail_ptr_d;
@@ -405,6 +592,7 @@ module rob #(
             logic [PTR_WIDTH-1:0] w_idx;
             w_idx = tail_ptr_q + i[PTR_WIDTH-1:0];
 
+            rob_ram[w_idx].valid       <= 1'b1;
             rob_ram[w_idx].complete    <= 1'b0;
             rob_ram[w_idx].exception   <= 1'b0;
             rob_ram[w_idx].is_mispred  <= 1'b0;
@@ -417,6 +605,7 @@ module rob #(
             rob_ram[w_idx].is_jump     <= dispatch_is_jump_i[i];
             rob_ram[w_idx].is_call     <= dispatch_is_call_i[i];
             rob_ram[w_idx].is_ret      <= dispatch_is_ret_i[i];
+            rob_ram[w_idx].is_rvc      <= dispatch_is_rvc_i[i];
             rob_ram[w_idx].pc          <= dispatch_pc_i[i];
             rob_ram[w_idx].ftq_id      <= dispatch_ftq_id_i[i];
             rob_ram[w_idx].fetch_epoch <= dispatch_fetch_epoch_i[i];
@@ -438,6 +627,13 @@ module rob #(
           rob_ram[wb_idx].data        <= wb_data_i[k];
           rob_ram[wb_idx].is_mispred  <= wb_is_mispred_i[k];
           rob_ram[wb_idx].redirect_pc <= wb_redirect_pc_i[k];
+        end
+      end
+
+      // 3. Commit 后清理已退休 entry，避免 query 命中旧代数据
+      for (int i = 0; i < COMMIT_WIDTH; i++) begin
+        if (commit_valid_o[i]) begin
+          rob_ram[commit_rob_index_o[i]].valid <= 1'b0;
         end
       end
     end

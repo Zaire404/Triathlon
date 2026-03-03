@@ -16,9 +16,11 @@ module tb_bpu_phase5_red (
     input logic [Cfg.XLEN-1:0] update_target_i,
     input logic update_is_call_i,
     input logic update_is_ret_i,
+    input logic update_is_rvc_i,
     input logic [Cfg.NRET-1:0] ras_update_valid_i,
     input logic [Cfg.NRET-1:0] ras_update_is_call_i,
     input logic [Cfg.NRET-1:0] ras_update_is_ret_i,
+    input logic [Cfg.NRET-1:0] ras_update_is_rvc_i,
     input logic [Cfg.NRET-1:0][Cfg.PLEN-1:0] ras_update_pc_i,
     input logic flush_i,
     // --- 输出端口  ---
@@ -66,9 +68,11 @@ module tb_bpu_phase5_red (
       .update_target_i(update_target_i),
       .update_is_call_i(update_is_call_i),
       .update_is_ret_i(update_is_ret_i),
+      .update_is_rvc_i(update_is_rvc_i),
       .ras_update_valid_i(ras_update_valid_i),
       .ras_update_is_call_i(ras_update_is_call_i),
       .ras_update_is_ret_i(ras_update_is_ret_i),
+      .ras_update_is_rvc_i(ras_update_is_rvc_i),
       .ras_update_pc_i(ras_update_pc_i),
       .flush_i(flush_i),
 

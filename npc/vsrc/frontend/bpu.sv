@@ -47,9 +47,11 @@ module bpu #(
     input logic [Cfg.PLEN-1:0] update_target_i,
     input logic                update_is_call_i,
     input logic                update_is_ret_i,
+    input logic                update_is_rvc_i,
     input logic [Cfg.NRET-1:0] ras_update_valid_i,
     input logic [Cfg.NRET-1:0] ras_update_is_call_i,
     input logic [Cfg.NRET-1:0] ras_update_is_ret_i,
+    input logic [Cfg.NRET-1:0] ras_update_is_rvc_i,
     input logic [Cfg.NRET-1:0][Cfg.PLEN-1:0] ras_update_pc_i,
     input logic                flush_i,
 
@@ -62,7 +64,8 @@ module bpu #(
   localparam int unsigned BTB_IDX_W = (BTB_ENTRIES > 1) ? $clog2(BTB_ENTRIES) : 1;
   localparam int unsigned BHT_IDX_W = (BHT_ENTRIES > 1) ? $clog2(BHT_ENTRIES) : 1;
   localparam int unsigned INSTR_BYTES = Cfg.ILEN / 8;
-  localparam int unsigned INSTR_ADDR_LSB = $clog2(INSTR_BYTES);
+  // RV32C instructions are 16-bit aligned. Predictor indexing/tagging must include pc[1].
+  localparam int unsigned INSTR_ADDR_LSB = 1;
   localparam int unsigned BTB_TAG_W = Cfg.PLEN - BTB_IDX_W - INSTR_ADDR_LSB;
   localparam int unsigned RAS_CNT_W = (RAS_DEPTH > 0) ? $clog2(RAS_DEPTH + 1) : 1;
   localparam int unsigned GHR_W = (GHR_BITS > 0) ? GHR_BITS : 1;
@@ -80,6 +83,7 @@ module bpu #(
   logic [BTB_ENTRIES-1:0] btb_is_call_q;
   logic [BTB_ENTRIES-1:0] btb_is_ret_q;
   logic [BTB_ENTRIES-1:0] btb_use_ras_q;
+  logic [BTB_ENTRIES-1:0] btb_is_rvc_q;
   logic [BTB_ENTRIES-1:0][BTB_TAG_W-1:0] btb_tag_q;
   logic [BTB_ENTRIES-1:0][Cfg.PLEN-1:0] btb_target_q;
   logic [BHT_ENTRIES-1:0][1:0] local_bht_q;
@@ -92,6 +96,7 @@ module bpu #(
   logic pred_event_valid_q;
   logic pred_event_is_call_q;
   logic pred_event_is_ret_q;
+  logic pred_event_is_rvc_q;
   logic pred_event_is_cond_q;
   logic pred_event_taken_q;
   logic [Cfg.PLEN-1:0] pred_event_pc_q;
@@ -240,6 +245,7 @@ module bpu #(
   logic [Cfg.INSTR_PER_FETCH-1:0] predict_is_cond;
   logic [Cfg.INSTR_PER_FETCH-1:0] predict_is_call;
   logic [Cfg.INSTR_PER_FETCH-1:0] predict_is_ret;
+  logic [Cfg.INSTR_PER_FETCH-1:0] predict_is_rvc;
   logic [Cfg.INSTR_PER_FETCH-1:0] predict_is_indirect;
   logic [Cfg.INSTR_PER_FETCH-1:0][Cfg.PLEN-1:0] predict_pc;
   logic [Cfg.INSTR_PER_FETCH-1:0][Cfg.PLEN-1:0] predict_target;
@@ -254,6 +260,7 @@ module bpu #(
   logic pred_slot_valid_w;
   logic pred_slot_is_call_w;
   logic pred_slot_is_ret_w;
+  logic pred_slot_is_rvc_w;
   logic pred_slot_is_cond_w;
   logic pred_slot_taken_w;
   logic [Cfg.PLEN-1:0] pred_slot_pc_w;
@@ -419,6 +426,7 @@ module bpu #(
       predict_is_cond[i] = predict_hit[i] && btb_is_cond_q[idx];
       predict_is_call[i] = predict_hit[i] && btb_is_call_q[idx];
       predict_is_ret[i] = predict_hit[i] && btb_is_ret_q[idx];
+      predict_is_rvc[i] = predict_hit[i] && btb_is_rvc_q[idx];
       predict_is_indirect[i] = predict_hit[i] && !btb_is_cond_q[idx] && !btb_is_call_q[idx] && !btb_is_ret_q[idx];
       ittage_hit_w[i] = USE_ITTAGE && predict_is_indirect[i] && ittage_raw_hit_w[i];
 
@@ -509,6 +517,7 @@ module bpu #(
     pred_slot_idx_w = '0;
     pred_slot_is_call_w = 1'b0;
     pred_slot_is_ret_w = 1'b0;
+    pred_slot_is_rvc_w = 1'b0;
     pred_slot_is_cond_w = 1'b0;
     pred_slot_taken_w = 1'b0;
     pred_slot_pc_w = '0;
@@ -519,6 +528,7 @@ module bpu #(
         pred_slot_idx_w = SLOT_IDX_W'(i);
         pred_slot_is_call_w = predict_is_call[i];
         pred_slot_is_ret_w = predict_is_ret[i];
+        pred_slot_is_rvc_w = predict_is_rvc[i];
         pred_slot_is_cond_w = predict_is_cond[i];
         pred_slot_taken_w = predict_taken[i];
         pred_slot_pc_w = predict_pc[i];
@@ -544,6 +554,7 @@ module bpu #(
       btb_is_call_q <= '0;
       btb_is_ret_q  <= '0;
       btb_use_ras_q <= '0;
+      btb_is_rvc_q <= '0;
       btb_tag_q     <= '0;
       btb_target_q  <= '0;
       arch_ras_stack_q   <= '0;
@@ -553,6 +564,7 @@ module bpu #(
       pred_event_valid_q <= 1'b0;
       pred_event_is_call_q <= 1'b0;
       pred_event_is_ret_q <= 1'b0;
+      pred_event_is_rvc_q <= 1'b0;
       pred_event_is_cond_q <= 1'b0;
       pred_event_taken_q <= 1'b0;
       pred_event_pc_q <= '0;
@@ -763,6 +775,7 @@ module bpu #(
           btb_is_backward_q[up_btb_idx] <= update_is_cond_i && (update_target_i < update_pc_i);
           btb_is_call_q[up_btb_idx] <= update_is_call_i;
           btb_is_ret_q[up_btb_idx] <= update_is_ret_i;
+          btb_is_rvc_q[up_btb_idx] <= update_is_rvc_i;
           if (update_is_ret_i) begin
             btb_use_ras_q[up_btb_idx] <= !arch_ras_has_entry_w || (arch_ras_top_w == update_target_i);
           end else begin
@@ -930,7 +943,8 @@ module bpu #(
         if (ras_update_valid_i[i]) begin
           if (ras_update_is_call_i[i]) begin
             logic [Cfg.PLEN-1:0] call_ret_addr;
-            call_ret_addr = ras_update_pc_i[i] + Cfg.PLEN'(INSTR_BYTES);
+            call_ret_addr = ras_update_pc_i[i] +
+                            (ras_update_is_rvc_i[i] ? Cfg.PLEN'(2) : Cfg.PLEN'(INSTR_BYTES));
             if (arch_count_n < RAS_DEPTH) begin
               arch_stack_n[arch_count_n] = call_ret_addr;
               arch_count_n = arch_count_n + 1'b1;
@@ -955,7 +969,8 @@ module bpu #(
         spec_path_hist_n = arch_path_hist_n;
       end else if (pred_event_valid_q && pred_event_is_call_q) begin
         logic [Cfg.PLEN-1:0] spec_ret_addr;
-        spec_ret_addr = pred_event_pc_q + Cfg.PLEN'(INSTR_BYTES);
+        spec_ret_addr = pred_event_pc_q +
+                        (pred_event_is_rvc_q ? Cfg.PLEN'(2) : Cfg.PLEN'(INSTR_BYTES));
         if (spec_count_n < RAS_DEPTH) begin
           spec_stack_n[spec_count_n] = spec_ret_addr;
           spec_count_n = spec_count_n + 1'b1;
@@ -1018,6 +1033,7 @@ module bpu #(
         pred_event_valid_q <= 1'b0;
         pred_event_is_call_q <= 1'b0;
         pred_event_is_ret_q <= 1'b0;
+        pred_event_is_rvc_q <= 1'b0;
         pred_event_is_cond_q <= 1'b0;
         pred_event_taken_q <= 1'b0;
         pred_event_pc_q <= '0;
@@ -1091,6 +1107,7 @@ module bpu #(
         pred_event_valid_q <= pred_fire_w;
         pred_event_is_call_q <= pred_fire_w && pred_slot_is_call_w;
         pred_event_is_ret_q <= pred_fire_w && pred_slot_is_ret_w;
+        pred_event_is_rvc_q <= pred_fire_w && pred_slot_is_rvc_w;
         pred_event_is_cond_q <= pred_fire_w && pred_slot_is_cond_w;
         pred_event_taken_q <= pred_fire_w && pred_slot_taken_w;
         pred_event_pc_q <= pred_slot_pc_w;

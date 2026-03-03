@@ -40,6 +40,11 @@ static void set_defaults(Vtb_lsu *top) {
   top->rs2_data_i = 0;
   top->rob_tag_i = 0;
   top->sb_id_i = 0;
+  top->mmu_satp_i = 0;
+  top->mmu_priv_i = 1;
+  top->mmu_sum_i = 0;
+  top->mmu_mxr_i = 0;
+  top->mmu_sfence_vma_i = 0;
 
   top->sb_load_hit_i = 0;
   top->sb_load_data_i = 0;
@@ -49,6 +54,10 @@ static void set_defaults(Vtb_lsu *top) {
   top->ld_rsp_id_i = 0;
   top->ld_rsp_data_i = 0;
   top->ld_rsp_err_i = 0;
+  top->pte_req_ready_i = 1;
+  top->pte_rsp_valid_i = 0;
+  top->pte_rsp_data_i = 0;
+  top->pte_upd_ready_i = 1;
 
   top->wb_ready_i = 1;
 
@@ -89,6 +98,44 @@ enum {
   LSU_SW = 9,
   LSU_SD = 10
 };
+
+static constexpr uint32_t kPrivU = 0;
+static constexpr uint32_t kPrivS = 1;
+static constexpr uint32_t kSatpSv32Root = 0x80000000u | ((0x00100000u >> 12) & 0x003fffffu);
+
+static constexpr uint32_t kPteV = 1u << 0;
+static constexpr uint32_t kPteR = 1u << 1;
+static constexpr uint32_t kPteW = 1u << 2;
+static constexpr uint32_t kPteX = 1u << 3;
+static constexpr uint32_t kPteA = 1u << 6;
+static constexpr uint32_t kPteD = 1u << 7;
+
+static uint32_t make_leaf_pte(uint32_t pa, uint32_t perm) {
+  return ((pa >> 12) << 10) | perm | kPteV;
+}
+
+static uint32_t satp_root_pa(uint32_t satp) { return (satp & 0x003fffffu) << 12; }
+static uint32_t vpn1(uint32_t vaddr) { return (vaddr >> 22) & 0x3ffu; }
+static uint32_t vpn0(uint32_t vaddr) { return (vaddr >> 12) & 0x3ffu; }
+
+static void wait_pte_req(Vtb_lsu *top, uint32_t expect_paddr, const char *msg) {
+  for (int i = 0; i < 20; i++) {
+    eval_comb(top);
+    if (top->pte_req_valid_o) {
+      expect(top->pte_req_paddr_o == expect_paddr, msg);
+      return;
+    }
+    tick(top);
+  }
+  expect(false, "MMU walk timeout waiting pte_req");
+}
+
+static void feed_pte_rsp(Vtb_lsu *top, uint32_t pte) {
+  top->pte_rsp_valid_i = 1;
+  top->pte_rsp_data_i = pte;
+  tick(top);
+  top->pte_rsp_valid_i = 0;
+}
 
 static void test_store_aligned(Vtb_lsu *top) {
   set_defaults(top);
@@ -261,9 +308,166 @@ static void test_load_access_fault(Vtb_lsu *top) {
   expect(top->wb_valid_o == 1, "Load access fault: wb_valid");
   expect(top->wb_exception_o == 1, "Load access fault: wb_exception");
   expect(top->wb_ecause_o == 5, "Load access fault: ecause=5");
+  expect(top->wb_data_o == 0x4000, "Load access fault: wb_data carries fault address");
 
   tick(top); // response consumed
   top->ld_rsp_valid_i = 0;
+}
+
+static void test_mmu_load_page_fault(Vtb_lsu *top) {
+  set_defaults(top);
+  const uint32_t vaddr = 0x80403000u;
+  const uint32_t l0_table_pa = 0x00102000u;
+  const uint32_t root_pa = satp_root_pa(kSatpSv32Root);
+  const uint32_t l1_addr = root_pa + vpn1(vaddr) * 4u;
+  const uint32_t l0_addr = l0_table_pa + vpn0(vaddr) * 4u;
+  const uint32_t l1_ptr_pte = ((l0_table_pa >> 12) << 10) | kPteV;
+  const uint32_t l0_leaf_xonly = make_leaf_pte(0x80003000u, kPteX | kPteA | kPteD);
+
+  top->mmu_satp_i = kSatpSv32Root;
+  top->mmu_priv_i = kPrivS;
+  top->is_load_i = 1;
+  top->lsu_op_i = LSU_LW;
+  top->rs1_data_i = vaddr;
+  top->imm_i = 0;
+  top->rob_tag_i = 0x26;
+  top->req_valid_i = 1;
+  eval_comb(top);
+  expect(top->req_ready_o == 1, "MMU load pf: req accepted");
+  tick(top);
+  top->req_valid_i = 0;
+
+  wait_pte_req(top, l1_addr, "MMU load pf: L1 pte address");
+  feed_pte_rsp(top, l1_ptr_pte);
+  wait_pte_req(top, l0_addr, "MMU load pf: L0 pte address");
+  feed_pte_rsp(top, l0_leaf_xonly);
+
+  for (int i = 0; i < 20; i++) {
+    eval_comb(top);
+    if (top->wb_valid_o) {
+      expect(top->wb_exception_o == 1, "MMU load pf: wb exception");
+      expect(top->wb_ecause_o == 13, "MMU load pf: ecause=13");
+      expect(top->wb_data_o == vaddr, "MMU load pf: wb_data carries faulting vaddr");
+      expect(top->ld_req_valid_o == 0, "MMU load pf: no dcache load req");
+      tick(top);
+      return;
+    }
+    tick(top);
+  }
+  expect(false, "MMU load pf: timeout waiting wb");
+}
+
+static void test_mmu_store_page_fault(Vtb_lsu *top) {
+  set_defaults(top);
+  const uint32_t vaddr = 0x80404000u;
+  const uint32_t l0_table_pa = 0x00102000u;
+  const uint32_t root_pa = satp_root_pa(kSatpSv32Root);
+  const uint32_t l1_addr = root_pa + vpn1(vaddr) * 4u;
+  const uint32_t l0_addr = l0_table_pa + vpn0(vaddr) * 4u;
+  const uint32_t l1_ptr_pte = ((l0_table_pa >> 12) << 10) | kPteV;
+  const uint32_t l0_leaf_ro = make_leaf_pte(0x80004000u, kPteR | kPteA | kPteD);
+  bool saw_sb_ex = false;
+
+  top->mmu_satp_i = kSatpSv32Root;
+  top->mmu_priv_i = kPrivS;
+  top->is_store_i = 1;
+  top->lsu_op_i = LSU_SW;
+  top->rs1_data_i = vaddr;
+  top->imm_i = 0;
+  top->rs2_data_i = 0x44556677;
+  top->rob_tag_i = 0x27;
+  top->sb_id_i = 0x2;
+  top->req_valid_i = 1;
+  eval_comb(top);
+  expect(top->req_ready_o == 1, "MMU store pf: req accepted");
+  tick(top);
+  top->req_valid_i = 0;
+
+  wait_pte_req(top, l1_addr, "MMU store pf: L1 pte address");
+  feed_pte_rsp(top, l1_ptr_pte);
+  wait_pte_req(top, l0_addr, "MMU store pf: L0 pte address");
+  feed_pte_rsp(top, l0_leaf_ro);
+
+  for (int i = 0; i < 20; i++) {
+    eval_comb(top);
+    if (top->sb_ex_valid_o) saw_sb_ex = true;
+    if (top->wb_valid_o) {
+      expect(!saw_sb_ex, "MMU store pf: no store-buffer enqueue");
+      expect(top->wb_exception_o == 1, "MMU store pf: wb exception");
+      expect(top->wb_ecause_o == 15, "MMU store pf: ecause=15");
+      expect(top->wb_data_o == vaddr, "MMU store pf: wb_data carries faulting vaddr");
+      tick(top);
+      return;
+    }
+    tick(top);
+  }
+  expect(false, "MMU store pf: timeout waiting wb");
+}
+
+static void test_mmu_sfence_flush_forces_walk(Vtb_lsu *top) {
+  set_defaults(top);
+  const uint32_t vaddr = 0x80405000u;
+  const uint32_t l0_table_pa = 0x00102000u;
+  const uint32_t root_pa = satp_root_pa(kSatpSv32Root);
+  const uint32_t l1_addr = root_pa + vpn1(vaddr) * 4u;
+  const uint32_t l0_addr = l0_table_pa + vpn0(vaddr) * 4u;
+  const uint32_t l1_ptr_pte = ((l0_table_pa >> 12) << 10) | kPteV;
+  const uint32_t l0_leaf_rw = make_leaf_pte(0x80005000u, kPteR | kPteW | kPteA | kPteD);
+
+  auto run_load_once = [&](bool expect_walk) {
+    top->is_load_i = 1;
+    top->is_store_i = 0;
+    top->lsu_op_i = LSU_LW;
+    top->rs1_data_i = vaddr;
+    top->imm_i = 0;
+    top->rob_tag_i = 0x28;
+    top->req_valid_i = 1;
+    eval_comb(top);
+    expect(top->req_ready_o == 1, "MMU sfence: req accepted");
+    tick(top);
+    top->req_valid_i = 0;
+
+    if (expect_walk) {
+      wait_pte_req(top, l1_addr, "MMU sfence: L1 after miss/flush");
+      feed_pte_rsp(top, l1_ptr_pte);
+      wait_pte_req(top, l0_addr, "MMU sfence: L0 after miss/flush");
+      feed_pte_rsp(top, l0_leaf_rw);
+    } else {
+      for (int i = 0; i < 4; i++) {
+        eval_comb(top);
+        expect(top->pte_req_valid_o == 0, "MMU sfence: tlb hit should skip walk");
+        tick(top);
+      }
+    }
+
+    top->ld_req_ready_i = 1;
+    for (int i = 0; i < 10; i++) {
+      eval_comb(top);
+      if (top->ld_req_valid_o) {
+        tick(top);
+        break;
+      }
+      tick(top);
+    }
+    top->ld_req_ready_i = 0;
+    top->ld_rsp_valid_i = 1;
+    top->ld_rsp_id_i = 0;
+    top->ld_rsp_data_i = 0x99887766;
+    top->ld_rsp_err_i = 0;
+    tick(top);
+    top->ld_rsp_valid_i = 0;
+    eval_comb(top);
+    if (top->wb_valid_o) tick(top);
+  };
+
+  top->mmu_satp_i = kSatpSv32Root;
+  top->mmu_priv_i = kPrivS;
+  run_load_once(true);
+  run_load_once(false);
+  top->mmu_sfence_vma_i = 1;
+  tick(top);
+  top->mmu_sfence_vma_i = 0;
+  run_load_once(true);
 }
 
 static void test_group_accepts_second_req_when_first_waits_dcache(Vtb_lsu *top) {
@@ -1112,6 +1316,9 @@ int main(int argc, char **argv) {
   test_load_dcache_ok(top);
   test_load_misaligned(top);
   test_load_access_fault(top);
+  test_mmu_load_page_fault(top);
+  test_mmu_store_page_fault(top);
+  test_mmu_sfence_flush_forces_walk(top);
   test_group_accepts_second_req_when_first_waits_dcache(top);
   test_group_allows_store_when_load_lanes_wait_dcache(top);
   test_store_can_complete_without_dcache_roundtrip(top);

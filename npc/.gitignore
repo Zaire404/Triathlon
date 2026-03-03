@@ -21,6 +21,8 @@
 !tools/profiler/*.md
 !tools/profiler/tests/
 !tools/profiler/tests/*.py
+!scripts/
+!scripts/*.sh
 build/
 build-cmake/
 .history/

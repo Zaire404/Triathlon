@@ -6,6 +6,8 @@ import global_config_pkg::*;
 module tb_backend (
     input logic clk_i,
     input logic rst_ni,
+    input logic timer_irq_i,
+    input logic ext_irq_i,
     input logic flush_from_backend,
 
     // Frontend -> backend
@@ -48,9 +50,11 @@ module tb_backend (
     output logic [Cfg.PLEN-1:0]                bpu_update_target_o,
     output logic                               bpu_update_is_call_o,
     output logic                               bpu_update_is_ret_o,
+    output logic                               bpu_update_is_rvc_o,
     output logic [Cfg.NRET-1:0]                bpu_ras_update_valid_o,
     output logic [Cfg.NRET-1:0]                bpu_ras_update_is_call_o,
     output logic [Cfg.NRET-1:0]                bpu_ras_update_is_ret_o,
+    output logic [Cfg.NRET-1:0]                bpu_ras_update_is_rvc_o,
     output logic [Cfg.NRET-1:0][Cfg.PLEN-1:0]  bpu_ras_update_pc_o,
     output logic                               rob_flush_o,
     output logic [Cfg.PLEN-1:0]                rob_flush_pc_o,
@@ -73,7 +77,10 @@ module tb_backend (
     output logic                               dbg_mem_dep_replay_o,
     output logic [7:0]                         dbg_completion_q_count_o,
     output logic                               dbg_rob_head_complete_o,
+    output logic                               dbg_rob_head_is_branch_o,
+    output logic                               dbg_rob_head_is_jump_o,
     output logic                               dbg_alu_wb_head_hit_o,
+    output logic                               dbg_alu_wb_head_hit_non_mispred_o,
     output logic                               dbg_bru_wb_head_hit_o,
     output logic                               dbg_bru_mispred_o,
     output logic                               dbg_cond_branch_wb_head_non_mispred_o,
@@ -87,6 +94,8 @@ module tb_backend (
   ) dut (
       .clk_i,
       .rst_ni,
+      .timer_irq_i(timer_irq_i),
+      .ext_irq_i(ext_irq_i),
       .flush_from_backend,
       .frontend_ibuf_valid,
       .frontend_ibuf_ready,
@@ -105,10 +114,31 @@ module tb_backend (
       .bpu_update_target_o(bpu_update_target_o),
       .bpu_update_is_call_o(bpu_update_is_call_o),
       .bpu_update_is_ret_o(bpu_update_is_ret_o),
+      .bpu_update_is_rvc_o(bpu_update_is_rvc_o),
       .bpu_ras_update_valid_o(bpu_ras_update_valid_o),
       .bpu_ras_update_is_call_o(bpu_ras_update_is_call_o),
       .bpu_ras_update_is_ret_o(bpu_ras_update_is_ret_o),
+      .bpu_ras_update_is_rvc_o(bpu_ras_update_is_rvc_o),
       .bpu_ras_update_pc_o(bpu_ras_update_pc_o),
+      .mmu_satp_o(),
+      .mmu_priv_o(),
+      .mmu_sum_o(),
+      .mmu_mxr_o(),
+      .mmu_sfence_vma_o(),
+      .ifu_pte_ld_req_valid_i(1'b0),
+      .ifu_pte_ld_req_ready_o(),
+      .ifu_pte_ld_req_paddr_i('0),
+      .ifu_pte_ld_rsp_valid_o(),
+      .ifu_pte_ld_rsp_data_o(),
+      .ifu_pte_st_req_valid_i(1'b0),
+      .ifu_pte_st_req_ready_o(),
+      .ifu_pte_st_req_paddr_i('0),
+      .ifu_pte_st_req_data_i('0),
+      .ifetch_fault_valid_i(1'b0),
+      .ifetch_fault_ready_o(),
+      .ifetch_fault_pc_i('0),
+      .ifetch_fault_tval_i('0),
+      .ifetch_fault_cause_i('0),
 
       .dcache_miss_req_valid_o,
       .dcache_miss_req_ready_i,
@@ -161,26 +191,27 @@ module tb_backend (
   assign dbg_mem_dep_replay_o = dut.mem_dep_replay_valid;
   assign dbg_completion_q_count_o = dut.completion_q_count;
   // Observe ROB's effective head-complete (includes same-cycle ALU fast-visible path).
-  assign dbg_rob_head_complete_o = dut.u_rob.head_fast_complete[0];
+  assign dbg_rob_head_complete_o = !dut.rob_empty && dut.u_rob.head_fast_complete[0];
+  assign dbg_rob_head_is_branch_o = !dut.rob_empty && dut.u_rob.rob_ram[dut.rob_head_ptr].is_branch;
+  assign dbg_rob_head_is_jump_o = !dut.rob_empty && dut.u_rob.rob_ram[dut.rob_head_ptr].is_jump;
   assign dbg_alu_wb_head_hit_o =
       (dut.alu0_wb_valid && (dut.alu0_wb_tag == dut.rob_head_ptr)) ||
       (dut.alu1_wb_valid && (dut.alu1_wb_tag == dut.rob_head_ptr)) ||
       (dut.alu2_wb_valid && (dut.alu2_wb_tag == dut.rob_head_ptr)) ||
       (dut.alu3_wb_valid && (dut.alu3_wb_tag == dut.rob_head_ptr));
+  assign dbg_alu_wb_head_hit_non_mispred_o =
+      (dut.alu0_wb_valid && (dut.alu0_wb_tag == dut.rob_head_ptr) && !dut.alu0_mispred) ||
+      (dut.alu1_wb_valid && (dut.alu1_wb_tag == dut.rob_head_ptr) && !dut.alu1_mispred) ||
+      (dut.alu2_wb_valid && (dut.alu2_wb_tag == dut.rob_head_ptr) && !dut.alu2_mispred) ||
+      (dut.alu3_wb_valid && (dut.alu3_wb_tag == dut.rob_head_ptr) && !dut.alu3_mispred);
   assign dbg_bru_wb_head_hit_o =
       dut.bru_wb_valid && (dut.bru_wb_tag == dut.rob_head_ptr);
   assign dbg_bru_mispred_o = dut.bru_mispred;
   assign dbg_cond_branch_wb_head_non_mispred_o =
-      (dut.bru_wb_valid && (dut.bru_wb_tag == dut.rob_head_ptr) &&
-       dut.bru_uop.is_branch && !dut.bru_uop.is_jump && !dut.bru_mispred) ||
-      (dut.alu0_wb_valid && (dut.alu0_wb_tag == dut.rob_head_ptr) &&
-       dut.alu0_uop.is_branch && !dut.alu0_uop.is_jump && !dut.alu0_mispred) ||
-      (dut.alu1_wb_valid && (dut.alu1_wb_tag == dut.rob_head_ptr) &&
-       dut.alu1_uop.is_branch && !dut.alu1_uop.is_jump && !dut.alu1_mispred) ||
-      (dut.alu2_wb_valid && (dut.alu2_wb_tag == dut.rob_head_ptr) &&
-       dut.alu2_uop.is_branch && !dut.alu2_uop.is_jump && !dut.alu2_mispred) ||
-      (dut.alu3_wb_valid && (dut.alu3_wb_tag == dut.rob_head_ptr) &&
-       dut.alu3_uop.is_branch && !dut.alu3_uop.is_jump && !dut.alu3_mispred);
+      dbg_rob_head_is_branch_o &&
+      !dbg_rob_head_is_jump_o &&
+      (dbg_alu_wb_head_hit_non_mispred_o ||
+       (dut.bru_wb_valid && (dut.bru_wb_tag == dut.rob_head_ptr) && !dut.bru_mispred));
   always_comb begin
     dbg_cond_branch_issue_count_o = '0;
     if (dut.bru_en && dut.bru_uop.is_branch && !dut.bru_uop.is_jump) begin

@@ -25,6 +25,8 @@ module tb_decoder (
     output logic        check_is_load,
     output logic        check_is_store,
     output logic        check_is_jump,
+    output logic        check_is_fence,
+    output logic        check_is_sfence_vma,
     output logic [31:0] check_pred_npc,
     output logic [decode_pkg::FTQ_ID_W-1:0] check_ftq_id,
     output logic [decode_pkg::FETCH_EPOCH_W-1:0] check_fetch_epoch
@@ -37,6 +39,7 @@ module tb_decoder (
   logic [DECODE_WIDTH-1:0][ILEN-1:0] ibuf_pcs;
   logic [DECODE_WIDTH-1:0] ibuf_slot_valid;
   logic [DECODE_WIDTH-1:0][31:0] ibuf_pred_npc;
+  logic [DECODE_WIDTH-1:0] ibuf_is_rvc;
   logic [DECODE_WIDTH-1:0][decode_pkg::FTQ_ID_W-1:0] ibuf_ftq_id;
   logic [DECODE_WIDTH-1:0][decode_pkg::FETCH_EPOCH_W-1:0] ibuf_fetch_epoch;
 
@@ -45,6 +48,7 @@ module tb_decoder (
   assign ibuf_pcs[0]    = pc_i;
   assign ibuf_slot_valid[0] = 1'b1;
   assign ibuf_pred_npc[0] = pc_i + 32'd4;
+  assign ibuf_is_rvc[0] = 1'b0;
   assign ibuf_ftq_id[0] = ftq_id_i;
   assign ibuf_fetch_epoch[0] = fetch_epoch_i;
 
@@ -53,6 +57,7 @@ module tb_decoder (
     assign ibuf_pcs[i]    = pc_i + i * 4;
     assign ibuf_slot_valid[i] = 1'b0;
     assign ibuf_pred_npc[i] = '0;
+    assign ibuf_is_rvc[i] = 1'b0;
     assign ibuf_ftq_id[i] = '0;
     assign ibuf_fetch_epoch[i] = '0;
   end
@@ -69,6 +74,7 @@ module tb_decoder (
       .ibuf_pcs_i(ibuf_pcs),
       .ibuf_slot_valid_i(ibuf_slot_valid),
       .ibuf_pred_npc_i(ibuf_pred_npc),
+      .ibuf_is_rvc_i(ibuf_is_rvc),
       .ibuf_ftq_id_i(ibuf_ftq_id),
       .ibuf_fetch_epoch_i(ibuf_fetch_epoch),
       .dec2backend_valid_o(),
@@ -91,6 +97,8 @@ module tb_decoder (
   assign check_is_load  = dec_uops[0].is_load;
   assign check_is_store = dec_uops[0].is_store;
   assign check_is_jump  = dec_uops[0].is_jump;
+  assign check_is_fence = dec_uops[0].is_fence;
+  assign check_is_sfence_vma = dec_uops[0].is_sfence_vma;
   assign check_pred_npc = dec_uops[0].pred_npc;
   assign check_ftq_id = dec_uops[0].ftq_id;
   assign check_fetch_epoch = dec_uops[0].fetch_epoch;

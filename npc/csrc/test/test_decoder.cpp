@@ -24,7 +24,15 @@ enum AluOp {
   ALU_SRA,
   ALU_LUI,
   ALU_AUIPC,
-  ALU_NOP
+  ALU_NOP,
+  ALU_MUL,
+  ALU_MULH,
+  ALU_MULHSU,
+  ALU_MULHU,
+  ALU_DIV,
+  ALU_DIVU,
+  ALU_REM,
+  ALU_REMU
 };
 
 // 功能单元类型
@@ -63,7 +71,71 @@ struct GoldenInfo {
   int rs1, rs2, rd;
   bool has_rs1, has_rs2, has_rd;
   bool is_load, is_store, is_branch, is_jump, is_csr, is_fence;
+  bool is_sfence_vma;
 };
+
+struct DirectedCase {
+  const char *name;
+  uint32_t inst;
+  bool illegal;
+  int fu_type;
+  bool is_fence;
+  bool is_sfence_vma;
+  bool is_load;
+  bool is_store;
+  int lsu_op;
+};
+
+uint32_t encode_amo_w(uint32_t funct5, uint32_t rd, uint32_t rs1, uint32_t rs2,
+                      uint32_t aq = 0, uint32_t rl = 0) {
+  return ((funct5 & 0x1F) << 27) | ((aq & 0x1) << 26) | ((rl & 0x1) << 25) |
+         ((rs2 & 0x1F) << 20) | ((rs1 & 0x1F) << 15) | (0x2u << 12) |
+         ((rd & 0x1F) << 7) | 0x2Fu;
+}
+
+void run_directed_case(Vtb_decoder *top, const DirectedCase &tc) {
+  top->inst_i = tc.inst;
+  top->pc_i = 0x80000000u;
+  top->ftq_id_i = 0;
+  top->fetch_epoch_i = 0;
+  top->eval();
+
+  bool mismatch = false;
+  if ((bool)top->check_illegal != tc.illegal)
+    mismatch = true;
+  if (top->check_fu_type != tc.fu_type)
+    mismatch = true;
+  if ((bool)top->check_is_fence != tc.is_fence)
+    mismatch = true;
+  if ((bool)top->check_is_sfence_vma != tc.is_sfence_vma)
+    mismatch = true;
+  if ((bool)top->check_is_load != tc.is_load)
+    mismatch = true;
+  if ((bool)top->check_is_store != tc.is_store)
+    mismatch = true;
+  if ((tc.is_load || tc.is_store) && top->check_lsu_op != tc.lsu_op)
+    mismatch = true;
+
+  if (mismatch) {
+    std::cout << "[DIRECTED][FAIL] " << tc.name << " inst=0x" << std::hex
+              << tc.inst << std::dec << std::endl;
+    std::cout << "  illegal: expect=" << tc.illegal
+              << " got=" << (int)top->check_illegal << std::endl;
+    std::cout << "  fu_type: expect=" << tc.fu_type
+              << " got=" << top->check_fu_type << std::endl;
+    std::cout << "  is_fence: expect=" << tc.is_fence
+              << " got=" << (int)top->check_is_fence << std::endl;
+    std::cout << "  is_sfence_vma: expect=" << tc.is_sfence_vma
+              << " got=" << (int)top->check_is_sfence_vma << std::endl;
+    std::cout << "  is_load: expect=" << tc.is_load
+              << " got=" << (int)top->check_is_load << std::endl;
+    std::cout << "  is_store: expect=" << tc.is_store
+              << " got=" << (int)top->check_is_store << std::endl;
+    std::cout << "  lsu_op: expect=" << tc.lsu_op
+              << " got=" << top->check_lsu_op << std::endl;
+    assert(false);
+  }
+}
 
 // 符号扩展辅助函数
 int32_t sext(uint32_t val, int bits) {
@@ -110,13 +182,11 @@ GoldenInfo decode_reference(uint32_t inst, uint32_t pc) {
   // FENCE / FENCE.I (MISC-MEM)
   // -------------------------
   case 0x0F:
-    info.fu_type =
-        FU_ALU; // 或者 FU_CSR/FU_NONE，取决于后端设计，decoder.sv里是
-                // FU_ALU
+    info.fu_type = FU_ALU;
     info.is_fence = true;
-    // 注意：标准的 FENCE 要求 rd=0, rs1=0, funct3=0。
-    // decoder.sv 目前没有检查这些，所以 C++
-    // 这里也不检查，以保持行为一致。
+    if (!(funct3 == 0 || funct3 == 1)) {
+      info.illegal = true;
+    }
     break;
 
   // -------------------------
@@ -353,15 +423,35 @@ GoldenInfo decode_reference(uint32_t inst, uint32_t pc) {
     if (funct7 == 1) {
       switch (funct3) {
       case 0:
+        info.alu_op = ALU_MUL;
+        info.fu_type = FU_MUL;
+        break;
       case 1:
+        info.alu_op = ALU_MULH;
+        info.fu_type = FU_MUL;
+        break;
       case 2:
+        info.alu_op = ALU_MULHSU;
+        info.fu_type = FU_MUL;
+        break;
       case 3:
+        info.alu_op = ALU_MULHU;
         info.fu_type = FU_MUL;
         break;
       case 4:
+        info.alu_op = ALU_DIV;
+        info.fu_type = FU_DIV;
+        break;
       case 5:
+        info.alu_op = ALU_DIVU;
+        info.fu_type = FU_DIV;
+        break;
       case 6:
+        info.alu_op = ALU_REM;
+        info.fu_type = FU_DIV;
+        break;
       case 7:
+        info.alu_op = ALU_REMU;
         info.fu_type = FU_DIV;
         break;
       }
@@ -456,18 +546,69 @@ GoldenInfo decode_reference(uint32_t inst, uint32_t pc) {
     break;
 
   // -------------------------
+  // AMO/LR/SC (A extension, word form)
+  // -------------------------
+  case 0x2F: {
+    uint32_t funct5 = (inst >> 27) & 0x1F;
+    info.fu_type = FU_LSU;
+    info.has_rs1 = true;
+    info.has_rd = (rd != 0);
+    if (funct3 != 2) {
+      info.illegal = true;
+      break;
+    }
+    switch (funct5) {
+    case 0x02: // LR.W
+      if (rs2 != 0) {
+        info.illegal = true;
+      } else {
+        info.is_load = true;
+        info.lsu_op = LSU_LW;
+      }
+      break;
+    case 0x03: // SC.W
+      info.has_rs2 = true;
+      info.is_store = true;
+      info.lsu_op = LSU_SW;
+      break;
+    case 0x01: // AMOSWAP.W
+    case 0x00: // AMOADD.W
+    case 0x04: // AMOXOR.W
+    case 0x0C: // AMOAND.W
+    case 0x08: // AMOOR.W
+    case 0x10: // AMOMIN.W
+    case 0x14: // AMOMAX.W
+    case 0x18: // AMOMINU.W
+    case 0x1C: // AMOMAXU.W
+      info.has_rs2 = true;
+      info.is_load = true;
+      info.is_store = true;
+      info.lsu_op = LSU_SW;
+      break;
+    default:
+      info.illegal = true;
+      break;
+    }
+    break;
+  }
+
+  // -------------------------
   // SYSTEM (CSR)
   // -------------------------
   case 0x73:
     if (funct3 == 0) {
-      info.fu_type = FU_ALU;
+      info.fu_type = FU_CSR;
       info.is_csr = false;
-      // PRIV 指令: ECALL, EBREAK, MRET
+      // PRIV 指令: ECALL, EBREAK, MRET, SRET, WFI
       // 必须严格检查立即数，以匹配 decoder.sv 的行为
       uint32_t sys_imm = (inst >> 20) & 0xFFF;
       if (sys_imm == 0x000) {        /* ECALL */
       } else if (sys_imm == 0x001) { /* EBREAK */
       } else if (sys_imm == 0x302) { /* MRET */
+      } else if (sys_imm == 0x102) { /* SRET */
+      } else if (sys_imm == 0x105) { /* WFI */
+      } else if (sys_imm == 0x120) { /* SFENCE.VMA */
+        info.is_sfence_vma = true;
       } else {
         info.illegal = true; // 其他情况非法
       }
@@ -619,6 +760,29 @@ int main(int argc, char **argv) {
   top->rst_ni = 1;
   top->eval();
 
+  std::vector<DirectedCase> directed_cases = {
+      {"LR.W legal", encode_amo_w(0x02, 10, 11, 0), false, FU_LSU, false,
+       false, true, false, LSU_LW},
+      {"SC.W legal", encode_amo_w(0x03, 5, 6, 7), false, FU_LSU, false, false,
+       false, true, LSU_SW},
+      {"AMOSWAP.W legal", encode_amo_w(0x01, 3, 4, 8), false, FU_LSU, false,
+       false, true, true, LSU_SW},
+      {"FENCE.I marker", (0x001u << 12) | 0x0Fu, false, FU_ALU, true, false,
+       false, false, LSU_LW},
+      {"ECALL as CSR-FU", 0x00000073u, false, FU_CSR, false, false, false,
+       false, LSU_LW},
+      {"MRET as CSR-FU", 0x30200073u, false, FU_CSR, false, false, false,
+       false, LSU_LW},
+      {"WFI as CSR-FU", 0x10500073u, false, FU_CSR, false, false, false,
+       false, LSU_LW},
+      {"SFENCE.VMA as CSR-FU", 0x12000073u, false, FU_CSR, false, true, false,
+       false, LSU_LW},
+  };
+
+  for (const auto &tc : directed_cases) {
+    run_directed_case(top, tc);
+  }
+
   const int NUM_TESTS = 20000;
   int passed = 0;
 
@@ -672,6 +836,14 @@ int main(int argc, char **argv) {
       }
       if (top->check_is_store != ref.is_store) {
         std::cout << "[ERROR] is_store mismatch!" << std::endl;
+        mismatch = true;
+      }
+      if (top->check_is_fence != ref.is_fence) {
+        std::cout << "[ERROR] is_fence mismatch!" << std::endl;
+        mismatch = true;
+      }
+      if (top->check_is_sfence_vma != ref.is_sfence_vma) {
+        std::cout << "[ERROR] is_sfence_vma mismatch!" << std::endl;
         mismatch = true;
       }
       // 检查寄存器索引 (确保解码器正确提取了 rs1/rs2/rd)

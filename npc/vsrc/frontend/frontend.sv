@@ -31,10 +31,37 @@ module frontend #(
     input logic [Cfg.PLEN-1:0] bpu_update_target_i,
     input logic                bpu_update_is_call_i,
     input logic                bpu_update_is_ret_i,
+    input logic                bpu_update_is_rvc_i,
     input logic [Cfg.NRET-1:0] bpu_ras_update_valid_i,
     input logic [Cfg.NRET-1:0] bpu_ras_update_is_call_i,
     input logic [Cfg.NRET-1:0] bpu_ras_update_is_ret_i,
+    input logic [Cfg.NRET-1:0] bpu_ras_update_is_rvc_i,
     input logic [Cfg.NRET-1:0][Cfg.PLEN-1:0] bpu_ras_update_pc_i,
+
+    // MMU control from backend CSR
+    input logic [31:0] mmu_satp_i,
+    input logic [1:0]  mmu_priv_i,
+    input logic        mmu_sum_i,
+    input logic        mmu_mxr_i,
+    input logic        mmu_sfence_vma_i,
+
+    // IFetch fault sideband to backend
+    output logic       ifetch_fault_valid_o,
+    input logic        ifetch_fault_ready_i,
+    output logic [Cfg.PLEN-1:0] ifetch_fault_pc_o,
+    output logic [Cfg.PLEN-1:0] ifetch_fault_tval_o,
+    output logic [4:0] ifetch_fault_cause_o,
+
+    // IFU MMU page walk traffic (to backend dcache mux)
+    output logic       pte_req_valid_o,
+    input logic        pte_req_ready_i,
+    output logic [31:0] pte_req_paddr_o,
+    input logic        pte_rsp_valid_i,
+    input logic [31:0] pte_rsp_data_i,
+    output logic       pte_upd_valid_o,
+    input logic        pte_upd_ready_i,
+    output logic [31:0] pte_upd_paddr_o,
+    output logic [31:0] pte_upd_data_o,
 
     // ============================================
     // 2. 存储器系统接口 (To Memory/L2/Bus)
@@ -141,7 +168,27 @@ module frontend #(
 
       // --- Backend Control ---
       .flush_i      (flush_i),
-      .redirect_pc_i(redirect_pc_i)
+      .redirect_pc_i(redirect_pc_i),
+
+      .mmu_satp_i(mmu_satp_i),
+      .mmu_priv_i(mmu_priv_i),
+      .mmu_sum_i(mmu_sum_i),
+      .mmu_mxr_i(mmu_mxr_i),
+      .mmu_sfence_vma_i(mmu_sfence_vma_i),
+      .pte_req_valid_o(pte_req_valid_o),
+      .pte_req_ready_i(pte_req_ready_i),
+      .pte_req_paddr_o(pte_req_paddr_o),
+      .pte_rsp_valid_i(pte_rsp_valid_i),
+      .pte_rsp_data_i(pte_rsp_data_i),
+      .pte_upd_valid_o(pte_upd_valid_o),
+      .pte_upd_ready_i(pte_upd_ready_i),
+      .pte_upd_paddr_o(pte_upd_paddr_o),
+      .pte_upd_data_o(pte_upd_data_o),
+      .ifetch_fault_valid_o(ifetch_fault_valid_o),
+      .ifetch_fault_ready_i(ifetch_fault_ready_i),
+      .ifetch_fault_pc_o(ifetch_fault_pc_o),
+      .ifetch_fault_tval_o(ifetch_fault_tval_o),
+      .ifetch_fault_cause_o(ifetch_fault_cause_o)
   );
 
   // -------------------
@@ -193,9 +240,11 @@ module frontend #(
       .update_target_i       (bpu_update_target_i),
       .update_is_call_i      (bpu_update_is_call_i),
       .update_is_ret_i       (bpu_update_is_ret_i),
+      .update_is_rvc_i       (bpu_update_is_rvc_i),
       .ras_update_valid_i    (bpu_ras_update_valid_i),
       .ras_update_is_call_i  (bpu_ras_update_is_call_i),
       .ras_update_is_ret_i   (bpu_ras_update_is_ret_i),
+      .ras_update_is_rvc_i   (bpu_ras_update_is_rvc_i),
       .ras_update_pc_i       (bpu_ras_update_pc_i),
       .flush_i               (flush_i),
       .bpu_to_ifu_handshake_o(bpu2ifu_handshake),

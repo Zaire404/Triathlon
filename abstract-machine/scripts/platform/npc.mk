@@ -17,9 +17,12 @@ LDFLAGS   += --gc-sections -e _start
 MAINARGS_MAX_LEN = 64
 MAINARGS_PLACEHOLDER = The insert-arg rule in Makefile will insert mainargs here.
 CFLAGS += -DMAINARGS_MAX_LEN=$(MAINARGS_MAX_LEN) -DMAINARGS_PLACEHOLDER=\""$(MAINARGS_PLACEHOLDER)"\"
+NPC_DIFFTEST ?=
+NPC_HOME := $(abspath $(AM_HOME)/../npc)
+PYTHON ?= python3
 
 insert-arg: image
-	@python $(AM_HOME)/tools/insert-arg.py $(IMAGE).bin $(MAINARGS_MAX_LEN) "$(MAINARGS_PLACEHOLDER)" "$(mainargs)"
+	@$(PYTHON) $(AM_HOME)/tools/insert-arg.py $(IMAGE).bin $(MAINARGS_MAX_LEN) "$(MAINARGS_PLACEHOLDER)" "$(mainargs)"
 
 image: image-dep
 	@$(OBJDUMP) -d $(IMAGE).elf > $(IMAGE).txt
@@ -27,7 +30,9 @@ image: image-dep
 	@$(OBJCOPY) -S --set-section-flags .bss=alloc,contents -O binary $(IMAGE).elf $(IMAGE).bin
 
 run: insert-arg
-	$(MAKE) -C $(NPC_HOME) sim IMG=$(IMAGE).bin
+	@echo "[npc.mk] AM_HOME=$(AM_HOME) NPC_HOME=$(NPC_HOME)"
+	$(MAKE) -C $(NPC_HOME) sim IMG=$(IMAGE).bin DIFFTEST="$(NPC_DIFFTEST)"
 gdb: insert-arg
-	$(MAKE) -C $(NPC_HOME) gdb IMG=$(IMAGE).bin
+	@echo "[npc.mk] AM_HOME=$(AM_HOME) NPC_HOME=$(NPC_HOME)"
+	$(MAKE) -C $(NPC_HOME) gdb IMG=$(IMAGE).bin DIFFTEST="$(NPC_DIFFTEST)"
 .PHONY: insert-arg

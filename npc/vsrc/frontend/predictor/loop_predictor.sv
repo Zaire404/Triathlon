@@ -23,7 +23,7 @@ module loop_predictor #(
     input logic update_taken_i
 );
   localparam int unsigned INSTR_BYTES = Cfg.ILEN / 8;
-  localparam int unsigned INSTR_ADDR_LSB = (INSTR_BYTES > 1) ? $clog2(INSTR_BYTES) : 0;
+  localparam int unsigned INSTR_ADDR_LSB = 1;
   localparam int unsigned IDX_W = (ENTRIES > 1) ? $clog2(ENTRIES) : 1;
   localparam logic [ITER_BITS-1:0] ITER_MAX = {ITER_BITS{1'b1}};
   localparam logic [CONF_BITS-1:0] CONF_MAX = {CONF_BITS{1'b1}};

@@ -26,9 +26,11 @@ void reset(Vtb_bpu *top) {
   top->update_target_i = 0;
   top->update_is_call_i = 0;
   top->update_is_ret_i = 0;
+  top->update_is_rvc_i = 0;
   top->ras_update_valid_i = 0;
   top->ras_update_is_call_i = 0;
   top->ras_update_is_ret_i = 0;
+  top->ras_update_is_rvc_i = 0;
   for (int i = 0; i < NRET; i++) {
     top->ras_update_pc_i[i] = 0;
   }
@@ -57,7 +59,8 @@ static void expect_taken(Vtb_bpu *top, uint32_t pc, uint32_t target,
 }
 
 static void train(Vtb_bpu *top, uint32_t pc, bool is_cond, bool taken,
-                  uint32_t target, bool is_call = false, bool is_ret = false) {
+                  uint32_t target, bool is_call = false, bool is_ret = false,
+                  bool is_rvc = false) {
   top->update_valid_i = 1;
   top->update_pc_i = pc;
   top->update_is_cond_i = is_cond ? 1 : 0;
@@ -65,17 +68,21 @@ static void train(Vtb_bpu *top, uint32_t pc, bool is_cond, bool taken,
   top->update_target_i = target;
   top->update_is_call_i = is_call ? 1 : 0;
   top->update_is_ret_i = is_ret ? 1 : 0;
+  top->update_is_rvc_i = is_rvc ? 1 : 0;
   top->ras_update_valid_i = (is_call || is_ret) ? 0x1 : 0x0;
   top->ras_update_is_call_i = is_call ? 0x1 : 0x0;
   top->ras_update_is_ret_i = is_ret ? 0x1 : 0x0;
+  top->ras_update_is_rvc_i = is_call && is_rvc ? 0x1 : 0x0;
   top->ras_update_pc_i[0] = pc;
   tick(top, 1);
   top->update_valid_i = 0;
   top->update_is_call_i = 0;
   top->update_is_ret_i = 0;
+  top->update_is_rvc_i = 0;
   top->ras_update_valid_i = 0;
   top->ras_update_is_call_i = 0;
   top->ras_update_is_ret_i = 0;
+  top->ras_update_is_rvc_i = 0;
   top->ras_update_pc_i[0] = 0;
 }
 
@@ -179,6 +186,21 @@ static void test_indirect_multitarget_context_switch(Vtb_bpu *top) {
   tick(top, 1);
   assert(top->pred_slot_valid_o == 1);
   assert(top->pred_slot_target_o == indir_tgt_a);
+}
+
+static void test_halfword_btb_alias(Vtb_bpu *top) {
+  reset(top);
+
+  const uint32_t branch_pc = 0x800010ec;
+  const uint32_t alias_pc = branch_pc + 2;
+  const uint32_t branch_target = 0x80000040;
+
+  train(top, branch_pc, false, true, branch_target);
+
+  top->pc_i = alias_pc;
+  tick(top, 1);
+  assert(top->pred_slot_valid_o == 0);
+  assert(top->npc_o == alias_pc + 16);
 }
 
 int main(int argc, char **argv) {
@@ -450,18 +472,22 @@ int main(int argc, char **argv) {
   top->update_target_i = sync_ret_target;
   top->update_is_call_i = 0;
   top->update_is_ret_i = 1;  // pop architectural stack from base-only to empty
+  top->update_is_rvc_i = 0;
   top->ras_update_valid_i = 0x1;
   top->ras_update_is_call_i = 0x0;
   top->ras_update_is_ret_i = 0x1;
+  top->ras_update_is_rvc_i = 0x0;
   top->ras_update_pc_i[0] = rec_ret_pc;
   top->flush_i = 1;
   tick(top, 1);
   top->update_valid_i = 0;
   top->update_is_call_i = 0;
   top->update_is_ret_i = 0;
+  top->update_is_rvc_i = 0;
   top->ras_update_valid_i = 0;
   top->ras_update_is_call_i = 0;
   top->ras_update_is_ret_i = 0;
+  top->ras_update_is_rvc_i = 0;
   top->ras_update_pc_i[0] = 0;
   top->flush_i = 0;
 
@@ -518,12 +544,14 @@ int main(int argc, char **argv) {
   top->ras_update_valid_i = 0x3;     // slot0 + slot1
   top->ras_update_is_call_i = 0x3;   // push A then B
   top->ras_update_is_ret_i = 0x0;
+  top->ras_update_is_rvc_i = 0x0;
   top->ras_update_pc_i[0] = batch_call_a_pc;
   top->ras_update_pc_i[1] = batch_call_b_pc;
   tick(top, 1);
   top->ras_update_valid_i = 0;
   top->ras_update_is_call_i = 0;
   top->ras_update_is_ret_i = 0;
+  top->ras_update_is_rvc_i = 0;
   top->ras_update_pc_i[0] = 0;
   top->ras_update_pc_i[1] = 0;
 
@@ -539,10 +567,12 @@ int main(int argc, char **argv) {
   top->ras_update_valid_i = 0x3;    // pop twice
   top->ras_update_is_call_i = 0x0;
   top->ras_update_is_ret_i = 0x3;
+  top->ras_update_is_rvc_i = 0x0;
   tick(top, 1);
   top->ras_update_valid_i = 0;
   top->ras_update_is_call_i = 0;
   top->ras_update_is_ret_i = 0;
+  top->ras_update_is_rvc_i = 0;
 
   top->flush_i = 1;
   tick(top, 1);
@@ -552,6 +582,27 @@ int main(int argc, char **argv) {
   tick(top, 1);
   assert(top->pred_slot_valid_o == 1);
   assert(top->pred_slot_target_o == batch_ret_btb_target);
+
+  // 14) Compressed call must push return PC+2, not PC+4.
+  reset(top);
+  const uint32_t c_ret_pc = 0x80000c80;
+  const uint32_t c_ret_btb_target = 0x90000c80;
+  const uint32_t c_call_pc = 0x80000c6e;
+  const uint32_t c_call_target = 0x8000c000;
+
+  train(top, c_ret_pc, false, true, c_ret_btb_target, false, true, false);
+  train(top, c_call_pc, false, true, c_call_target, true, false, true);
+
+  top->pc_i = c_call_pc;
+  tick(top, 1);
+  assert(top->pred_slot_valid_o == 1);
+  assert(top->pred_slot_target_o == c_call_target);
+
+  top->pc_i = c_ret_pc;
+  tick(top, 1);
+  assert(top->pred_slot_valid_o == 1);
+  assert(top->pred_slot_target_o == c_call_pc + 2);
+  assert(top->npc_o == c_call_pc + 2);
 
   // 14) Hashed index should isolate previously aliased conditional branches.
   test_cond_alias_isolation(top);
@@ -565,6 +616,9 @@ int main(int argc, char **argv) {
 
   // 17) Indirect branch target should be selected by path context.
   test_indirect_multitarget_context_switch(top);
+
+  // 18) RV32C halfword-neighbor PCs must not alias in BTB/BHT lookup.
+  test_halfword_btb_alias(top);
 
   std::cout << "--- [PASSED] All checks passed successfully! ---" << std::endl;
   delete top;

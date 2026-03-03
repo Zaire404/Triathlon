@@ -7,6 +7,8 @@ module backend #(
 ) (
     input logic clk_i,
     input logic rst_ni,
+    input logic timer_irq_i,
+    input logic ext_irq_i,
     input logic flush_from_backend,
     input logic frontend_ibuf_valid,
     output logic frontend_ibuf_ready,
@@ -26,10 +28,31 @@ module backend #(
     output logic [Cfg.PLEN-1:0] bpu_update_target_o,
     output logic bpu_update_is_call_o,
     output logic bpu_update_is_ret_o,
+    output logic bpu_update_is_rvc_o,
     output logic [Cfg.NRET-1:0] bpu_ras_update_valid_o,
     output logic [Cfg.NRET-1:0] bpu_ras_update_is_call_o,
     output logic [Cfg.NRET-1:0] bpu_ras_update_is_ret_o,
+    output logic [Cfg.NRET-1:0] bpu_ras_update_is_rvc_o,
     output logic [Cfg.NRET-1:0][Cfg.PLEN-1:0] bpu_ras_update_pc_o,
+    output logic [31:0] mmu_satp_o,
+    output logic [1:0] mmu_priv_o,
+    output logic mmu_sum_o,
+    output logic mmu_mxr_o,
+    output logic mmu_sfence_vma_o,
+    input logic ifu_pte_ld_req_valid_i,
+    output logic ifu_pte_ld_req_ready_o,
+    input logic [31:0] ifu_pte_ld_req_paddr_i,
+    output logic ifu_pte_ld_rsp_valid_o,
+    output logic [31:0] ifu_pte_ld_rsp_data_o,
+    input logic ifu_pte_st_req_valid_i,
+    output logic ifu_pte_st_req_ready_o,
+    input logic [31:0] ifu_pte_st_req_paddr_i,
+    input logic [31:0] ifu_pte_st_req_data_i,
+    input logic ifetch_fault_valid_i,
+    output logic ifetch_fault_ready_o,
+    input logic [Cfg.PLEN-1:0] ifetch_fault_pc_i,
+    input logic [Cfg.PLEN-1:0] ifetch_fault_tval_i,
+    input logic [4:0] ifetch_fault_cause_i,
 
     // D-Cache miss/refill/writeback interface (to memory system)
     output logic                                  dcache_miss_req_valid_o,
@@ -62,6 +85,7 @@ module backend #(
   localparam int unsigned NUM_FUS = 7;  // ALU0, ALU1, BRU, LSU, ALU2, ALU3, CSR
   localparam int unsigned LSU_GROUP_SIZE = (Cfg.LSU_GROUP_SIZE >= 1) ? Cfg.LSU_GROUP_SIZE : 1;
   localparam int unsigned LSU_LD_ID_WIDTH = (LSU_GROUP_SIZE <= 1) ? 1 : $clog2(LSU_GROUP_SIZE);
+  localparam int unsigned DCACHE_LD_ID_WIDTH = LSU_LD_ID_WIDTH + 1;
   localparam int unsigned DCACHE_MSHR_SIZE = (Cfg.DCACHE_MSHR_SIZE >= 1) ? Cfg.DCACHE_MSHR_SIZE : 1;
   localparam int unsigned RENAME_PENDING_DEPTH_CFG = (Cfg.RENAME_PENDING_DEPTH > 0) ? Cfg.RENAME_PENDING_DEPTH :
       (DISPATCH_WIDTH * 2);
@@ -175,6 +199,7 @@ module backend #(
   logic [    COMMIT_WIDTH-1:0]                    commit_is_jump;
   logic [    COMMIT_WIDTH-1:0]                    commit_is_call;
   logic [    COMMIT_WIDTH-1:0]                    commit_is_ret;
+  logic [    COMMIT_WIDTH-1:0]                    commit_is_rvc;
   logic [    COMMIT_WIDTH-1:0][     Cfg.PLEN-1:0] commit_actual_npc;
   logic [    COMMIT_WIDTH-1:0][    FTQ_ID_W-1:0]  commit_ftq_id;
   logic [    COMMIT_WIDTH-1:0][FETCH_EPOCH_W-1:0] commit_fetch_epoch;
@@ -187,6 +212,18 @@ module backend #(
   logic                                           rob_flush_is_branch;
   logic                                           rob_flush_is_jump;
   logic [        Cfg.PLEN-1:0]                    rob_flush_src_pc;
+  logic                                           csr_irq_trap;
+  logic [                 4:0]                    csr_irq_trap_cause;
+  logic [        Cfg.PLEN-1:0]                    csr_irq_trap_pc;
+  logic [        Cfg.PLEN-1:0]                    csr_irq_trap_redirect_pc;
+  logic                                           rob_sync_exception_valid;
+  logic [                 4:0]                    rob_sync_exception_cause;
+  logic [        Cfg.PLEN-1:0]                    rob_sync_exception_pc;
+  logic [        Cfg.PLEN-1:0]                    rob_sync_exception_tval;
+  logic                                           rob_sync_exception_pending_q;
+  logic [                 4:0]                    rob_sync_exception_cause_q;
+  logic [        Cfg.PLEN-1:0]                    rob_sync_exception_pc_q;
+  logic [        Cfg.PLEN-1:0]                    rob_sync_exception_tval_q;
   logic [            FTQ_ID_W-1:0]                bpu_update_ftq_id_dbg;
   logic [       FETCH_EPOCH_W-1:0]                bpu_update_fetch_epoch_dbg;
   logic [         COMMIT_SEL_W-1:0]               bpu_update_sel_idx_dbg;
@@ -196,7 +233,11 @@ module backend #(
   logic [DISPATCH_WIDTH*2-1:0][ROB_IDX_WIDTH-1:0] rob_query_idx;
   logic [DISPATCH_WIDTH*2-1:0]                    rob_query_ready;
   logic [DISPATCH_WIDTH*2-1:0][     Cfg.XLEN-1:0] rob_query_data;
+  logic [DISPATCH_WIDTH*2-1:0][FETCH_EPOCH_W-1:0] rob_query_fetch_epoch;
+  logic [DISPATCH_WIDTH*2-1:0][     Cfg.PLEN-1:0] rob_query_pc;
   logic [   ROB_IDX_WIDTH-1:0]                    rob_head_ptr;
+  logic                                           rob_empty;
+  logic [        Cfg.PLEN-1:0]                    rob_head_pc;
 
   rob #(
       .Cfg(Cfg),
@@ -223,6 +264,7 @@ module backend #(
       .dispatch_is_jump_i(rob_dispatch_is_jump),
       .dispatch_is_call_i(rob_dispatch_is_call),
       .dispatch_is_ret_i(rob_dispatch_is_ret),
+      .dispatch_is_rvc_i(rob_dispatch_is_rvc),
       .dispatch_ftq_id_i(rob_dispatch_ftq_id),
       .dispatch_fetch_epoch_i(rob_dispatch_fetch_epoch),
       .dispatch_is_store_i(rob_dispatch_is_store),
@@ -238,6 +280,10 @@ module backend #(
       .wb_ecause_i     (wb_ecause),
       .wb_is_mispred_i (wb_is_mispred),
       .wb_redirect_pc_i(wb_redirect_pc),
+      .async_exception_valid_i(csr_irq_trap),
+      .async_exception_cause_i(csr_irq_trap_cause),
+      .async_exception_pc_i(csr_irq_trap_pc),
+      .async_exception_redirect_pc_i(csr_irq_trap_redirect_pc),
       .fast_alu_valid_i({alu3_wb_valid, alu2_wb_valid, alu1_wb_valid, alu0_wb_valid}),
       .fast_alu_rob_idx_i({alu3_wb_tag, alu2_wb_tag, alu1_wb_tag, alu0_wb_tag}),
       .fast_alu_data_i({alu3_wb_data, alu2_wb_data, alu1_wb_data, alu0_wb_data}),
@@ -261,6 +307,7 @@ module backend #(
       .commit_is_jump_o   (commit_is_jump),
       .commit_is_call_o   (commit_is_call),
       .commit_is_ret_o    (commit_is_ret),
+      .commit_is_rvc_o    (commit_is_rvc),
       .commit_actual_npc_o(commit_actual_npc),
       .commit_ftq_id_o(commit_ftq_id),
       .commit_fetch_epoch_o(commit_fetch_epoch),
@@ -273,14 +320,21 @@ module backend #(
       .flush_is_branch_o   (rob_flush_is_branch),
       .flush_is_jump_o     (rob_flush_is_jump),
       .flush_src_pc_o      (rob_flush_src_pc),
+      .sync_exception_valid_o(rob_sync_exception_valid),
+      .sync_exception_cause_o(rob_sync_exception_cause),
+      .sync_exception_pc_o(rob_sync_exception_pc),
+      .sync_exception_tval_o(rob_sync_exception_tval),
 
       .query_rob_idx_i(rob_query_idx),
       .query_ready_o  (rob_query_ready),
       .query_data_o   (rob_query_data),
+      .query_fetch_epoch_o(rob_query_fetch_epoch),
+      .query_pc_o     (rob_query_pc),
 
-      .rob_empty_o(),
+      .rob_empty_o(rob_empty),
       .rob_full_o (),
-      .rob_head_o (rob_head_ptr)
+      .rob_head_o (rob_head_ptr),
+      .rob_head_pc_o(rob_head_pc)
   );
 
   retire_redirect_ctrl #(
@@ -301,6 +355,7 @@ module backend #(
       .commit_is_jump_i(commit_is_jump),
       .commit_is_call_i(commit_is_call),
       .commit_is_ret_i(commit_is_ret),
+      .commit_is_rvc_i(commit_is_rvc),
       .commit_actual_npc_i(commit_actual_npc),
       .commit_ftq_id_i(commit_ftq_id),
       .commit_fetch_epoch_i(commit_fetch_epoch),
@@ -316,6 +371,7 @@ module backend #(
       .bpu_update_target_o(bpu_update_target_o),
       .bpu_update_is_call_o(bpu_update_is_call_o),
       .bpu_update_is_ret_o(bpu_update_is_ret_o),
+      .bpu_update_is_rvc_o(bpu_update_is_rvc_o),
       .bpu_update_ftq_id_dbg_o(bpu_update_ftq_id_dbg),
       .bpu_update_fetch_epoch_dbg_o(bpu_update_fetch_epoch_dbg),
       .bpu_update_sel_idx_dbg_o(bpu_update_sel_idx_dbg),
@@ -323,9 +379,66 @@ module backend #(
       .bpu_ras_update_valid_o(bpu_ras_update_valid_o),
       .bpu_ras_update_is_call_o(bpu_ras_update_is_call_o),
       .bpu_ras_update_is_ret_o(bpu_ras_update_is_ret_o),
+      .bpu_ras_update_is_rvc_o(bpu_ras_update_is_rvc_o),
       .bpu_ras_update_pc_o(bpu_ras_update_pc_o)
   );
+
+  always_ff @(posedge clk_i or negedge rst_ni) begin
+    if (!rst_ni) begin
+      rob_sync_exception_pending_q <= 1'b0;
+      rob_sync_exception_cause_q <= '0;
+      rob_sync_exception_pc_q <= '0;
+      rob_sync_exception_tval_q <= '0;
+    end else if (backend_flush) begin
+      rob_sync_exception_pending_q <= 1'b0;
+      rob_sync_exception_cause_q <= '0;
+      rob_sync_exception_pc_q <= '0;
+      rob_sync_exception_tval_q <= '0;
+    end else if (!rob_sync_exception_pending_q && rob_sync_exception_valid) begin
+      rob_sync_exception_pending_q <= 1'b1;
+      rob_sync_exception_cause_q <= rob_sync_exception_cause;
+      rob_sync_exception_pc_q <= rob_sync_exception_pc;
+      rob_sync_exception_tval_q <= rob_sync_exception_tval;
+    end else if (rob_sync_exception_pending_q && csr_irq_trap) begin
+      rob_sync_exception_pending_q <= 1'b0;
+      rob_sync_exception_cause_q <= '0;
+      rob_sync_exception_pc_q <= '0;
+      rob_sync_exception_tval_q <= '0;
+    end
+  end
   assign backend_flush_o = backend_flush;
+
+`ifndef SYNTHESIS
+  localparam logic [Cfg.PLEN-1:0] DBG_PC_RET = 32'hc0803d60;
+  localparam logic [Cfg.PLEN-1:0] DBG_PC_FAULT0 = 32'hc0803dae;
+  localparam logic [Cfg.PLEN-1:0] DBG_PC_FAULT1 = 32'hc080ab72;
+  logic be_trace_en_q;
+  initial be_trace_en_q = $test$plusargs("npc_diag_trace");
+
+  always_ff @(posedge clk_i) begin
+    if (rst_ni && be_trace_en_q) begin
+      for (int i = 0; i < COMMIT_WIDTH; i++) begin
+        if (commit_valid[i] &&
+            ((commit_pc[i] == DBG_PC_RET) ||
+             (commit_pc[i] == DBG_PC_FAULT0) ||
+             (commit_pc[i] == DBG_PC_FAULT1))) begin
+          $display(
+              "[be-commit-watch] pc=%h slot=%0d is_ret=%0d is_br=%0d is_j=%0d actual_npc=%h rob_idx=%0d be_flush=%0d rob_flush=%0d rob_src=%h rob_pc=%h",
+              commit_pc[i], i, commit_is_ret[i], commit_is_branch[i], commit_is_jump[i],
+              commit_actual_npc[i], commit_rob_index[i], backend_flush, rob_flush, rob_flush_src_pc,
+              rob_flush_pc);
+        end
+      end
+
+      if (rob_flush && (rob_flush_src_pc == DBG_PC_RET)) begin
+        $display(
+            "[be-flush-watch] rob_flush=%0d backend_flush=%0d src_pc=%h flush_pc=%h mispred=%0d exc=%0d br=%0d j=%0d cause=%0d",
+            rob_flush, backend_flush, rob_flush_src_pc, rob_flush_pc, rob_flush_is_mispred,
+            rob_flush_is_exception, rob_flush_is_branch, rob_flush_is_jump, rob_flush_cause);
+      end
+    end
+  end
+`endif
 
   // =========================================================
   // Store Buffer (allocation + commit + forwarding)
@@ -419,6 +532,7 @@ module backend #(
   logic            [DISPATCH_WIDTH-1:0]                    rob_dispatch_is_jump;
   logic            [DISPATCH_WIDTH-1:0]                    rob_dispatch_is_call;
   logic            [DISPATCH_WIDTH-1:0]                    rob_dispatch_is_ret;
+  logic            [DISPATCH_WIDTH-1:0]                    rob_dispatch_is_rvc;
   logic            [DISPATCH_WIDTH-1:0][    FTQ_ID_W-1:0]  rob_dispatch_ftq_id;
   logic            [DISPATCH_WIDTH-1:0][FETCH_EPOCH_W-1:0] rob_dispatch_fetch_epoch;
   logic            [DISPATCH_WIDTH-1:0]                    rob_dispatch_is_store;
@@ -469,13 +583,14 @@ module backend #(
   logic                                                     lsu_can_accept;
   logic                                                     mdu_can_accept;
   logic                                                     csr_can_accept;
+  logic                                                     lsu_issue_block_mispred;
+  logic                                                     lsu_spec_low_addr_block_en;
 
   always_comb begin
     int left_k;
     int alu_budget;
     int bru_budget;
     int lsu_budget;
-    int mdu_budget;
     int csr_budget;
     logic stop_accept;
     logic can_take;
@@ -500,7 +615,6 @@ module backend #(
     alu_budget = alu_free_count;
     bru_budget = bru_free_count;
     lsu_budget = lsu_free_count;
-    mdu_budget = 0;
     csr_budget = csr_free_count;
     stop_accept = 1'b0;
 
@@ -527,8 +641,8 @@ module backend #(
           end
           FU_MUL,
           FU_DIV: begin
-            can_take = (mdu_budget > 0);
-            if (can_take) mdu_budget--;
+            can_take = (alu_budget > 0);
+            if (can_take) alu_budget--;
           end
           FU_CSR: begin
             can_take = (csr_budget > 0);
@@ -671,6 +785,7 @@ module backend #(
       .rob_dispatch_is_jump_o(rob_dispatch_is_jump),
       .rob_dispatch_is_call_o(rob_dispatch_is_call),
       .rob_dispatch_is_ret_o(rob_dispatch_is_ret),
+      .rob_dispatch_is_rvc_o(rob_dispatch_is_rvc),
       .rob_dispatch_ftq_id_o(rob_dispatch_ftq_id),
       .rob_dispatch_fetch_epoch_o(rob_dispatch_fetch_epoch),
       .rob_dispatch_is_store_o(rob_dispatch_is_store),
@@ -732,6 +847,10 @@ module backend #(
   logic [DISPATCH_WIDTH-1:0][ROB_IDX_WIDTH-1:0] issue_q2;
   logic [DISPATCH_WIDTH-1:0] issue_r1;
   logic [DISPATCH_WIDTH-1:0] issue_r2;
+`ifndef SYNTHESIS
+  localparam int unsigned BE_OPR_TRACE_BUDGET = 4096;
+  logic [31:0] be_opr_trace_cnt_q;
+`endif
 
   // Commit -> ARF read bypass (handles same-cycle commit/rename after flush)
   function automatic logic [Cfg.XLEN-1:0] arf_bypass(input logic [4:0] reg_idx,
@@ -784,9 +903,15 @@ module backend #(
 
       if (issue_valid[i]) begin
         if (issue_rs1_in_rob[i]) begin
-          if (rob_query_ready[i] && !rs1_tag_allocated[i]) begin
+          if (rob_query_ready[i] && !rs1_tag_allocated[i] &&
+              (rob_query_fetch_epoch[i] == rename_sel_uops[i].fetch_epoch)) begin
             issue_r1[i] = 1'b1;
             issue_v1[i] = rob_query_data[i];
+          end else if (rob_query_ready[i] && !rs1_tag_allocated[i] &&
+                       (rob_query_fetch_epoch[i] != rename_sel_uops[i].fetch_epoch)) begin
+            // Guard against stale ROB-tag aliasing across flush epochs.
+            issue_r1[i] = 1'b1;
+            issue_v1[i] = arf_bypass(issue_rs1_idx[i], arf_rdata[i]);
           end else begin
             issue_r1[i] = 1'b0;
             issue_q1[i] = issue_rs1_rob_idx[i];
@@ -797,9 +922,14 @@ module backend #(
         end
 
         if (issue_rs2_in_rob[i]) begin
-          if (rob_query_ready[i+4] && !rs2_tag_allocated[i]) begin
+          if (rob_query_ready[i+4] && !rs2_tag_allocated[i] &&
+              (rob_query_fetch_epoch[i+4] == rename_sel_uops[i].fetch_epoch)) begin
             issue_r2[i] = 1'b1;
             issue_v2[i] = rob_query_data[i+4];
+          end else if (rob_query_ready[i+4] && !rs2_tag_allocated[i] &&
+                       (rob_query_fetch_epoch[i+4] != rename_sel_uops[i].fetch_epoch)) begin
+            issue_r2[i] = 1'b1;
+            issue_v2[i] = arf_bypass(issue_rs2_idx[i], arf_rdata[i+4]);
           end else begin
             issue_r2[i] = 1'b0;
             issue_q2[i] = issue_rs2_rob_idx[i];
@@ -811,6 +941,68 @@ module backend #(
       end
     end
   end
+
+`ifndef SYNTHESIS
+  function automatic logic watch_be_lsu_pc(input logic [31:0] pc);
+    begin
+      watch_be_lsu_pc = (pc == 32'hc074befe) ||
+                        (pc == 32'hc039996c) ||  // bsearch: lw s1,36(sp)
+                        (pc == 32'hc076a580) ||
+                        (pc == 32'hc076a584);
+    end
+  endfunction
+
+  function automatic logic watch_be_alu_pc(input logic [31:0] pc);
+    begin
+      watch_be_alu_pc = (pc == 32'hc0399942) ||  // bsearch: mv s1,a2
+                        (pc == 32'hc039994c) ||  // bsearch: srli s3,s1,1
+                        (pc == 32'hc0399950) ||  // bsearch: mul s2,s4,s3
+                        (pc == 32'hc0399956) ||  // bsearch: addi s1,s1,-1
+                        (pc == 32'hc0399958) ||  // bsearch: add s2,s2,s5
+                        (pc == 32'hc039995a) ||  // bsearch: mv a1,s2
+                        (pc == 32'hc0399964) ||  // bsearch: srli s1,s1,1
+                        (pc == 32'hc0399986);    // bsearch: mv s1,s3
+    end
+  endfunction
+
+  always_ff @(posedge clk_i or negedge rst_ni) begin
+    if (!rst_ni) begin
+      be_opr_trace_cnt_q <= '0;
+    end else if (be_trace_en_q && (be_opr_trace_cnt_q < BE_OPR_TRACE_BUDGET)) begin
+      int unsigned trace_inc;
+      trace_inc = 0;
+      for (int i = 0; i < DISPATCH_WIDTH; i++) begin
+        if (issue_valid[i] && (rename_sel_uops[i].fu == FU_LSU) &&
+            watch_be_lsu_pc(rename_sel_uops[i].pc) &&
+            ((be_opr_trace_cnt_q + trace_inc) < BE_OPR_TRACE_BUDGET)) begin
+          $display("[be-opr-lsu] slot=%0d pc=%h rs1=%0d rs2=%0d rs1_in_rob=%0d rs1_idx=%0d rs1_tag=%0d rob_q1_ready=%0d rob_q1_data=%h rob_q1_epoch=%0d rob_q1_pc=%h rs1_tag_alloc=%0d arf_r1=%h issue_r1=%0d issue_v1=%h issue_q1=%0d rs2_in_rob=%0d rs2_idx=%0d rs2_tag=%0d rob_q2_ready=%0d rob_q2_data=%h rob_q2_epoch=%0d rob_q2_pc=%h rs2_tag_alloc=%0d arf_r2=%h issue_r2=%0d issue_v2=%h issue_q2=%0d dst=%0d ftq=%0d epoch=%0d flush=%0d",
+                   i, rename_sel_uops[i].pc, rename_sel_uops[i].rs1, rename_sel_uops[i].rs2,
+                   issue_rs1_in_rob[i], issue_rs1_idx[i], issue_rs1_rob_idx[i], rob_query_ready[i], rob_query_data[i], rob_query_fetch_epoch[i], rob_query_pc[i],
+                   rs1_tag_allocated[i], arf_rdata[i], issue_r1[i], issue_v1[i], issue_q1[i],
+                   issue_rs2_in_rob[i], issue_rs2_idx[i], issue_rs2_rob_idx[i], rob_query_ready[i+4], rob_query_data[i+4], rob_query_fetch_epoch[i+4], rob_query_pc[i+4],
+                   rs2_tag_allocated[i], arf_rdata[i+4], issue_r2[i], issue_v2[i], issue_q2[i],
+                   issue_rd_rob_idx[i], rename_sel_uops[i].ftq_id, rename_sel_uops[i].fetch_epoch, backend_flush);
+          trace_inc++;
+        end
+        if (issue_valid[i] && (rename_sel_uops[i].fu == FU_ALU) &&
+            watch_be_alu_pc(rename_sel_uops[i].pc) &&
+            ((be_opr_trace_cnt_q + trace_inc) < BE_OPR_TRACE_BUDGET)) begin
+          $display("[be-opr-alu] slot=%0d pc=%h rs1=%0d rs2=%0d rs1_in_rob=%0d rs1_idx=%0d rs1_tag=%0d rob_q1_ready=%0d rob_q1_data=%h rob_q1_epoch=%0d rob_q1_pc=%h rs1_tag_alloc=%0d arf_r1=%h issue_r1=%0d issue_v1=%h issue_q1=%0d rs2_in_rob=%0d rs2_idx=%0d rs2_tag=%0d rob_q2_ready=%0d rob_q2_data=%h rob_q2_epoch=%0d rob_q2_pc=%h rs2_tag_alloc=%0d arf_r2=%h issue_r2=%0d issue_v2=%h issue_q2=%0d dst=%0d ftq=%0d epoch=%0d flush=%0d",
+                   i, rename_sel_uops[i].pc, rename_sel_uops[i].rs1, rename_sel_uops[i].rs2,
+                   issue_rs1_in_rob[i], issue_rs1_idx[i], issue_rs1_rob_idx[i], rob_query_ready[i], rob_query_data[i], rob_query_fetch_epoch[i], rob_query_pc[i],
+                   rs1_tag_allocated[i], arf_rdata[i], issue_r1[i], issue_v1[i], issue_q1[i],
+                   issue_rs2_in_rob[i], issue_rs2_idx[i], issue_rs2_rob_idx[i], rob_query_ready[i+4], rob_query_data[i+4], rob_query_fetch_epoch[i+4], rob_query_pc[i+4],
+                   rs2_tag_allocated[i], arf_rdata[i+4], issue_r2[i], issue_v2[i], issue_q2[i],
+                   issue_rd_rob_idx[i], rename_sel_uops[i].ftq_id, rename_sel_uops[i].fetch_epoch, backend_flush);
+          trace_inc++;
+        end
+      end
+      if (trace_inc != 0) begin
+        be_opr_trace_cnt_q <= be_opr_trace_cnt_q + trace_inc;
+      end
+    end
+  end
+`endif
 
   // =========================================================
   // FU Demux + Packing
@@ -841,7 +1033,11 @@ module backend #(
           end
           FU_LSU:    lsu_need_cnt++;
           FU_MUL,
-          FU_DIV:    mdu_need_cnt++;
+          FU_DIV: begin
+            // Reuse ALU issue/execute path for M-extension ops.
+            alu_need_cnt++;
+            mdu_need_cnt++;
+          end
           FU_CSR:    csr_need_cnt++;
           default:   alu_need_cnt++;
         endcase
@@ -950,7 +1146,9 @@ module backend #(
     for (int i = 0; i < DISPATCH_WIDTH; i++) begin
       if (issue_valid[i]) begin
         unique case (rename_sel_uops[i].fu)
-          FU_ALU: begin
+          FU_ALU,
+          FU_MUL,
+          FU_DIV: begin
             alu_dispatch_valid[alu_k] = 1'b1;
             alu_dispatch_op[alu_k]    = rename_sel_uops[i];
             alu_dispatch_dst[alu_k]   = issue_rd_rob_idx[i];
@@ -1048,6 +1246,7 @@ module backend #(
       .clk(clk_i),
       .rst_n(rst_ni),
       .flush_i(backend_flush),
+      .rob_head_i(rob_head_ptr),
 
       .dispatch_valid(alu_dispatch_valid),
       .dispatch_op   (alu_dispatch_op),
@@ -1103,7 +1302,7 @@ module backend #(
       .rst_n(rst_ni),
       .flush_i(backend_flush),
       .head_en_i(1'b0),
-      .head_tag_i('0),
+      .head_tag_i(rob_head_ptr),
 
       .dispatch_valid(bru_dispatch_valid),
       .dispatch_op   (bru_dispatch_op),
@@ -1154,6 +1353,8 @@ module backend #(
       .dispatch_sb_id(lsu_dispatch_sb_id),
 
       .rob_head_i(rob_head_ptr),
+      .mispred_block_i(lsu_issue_block_mispred),
+      .spec_low_addr_block_en_i(lsu_spec_low_addr_block_en),
 
       .fu_ready_i(lsu_req_ready),
 
@@ -1212,12 +1413,13 @@ module backend #(
   );
 
 
-  // Backpressure calculation (MDU not implemented yet)
+  // Backpressure calculation
   always_comb begin
     alu_can_accept = (alu_need_cnt == 0) ? 1'b1 : (alu_free_count >= alu_need_cnt);
     bru_can_accept = (bru_need_cnt == 0) ? 1'b1 : (bru_free_count >= bru_need_cnt);
     lsu_can_accept = (lsu_need_cnt == 0) ? 1'b1 : (lsu_free_count >= lsu_need_cnt);
-    mdu_can_accept = (mdu_need_cnt == 0) ? 1'b1 : 1'b0;  // placeholder
+    // M-extension ops are currently scheduled via ALU queues.
+    mdu_can_accept = 1'b1;
     csr_can_accept = (csr_need_cnt == 0) ? 1'b1 : (csr_free_count >= csr_need_cnt);
   end
 
@@ -1354,6 +1556,11 @@ module backend #(
       .alu_redirect_pc_o(bru_redirect_pc)
   );
 
+  // Block LSU issue in cycles where any branch/jump mispredict is resolved.
+  // This prevents same-cycle wrong-path memory ops from escaping before flush.
+  assign lsu_issue_block_mispred = alu0_mispred | alu1_mispred | alu2_mispred | alu3_mispred |
+                                   bru_mispred;
+
   // LSU
   logic lsu_en;
   decode_pkg::uop_t lsu_uop;
@@ -1382,6 +1589,39 @@ module backend #(
   logic [Cfg.XLEN-1:0] lsu_ld_rsp_data;
   logic lsu_ld_rsp_err;
   logic [LSU_LD_ID_WIDTH-1:0] lsu_ld_rsp_id;
+  logic dcache_ld_req_valid;
+  logic dcache_ld_req_ready;
+  logic [Cfg.PLEN-1:0] dcache_ld_req_addr;
+  decode_pkg::lsu_op_e dcache_ld_req_op;
+  logic [DCACHE_LD_ID_WIDTH-1:0] dcache_ld_req_id;
+  logic dcache_ld_rsp_valid;
+  logic dcache_ld_rsp_ready;
+  logic [Cfg.XLEN-1:0] dcache_ld_rsp_data;
+  logic dcache_ld_rsp_err;
+  logic [DCACHE_LD_ID_WIDTH-1:0] dcache_ld_rsp_id;
+  logic dcache_st_req_valid;
+  logic dcache_st_req_ready;
+  logic [Cfg.PLEN-1:0] dcache_st_req_addr;
+  logic [Cfg.XLEN-1:0] dcache_st_req_data;
+  decode_pkg::lsu_op_e dcache_st_req_op;
+  logic lsu_pte_req_valid;
+  logic lsu_pte_req_ready;
+  logic [31:0] lsu_pte_req_paddr;
+  logic lsu_pte_rsp_valid;
+  logic [31:0] lsu_pte_rsp_data;
+  logic lsu_pte_upd_valid;
+  logic lsu_pte_upd_ready;
+  logic [31:0] lsu_pte_upd_paddr;
+  logic [31:0] lsu_pte_upd_data;
+  logic ifu_pte_req_valid;
+  logic ifu_pte_req_ready;
+  logic [31:0] ifu_pte_req_paddr;
+  logic ifu_pte_rsp_valid;
+  logic [31:0] ifu_pte_rsp_data;
+  logic ifu_pte_upd_valid;
+  logic ifu_pte_upd_ready;
+  logic [31:0] ifu_pte_upd_paddr;
+  logic [31:0] ifu_pte_upd_data;
   logic [$clog2(LSU_LQ_DEPTH + 1)-1:0] lsu_lq_count_dbg;
   logic lsu_lq_head_valid_dbg;
   logic [ROB_IDX_WIDTH-1:0] lsu_lq_head_rob_tag_dbg;
@@ -1398,6 +1638,80 @@ module backend #(
   assign mem_dep_req_fire = lsu_en && lsu_req_ready;
   assign mem_dep_req_addr_xlen = lsu_v1 + lsu_uop.imm;
   assign mem_dep_req_addr = mem_dep_req_addr_xlen[Cfg.PLEN-1:0];
+  assign ifu_pte_req_valid = ifu_pte_ld_req_valid_i;
+  assign ifu_pte_req_paddr = ifu_pte_ld_req_paddr_i;
+  assign ifu_pte_upd_valid = ifu_pte_st_req_valid_i;
+  assign ifu_pte_upd_paddr = ifu_pte_st_req_paddr_i;
+  assign ifu_pte_upd_data = ifu_pte_st_req_data_i;
+  assign ifu_pte_ld_req_ready_o = ifu_pte_req_ready;
+  assign ifu_pte_ld_rsp_valid_o = ifu_pte_rsp_valid;
+  assign ifu_pte_ld_rsp_data_o = ifu_pte_rsp_data;
+  assign ifu_pte_st_req_ready_o = ifu_pte_upd_ready;
+
+  backend_mmu_dcache_mux #(
+      .PLEN(Cfg.PLEN),
+      .XLEN(Cfg.XLEN),
+      .LSU_LD_ID_WIDTH(LSU_LD_ID_WIDTH)
+  ) u_mmu_dcache_mux (
+      .clk_i(clk_i),
+      .rst_ni(rst_ni),
+      .flush_i(backend_flush),
+
+      .lsu_ld_req_valid_i(lsu_ld_req_valid),
+      .lsu_ld_req_ready_o(lsu_ld_req_ready),
+      .lsu_ld_req_addr_i(lsu_ld_req_addr),
+      .lsu_ld_req_op_i(lsu_ld_req_op),
+      .lsu_ld_req_id_i(lsu_ld_req_id),
+      .lsu_ld_rsp_valid_o(lsu_ld_rsp_valid),
+      .lsu_ld_rsp_ready_i(lsu_ld_rsp_ready),
+      .lsu_ld_rsp_data_o(lsu_ld_rsp_data),
+      .lsu_ld_rsp_err_o(lsu_ld_rsp_err),
+      .lsu_ld_rsp_id_o(lsu_ld_rsp_id),
+
+      .pte_ld_req_valid_i(lsu_pte_req_valid),
+      .pte_ld_req_ready_o(lsu_pte_req_ready),
+      .pte_ld_req_paddr_i(lsu_pte_req_paddr),
+      .pte_ld_rsp_valid_o(lsu_pte_rsp_valid),
+      .pte_ld_rsp_data_o(lsu_pte_rsp_data),
+      .ifu_pte_ld_req_valid_i(ifu_pte_req_valid),
+      .ifu_pte_ld_req_ready_o(ifu_pte_req_ready),
+      .ifu_pte_ld_req_paddr_i(ifu_pte_req_paddr),
+      .ifu_pte_ld_rsp_valid_o(ifu_pte_rsp_valid),
+      .ifu_pte_ld_rsp_data_o(ifu_pte_rsp_data),
+
+      .sb_st_req_valid_i(sb_dcache_req_valid),
+      .sb_st_req_ready_o(sb_dcache_req_ready),
+      .sb_st_req_addr_i(sb_dcache_req_addr),
+      .sb_st_req_data_i(sb_dcache_req_data),
+      .sb_st_req_op_i(sb_dcache_req_op),
+
+      .pte_st_req_valid_i(lsu_pte_upd_valid),
+      .pte_st_req_ready_o(lsu_pte_upd_ready),
+      .pte_st_req_paddr_i(lsu_pte_upd_paddr),
+      .pte_st_req_data_i(lsu_pte_upd_data),
+      .ifu_pte_st_req_valid_i(ifu_pte_upd_valid),
+      .ifu_pte_st_req_ready_o(ifu_pte_upd_ready),
+      .ifu_pte_st_req_paddr_i(ifu_pte_upd_paddr),
+      .ifu_pte_st_req_data_i(ifu_pte_upd_data),
+
+      .dcache_ld_req_valid_o(dcache_ld_req_valid),
+      .dcache_ld_req_ready_i(dcache_ld_req_ready),
+      .dcache_ld_req_addr_o(dcache_ld_req_addr),
+      .dcache_ld_req_op_o(dcache_ld_req_op),
+      .dcache_ld_req_id_o(dcache_ld_req_id),
+
+      .dcache_ld_rsp_valid_i(dcache_ld_rsp_valid),
+      .dcache_ld_rsp_ready_o(dcache_ld_rsp_ready),
+      .dcache_ld_rsp_data_i(dcache_ld_rsp_data),
+      .dcache_ld_rsp_err_i(dcache_ld_rsp_err),
+      .dcache_ld_rsp_id_i(dcache_ld_rsp_id),
+
+      .dcache_st_req_valid_o(dcache_st_req_valid),
+      .dcache_st_req_ready_i(dcache_st_req_ready),
+      .dcache_st_req_addr_o(dcache_st_req_addr),
+      .dcache_st_req_data_o(dcache_st_req_data),
+      .dcache_st_req_op_o(dcache_st_req_op)
+  );
 
   mem_dep_predictor #(
       .ROB_IDX_WIDTH(ROB_IDX_WIDTH),
@@ -1437,6 +1751,11 @@ module backend #(
       .rob_tag_i  (lsu_dst),
       .rob_head_i (rob_head_ptr),
       .sb_id_i    (lsu_sb_id),
+      .mmu_satp_i(csr_satp_state),
+      .mmu_priv_i(csr_priv_mode),
+      .mmu_sum_i(csr_mstatus_sum),
+      .mmu_mxr_i(csr_mstatus_mxr),
+      .mmu_sfence_vma_i(csr_sfence_vma_flush),
 
       .sb_ex_valid_o(sb_ex_valid),
       .sb_ex_sb_id_o(sb_ex_sb_id),
@@ -1461,6 +1780,15 @@ module backend #(
       .ld_rsp_ready_o(lsu_ld_rsp_ready),
       .ld_rsp_data_i (lsu_ld_rsp_data),
       .ld_rsp_err_i  (lsu_ld_rsp_err),
+      .pte_req_valid_o(lsu_pte_req_valid),
+      .pte_req_ready_i(lsu_pte_req_ready),
+      .pte_req_paddr_o(lsu_pte_req_paddr),
+      .pte_rsp_valid_i(lsu_pte_rsp_valid),
+      .pte_rsp_data_i(lsu_pte_rsp_data),
+      .pte_upd_valid_o(lsu_pte_upd_valid),
+      .pte_upd_ready_i(lsu_pte_upd_ready),
+      .pte_upd_paddr_o(lsu_pte_upd_paddr),
+      .pte_upd_data_o(lsu_pte_upd_data),
 
       .wb_valid_o      (lsu_wb_valid),
       .wb_rob_idx_o    (lsu_wb_tag),
@@ -1490,6 +1818,64 @@ module backend #(
   logic [Cfg.XLEN-1:0] csr_wb_data;
   logic csr_wb_exception;
   logic [4:0] csr_wb_ecause;
+  logic csr_wb_is_mispred;
+  logic [Cfg.PLEN-1:0] csr_wb_redirect_pc;
+  logic csr_irq_inject;
+  logic csr_rob_exception_inject;
+  logic csr_ifetch_fault_inject;
+  logic csr_async_exception_inject;
+  logic csr_exec_valid;
+  decode_pkg::uop_t csr_exec_uop;
+  logic [Cfg.XLEN-1:0] csr_exec_v1;
+  logic [ROB_IDX_WIDTH-1:0] csr_exec_dst;
+  logic [Cfg.PLEN-1:0] csr_exec_trap_pc;
+  logic [4:0] csr_exec_async_ecause;
+  logic [Cfg.PLEN-1:0] csr_exec_async_tval;
+  logic [Cfg.XLEN-1:0] csr_satp_state;
+  logic [1:0] csr_priv_mode;
+  logic csr_mstatus_sum;
+  logic csr_mstatus_mxr;
+  logic csr_sfence_vma_flush;
+
+  always_comb begin
+    csr_rob_exception_inject = rob_sync_exception_pending_q && !csr_en;
+    csr_ifetch_fault_inject = ifetch_fault_valid_i && !csr_en && !csr_rob_exception_inject;
+    csr_async_exception_inject = csr_rob_exception_inject || csr_ifetch_fault_inject;
+    csr_irq_inject = (timer_irq_i || ext_irq_i) && !rob_empty && !csr_en &&
+                     !csr_rob_exception_inject && !csr_ifetch_fault_inject;
+    csr_exec_valid = csr_en || csr_rob_exception_inject || csr_irq_inject ||
+                     csr_ifetch_fault_inject;
+    csr_exec_uop = csr_uop;
+    csr_exec_v1 = csr_v1;
+    csr_exec_dst = csr_dst;
+    csr_exec_trap_pc = csr_uop.pc;
+    csr_exec_async_ecause = rob_sync_exception_cause_q;
+    csr_exec_async_tval = rob_sync_exception_tval_q;
+    ifetch_fault_ready_o = csr_ifetch_fault_inject;
+
+    if (csr_rob_exception_inject) begin
+      csr_exec_uop = '0;
+      csr_exec_v1 = '0;
+      csr_exec_dst = rob_head_ptr;
+      csr_exec_trap_pc = rob_sync_exception_pc_q;
+      csr_exec_async_ecause = rob_sync_exception_cause_q;
+      csr_exec_async_tval = rob_sync_exception_tval_q;
+    end else if (csr_ifetch_fault_inject) begin
+      csr_exec_uop = '0;
+      csr_exec_v1 = '0;
+      csr_exec_dst = rob_head_ptr;
+      csr_exec_trap_pc = ifetch_fault_pc_i;
+      csr_exec_async_ecause = ifetch_fault_cause_i;
+      csr_exec_async_tval = ifetch_fault_tval_i;
+    end else if (csr_irq_inject) begin
+      csr_exec_uop = '0;
+      csr_exec_v1 = '0;
+      csr_exec_dst = rob_head_ptr;
+      csr_exec_trap_pc = rob_head_pc;
+      csr_exec_async_ecause = '0;
+      csr_exec_async_tval = '0;
+    end
+  end
 
   execute_csr #(
       .Cfg  (Cfg),
@@ -1498,17 +1884,52 @@ module backend #(
   ) u_csr (
       .clk_i      (clk_i),
       .rst_ni     (rst_ni),
-      .csr_valid_i(csr_en),
-      .uop_i      (csr_uop),
-      .rs1_data_i (csr_v1),
-      .rob_tag_i  (csr_dst),
+      .csr_valid_i(csr_exec_valid),
+      .uop_i      (csr_exec_uop),
+      .rs1_data_i (csr_exec_v1),
+      .rob_tag_i  (csr_exec_dst),
+      .interrupt_inject_i(csr_irq_inject),
+      .async_exception_inject_i(csr_async_exception_inject),
+      .async_exception_cause_i(csr_exec_async_ecause),
+      .async_exception_tval_i(csr_exec_async_tval),
+      .timer_irq_i(timer_irq_i),
+      .external_irq_i(ext_irq_i),
+      .trap_pc_i(csr_exec_trap_pc),
 
       .csr_valid_o  (csr_wb_valid),
       .csr_rob_tag_o(csr_wb_tag),
       .csr_result_o (csr_wb_data),
       .csr_exception_o(csr_wb_exception),
-      .csr_ecause_o   (csr_wb_ecause)
+      .csr_ecause_o   (csr_wb_ecause),
+      .csr_is_mispred_o(csr_wb_is_mispred),
+      .csr_redirect_pc_o(csr_wb_redirect_pc),
+      .irq_trap_o(csr_irq_trap),
+      .irq_trap_cause_o(csr_irq_trap_cause),
+      .irq_trap_pc_o(csr_irq_trap_pc),
+      .irq_trap_redirect_pc_o(csr_irq_trap_redirect_pc),
+      .satp_o(csr_satp_state),
+      .priv_mode_o(csr_priv_mode),
+      .mstatus_sum_o(csr_mstatus_sum),
+      .mstatus_mxr_o(csr_mstatus_mxr),
+      .sfence_vma_flush_o(csr_sfence_vma_flush)
   );
+
+  assign mmu_satp_o = csr_satp_state;
+  assign mmu_priv_o = csr_priv_mode;
+  assign mmu_sum_o = csr_mstatus_sum;
+  assign mmu_mxr_o = csr_mstatus_mxr;
+  assign mmu_sfence_vma_o = csr_sfence_vma_flush;
+  // Only apply speculative low-address LSU guard when address translation is active.
+  assign lsu_spec_low_addr_block_en = csr_satp_state[31] && (csr_priv_mode != 2'b11);
+
+  wire _unused_csr_state = &{
+      1'b0,
+      csr_satp_state[0],
+      csr_priv_mode,
+      csr_mstatus_sum,
+      csr_mstatus_mxr,
+      csr_sfence_vma_flush
+  };
 
   // =========================================================
   // Writeback (CDB)
@@ -1574,6 +1995,8 @@ module backend #(
     fu_rob_idx[6]     = csr_wb_tag;
     fu_exception[6]   = csr_wb_exception;
     fu_ecause[6]      = csr_wb_ecause;
+    fu_is_mispred[6]  = csr_wb_is_mispred;
+    fu_redirect_pc[6] = csr_wb_redirect_pc;
   end
 
   logic [WB_WIDTH-1:0]                    wb_raw_valid;
@@ -1666,31 +2089,31 @@ module backend #(
   dcache #(
       .Cfg(Cfg),
       .N_MSHR(DCACHE_MSHR_SIZE),
-      .LD_PORT_ID_WIDTH(LSU_LD_ID_WIDTH)
+      .LD_PORT_ID_WIDTH(DCACHE_LD_ID_WIDTH)
   ) u_dcache (
       .clk_i  (clk_i),
       .rst_ni (rst_ni),
       .flush_i(backend_flush),
 
-      // Load port (from LSU)
-      .ld_req_valid_i(lsu_ld_req_valid),
-      .ld_req_ready_o(lsu_ld_req_ready),
-      .ld_req_addr_i (lsu_ld_req_addr),
-      .ld_req_op_i   (lsu_ld_req_op),
-      .ld_req_id_i   (lsu_ld_req_id),
+      // Load port (from LSU/MMU arbiter)
+      .ld_req_valid_i(dcache_ld_req_valid),
+      .ld_req_ready_o(dcache_ld_req_ready),
+      .ld_req_addr_i (dcache_ld_req_addr),
+      .ld_req_op_i   (dcache_ld_req_op),
+      .ld_req_id_i   (dcache_ld_req_id),
 
-      .ld_rsp_valid_o(lsu_ld_rsp_valid),
-      .ld_rsp_ready_i(lsu_ld_rsp_ready),
-      .ld_rsp_data_o (lsu_ld_rsp_data),
-      .ld_rsp_err_o  (lsu_ld_rsp_err),
-      .ld_rsp_id_o   (lsu_ld_rsp_id),
+      .ld_rsp_valid_o(dcache_ld_rsp_valid),
+      .ld_rsp_ready_i(dcache_ld_rsp_ready),
+      .ld_rsp_data_o (dcache_ld_rsp_data),
+      .ld_rsp_err_o  (dcache_ld_rsp_err),
+      .ld_rsp_id_o   (dcache_ld_rsp_id),
 
-      // Store port (from Store Buffer)
-      .st_req_valid_i(sb_dcache_req_valid),
-      .st_req_ready_o(sb_dcache_req_ready),
-      .st_req_addr_i (sb_dcache_req_addr),
-      .st_req_data_i (sb_dcache_req_data),
-      .st_req_op_i   (sb_dcache_req_op),
+      // Store port (from SB/MMU arbiter)
+      .st_req_valid_i(dcache_st_req_valid),
+      .st_req_ready_o(dcache_st_req_ready),
+      .st_req_addr_i (dcache_st_req_addr),
+      .st_req_data_i (dcache_st_req_data),
+      .st_req_op_i   (dcache_st_req_op),
 
       // Miss/Refill interface (to memory)
       .miss_req_valid_o     (dcache_miss_req_valid_o),

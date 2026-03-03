@@ -27,7 +27,15 @@ package decode_pkg;
     ALU_SRA,
     ALU_LUI,
     ALU_AUIPC,
-    ALU_NOP
+    ALU_NOP,
+    ALU_MUL,
+    ALU_MULH,
+    ALU_MULHSU,
+    ALU_MULHU,
+    ALU_DIV,
+    ALU_DIVU,
+    ALU_REM,
+    ALU_REMU
   } alu_op_e;
 
   typedef enum logic [2:0] {
@@ -89,6 +97,7 @@ package decode_pkg;
     // PC & 控制流信息
     logic [Cfg.PLEN-1:0] pc;
     logic [Cfg.PLEN-1:0] pred_npc;
+    logic is_rvc;
     logic [FTQ_ID_W-1:0] ftq_id;
     logic [FETCH_EPOCH_W-1:0] fetch_epoch;
 
@@ -103,6 +112,9 @@ package decode_pkg;
     logic is_ecall;
     logic is_ebreak;
     logic is_mret;
+    logic is_sret;
+    logic is_wfi;
+    logic is_sfence_vma;
 
     // CSR 相关字段
     logic [11:0] csr_addr;

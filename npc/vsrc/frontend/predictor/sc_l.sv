@@ -22,7 +22,7 @@ module sc_l #(
     input logic update_taken_i
 );
   localparam int unsigned INSTR_BYTES = Cfg.ILEN / 8;
-  localparam int unsigned INSTR_ADDR_LSB = (INSTR_BYTES > 1) ? $clog2(INSTR_BYTES) : 0;
+  localparam int unsigned INSTR_ADDR_LSB = 1;
   localparam int unsigned IDX_W = (ENTRIES > 1) ? $clog2(ENTRIES) : 1;
   localparam int unsigned GHR_W = (GHR_BITS > 0) ? GHR_BITS : 1;
   localparam logic signed [CTR_BITS-1:0] SC_MAX =

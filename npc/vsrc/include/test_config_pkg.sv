@@ -9,6 +9,7 @@ package test_config_pkg;
       XLEN          : unsigned'(32),
       VLEN          : unsigned'(32),
       ILEN          : unsigned'(32),
+      RESET_VECTOR  : unsigned'(32'h80000000),
       BPU_USE_GSHARE : unsigned'(1),
       BPU_USE_TAGE : unsigned'(1),
       BPU_USE_TOURNAMENT : unsigned'(1),

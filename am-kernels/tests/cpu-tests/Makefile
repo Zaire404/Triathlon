@@ -2,6 +2,7 @@
 
 RESULT = .result
 $(shell > $(RESULT))
+LOCAL_AM_HOME = $(abspath $(CURDIR)/../../../abstract-machine)
 
 COLOR_RED   = \033[1;31m
 COLOR_GREEN = \033[1;32m
@@ -15,8 +16,8 @@ all: $(addprefix Makefile., $(ALL))
 $(ALL): %: Makefile.%
 
 Makefile.%: tests/%.c latest
-	@/bin/echo -e "NAME = $*\nSRCS = $<\ninclude $${AM_HOME}/Makefile" > $@
-	@if make -s -f $@ ARCH=$(ARCH) $(MAKECMDGOALS); then \
+	@printf 'AM_HOME = %s\nNAME = %s\nSRCS = %s\ninclude %s/Makefile\n' "$(LOCAL_AM_HOME)" "$*" "$<" "$(LOCAL_AM_HOME)" > $@
+	@if AM_HOME="$(LOCAL_AM_HOME)" make -s -f $@ ARCH=$(ARCH) $(MAKECMDGOALS); then \
 		printf "[%14s] $(COLOR_GREEN)PASS$(COLOR_NONE)\n" $* >> $(RESULT); \
 	else \
 		printf "[%14s] $(COLOR_RED)***FAIL***$(COLOR_NONE)\n" $* >> $(RESULT); \

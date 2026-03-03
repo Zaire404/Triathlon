@@ -248,6 +248,8 @@ struct MemSystem {
   }
 
   void drive(Vtb_triathlon *top) {
+    top->timer_irq_i = 0;
+    top->ext_irq_i = 0;
     icache.drive(top);
     dcache.drive(top);
   }
@@ -344,6 +346,9 @@ int main(int argc, char **argv) {
   mem.mem.write_word(0x100, 8);  // n = 8, fib(8)=21
 
   reset(top, mem);
+  expect(static_cast<uint32_t>(top->dbg_lsu_free_count_o) ==
+             static_cast<uint32_t>(top->dbg_free_lsu_o),
+         "LSU debug free-count mirrors backend free-count without truncation");
 
   std::array<uint32_t, 32> rf{};
   bool ok = false;

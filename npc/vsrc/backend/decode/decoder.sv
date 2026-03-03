@@ -22,6 +22,7 @@ module decoder #(
     input  logic [DECODE_WIDTH-1:0][Cfg.PLEN-1:0] ibuf_pcs_i,
     input  logic [DECODE_WIDTH-1:0]               ibuf_slot_valid_i,
     input  logic [DECODE_WIDTH-1:0][Cfg.PLEN-1:0] ibuf_pred_npc_i,
+    input  logic [DECODE_WIDTH-1:0]               ibuf_is_rvc_i,
     input logic [DECODE_WIDTH-1:0][decode_pkg::FTQ_ID_W-1:0] ibuf_ftq_id_i,
     input logic [DECODE_WIDTH-1:0][decode_pkg::FETCH_EPOCH_W-1:0] ibuf_fetch_epoch_i,
 
@@ -31,6 +32,13 @@ module decoder #(
     output logic             [DECODE_WIDTH-1:0] dec_slot_valid_o,
     output decode_pkg::uop_t [DECODE_WIDTH-1:0] dec_uops_o
 );
+
+`ifndef SYNTHESIS
+  localparam int unsigned DEC_PC_DBG_BUDGET = 1024;
+  logic [31:0] dec_pc_dbg_cnt_q;
+  logic dec_diag_trace_en_q;
+  initial dec_diag_trace_en_q = $test$plusargs("npc_diag_trace");
+`endif
 
   // ----------------------------------------------------------------------
   // 0. Static check (current implementation assumes 32-bit instructions)
@@ -58,10 +66,10 @@ module decoder #(
   localparam logic [6:0] OPCODE_OP = 7'b0110011;
   localparam logic [6:0] OPCODE_OP_32 = 7'b0111011;  // RV64I W-type
   localparam logic [6:0] OPCODE_MISC_MEM = 7'b0001111;  // FENCE, FENCE.I
+  localparam logic [6:0] OPCODE_AMO = 7'b0101111;  // A extension
   localparam logic [6:0] OPCODE_SYSTEM = 7'b1110011;  // ECALL/EBREAK/MRET/CSR
 
   // 将来扩展时可以在这里预留更多 opcode：
-  // localparam logic [6:0] OPCODE_AMO       = 7'b0101111; // A extension
   // localparam logic [6:0] OPCODE_LOAD_FP   = 7'b0000111; // F/D
   // localparam logic [6:0] OPCODE_STORE_FP  = 7'b0100111; // F/D
   // localparam logic [6:0] OPCODE_VECTOR    = 7'b1010111; // V extension
@@ -166,6 +174,7 @@ module decoder #(
     logic [6:0] opcode_field;
     logic [2:0] funct3_field;
     logic [6:0] funct7_field;
+    logic [4:0] funct5_field;
 
     begin
       // Bind raw bits to union and derive typed views
@@ -180,6 +189,7 @@ module decoder #(
       opcode_field          = instr_rtype.opcode;
       funct3_field          = instr_rtype.funct3;
       funct7_field          = instr_rtype.funct7;
+      funct5_field          = instr_atype.funct5;
 
       // Default initialization
       uop_decoded.valid     = 1'b1;
@@ -201,6 +211,7 @@ module decoder #(
       uop_decoded.pc        = instr_pc;
       uop_decoded.ftq_id    = '0;
       uop_decoded.fetch_epoch = '0;
+      uop_decoded.is_rvc    = 1'b0;
 
       uop_decoded.is_load   = 1'b0;
       uop_decoded.is_store  = 1'b0;
@@ -212,6 +223,9 @@ module decoder #(
       uop_decoded.is_ecall  = 1'b0;
       uop_decoded.is_ebreak = 1'b0;
       uop_decoded.is_mret   = 1'b0;
+      uop_decoded.is_sret   = 1'b0;
+      uop_decoded.is_wfi    = 1'b0;
+      uop_decoded.is_sfence_vma = 1'b0;
       uop_decoded.csr_addr  = 12'h000;
       uop_decoded.csr_op    = CSR_RW;
 
@@ -395,41 +409,49 @@ module decoder #(
               7'b0000001, 3'b000
             } : begin
               uop_decoded.fu = FU_MUL;  /* MUL   */
+              uop_decoded.alu_op = ALU_MUL;
             end
             {
               7'b0000001, 3'b001
             } : begin
               uop_decoded.fu = FU_MUL;  /* MULH  */
+              uop_decoded.alu_op = ALU_MULH;
             end
             {
               7'b0000001, 3'b010
             } : begin
               uop_decoded.fu = FU_MUL;  /* MULHSU*/
+              uop_decoded.alu_op = ALU_MULHSU;
             end
             {
               7'b0000001, 3'b011
             } : begin
               uop_decoded.fu = FU_MUL;  /* MULHU */
+              uop_decoded.alu_op = ALU_MULHU;
             end
             {
               7'b0000001, 3'b100
             } : begin
               uop_decoded.fu = FU_DIV;  /* DIV   */
+              uop_decoded.alu_op = ALU_DIV;
             end
             {
               7'b0000001, 3'b101
             } : begin
               uop_decoded.fu = FU_DIV;  /* DIVU  */
+              uop_decoded.alu_op = ALU_DIVU;
             end
             {
               7'b0000001, 3'b110
             } : begin
               uop_decoded.fu = FU_DIV;  /* REM   */
+              uop_decoded.alu_op = ALU_REM;
             end
             {
               7'b0000001, 3'b111
             } : begin
               uop_decoded.fu = FU_DIV;  /* REMU  */
+              uop_decoded.alu_op = ALU_REMU;
             end
 
             default: uop_decoded.illegal = 1'b1;
@@ -459,12 +481,60 @@ module decoder #(
         end
 
         // -------------------------
+        // Atomic memory operations (A extension, RV32A word form)
+        // -------------------------
+        OPCODE_AMO: begin
+          uop_decoded.fu      = FU_LSU;
+          uop_decoded.has_rs1 = 1'b1;
+          uop_decoded.has_rd  = (instr_rtype.rd != '0);
+
+          if (funct3_field != 3'b010) begin
+            uop_decoded.illegal = 1'b1;
+          end else begin
+            unique case (funct5_field)
+              5'b00010: begin  // LR.W
+                if (instr_atype.rs2 != 5'b0) begin
+                  uop_decoded.illegal = 1'b1;
+                end else begin
+                  uop_decoded.rs2     = '0;
+                  uop_decoded.has_rs2 = 1'b0;
+                  uop_decoded.is_load = 1'b1;
+                  uop_decoded.lsu_op  = LSU_LW;
+                end
+              end
+
+              5'b00011: begin  // SC.W
+                uop_decoded.has_rs2  = 1'b1;
+                uop_decoded.is_store = 1'b1;
+                uop_decoded.lsu_op   = LSU_SW;
+              end
+
+              // AMOSWAP/ADD/XOR/AND/OR/MIN/MAX/MINU/MAXU
+              5'b00001, 5'b00000, 5'b00100, 5'b01100, 5'b01000, 5'b10000,
+              5'b10100, 5'b11000, 5'b11100: begin
+                uop_decoded.has_rs2  = 1'b1;
+                uop_decoded.is_load  = 1'b1;
+                uop_decoded.is_store = 1'b1;
+                uop_decoded.lsu_op   = LSU_SW;
+              end
+
+              default: begin
+                uop_decoded.illegal = 1'b1;
+              end
+            endcase
+          end
+        end
+
+        // -------------------------
         // Fence / Fence.I
         // -------------------------
         OPCODE_MISC_MEM: begin
           uop_decoded.fu       = FU_ALU;
           uop_decoded.is_fence = 1'b1;
-          // TODO: 更精细的 fence 语义，如果你的 memory system 需要
+          // RV32I: FENCE(funct3=000), Zifencei: FENCE.I(funct3=001)
+          if (!(funct3_field inside {3'b000, 3'b001})) begin
+            uop_decoded.illegal = 1'b1;
+          end
         end
 
         // -------------------------
@@ -474,14 +544,25 @@ module decoder #(
         OPCODE_SYSTEM: begin
           unique case (funct3_field)
             3'b000: begin
-              // 当前后端未实现异常/特权处理：将系统指令降级为 ALU NOP，
-              // 以保证 ECALL/EBREAK/MRET 可以正常退休（由软件/仿真层处理）。
-              uop_decoded.fu     = FU_ALU;
-              uop_decoded.alu_op = ALU_NOP;
+              // Privileged SYSTEM instructions are handled by CSR FU.
+              uop_decoded.fu     = FU_CSR;
               uop_decoded.is_csr = 1'b0;
+              uop_decoded.rs2    = '0;
+              uop_decoded.has_rs2 = 1'b0;
+              uop_decoded.has_rs1 = 1'b0;
+              uop_decoded.has_rd  = 1'b0;
               if (instr_itype.imm == 12'h000) uop_decoded.is_ecall = 1'b1;
               else if (instr_itype.imm == 12'h001) uop_decoded.is_ebreak = 1'b1;
               else if (instr_itype.imm == 12'h302) uop_decoded.is_mret = 1'b1;
+              else if (instr_itype.imm == 12'h102) uop_decoded.is_sret = 1'b1;
+              else if (instr_itype.imm == 12'h105) uop_decoded.is_wfi = 1'b1;
+              else if (instr_itype.imm == 12'h120) begin
+                uop_decoded.is_sfence_vma = 1'b1;
+                uop_decoded.has_rs1 = 1'b1;
+                uop_decoded.has_rs2 = 1'b1;
+                uop_decoded.rs1 = instr_rtype.rs1;
+                uop_decoded.rs2 = instr_rtype.rs2;
+              end
               else uop_decoded.illegal = 1'b1;
             end
 
@@ -549,6 +630,35 @@ module decoder #(
         end
       endcase
 
+      // Narrow guard: only reroute illegal uops that would otherwise enter LSU issue.
+      // This prevents FU_LSU non-load/store entries from deadlocking the backend.
+      if (uop_decoded.illegal && (uop_decoded.fu == FU_LSU)) begin
+        uop_decoded.fu      = FU_CSR;
+        uop_decoded.alu_op  = ALU_NOP;
+        uop_decoded.is_load = 1'b0;
+        uop_decoded.is_store = 1'b0;
+        uop_decoded.is_branch = 1'b0;
+        uop_decoded.is_jump   = 1'b0;
+        uop_decoded.is_fence  = 1'b0;
+        uop_decoded.is_word_op = 1'b0;
+        uop_decoded.is_csr   = 1'b0;
+        uop_decoded.is_ecall = 1'b0;
+        uop_decoded.is_ebreak = 1'b0;
+        uop_decoded.is_mret  = 1'b0;
+        uop_decoded.is_sret  = 1'b0;
+        uop_decoded.is_wfi   = 1'b0;
+        uop_decoded.is_sfence_vma = 1'b0;
+        uop_decoded.has_rs1  = 1'b0;
+        uop_decoded.has_rs2  = 1'b0;
+        uop_decoded.has_rd   = 1'b0;
+        uop_decoded.rs1      = '0;
+        uop_decoded.rs2      = '0;
+        uop_decoded.rd       = '0;
+        uop_decoded.imm      = '0;
+        uop_decoded.csr_addr = 12'h000;
+        uop_decoded.csr_op   = CSR_RW;
+      end
+
       decode_one_instruction = uop_decoded;
     end
   endfunction
@@ -562,10 +672,39 @@ module decoder #(
       lane_uop = decode_one_instruction(ibuf_instrs_i[lane_index], ibuf_pcs_i[lane_index]);
       lane_uop.valid = ibuf2dec_valid_i && ibuf_slot_valid_i[lane_index];
       lane_uop.pred_npc = ibuf_pred_npc_i[lane_index];
+      lane_uop.is_rvc = ibuf_is_rvc_i[lane_index];
       lane_uop.ftq_id = ibuf_ftq_id_i[lane_index];
       lane_uop.fetch_epoch = ibuf_fetch_epoch_i[lane_index];
       dec_uops_o[lane_index] = lane_uop;
     end
   end
+
+`ifndef SYNTHESIS
+  always_ff @(posedge clk_i or negedge rst_ni) begin
+    if (!rst_ni) begin
+      dec_pc_dbg_cnt_q <= '0;
+    end else if (dec_diag_trace_en_q && ibuf2dec_valid_i && backend2dec_ready_i) begin
+      logic [31:0] dec_pc_dbg_cnt_n;
+      dec_pc_dbg_cnt_n = dec_pc_dbg_cnt_q;
+      for (int i = 0; i < DECODE_WIDTH; i++) begin
+        logic watch_pc;
+        watch_pc = ibuf_slot_valid_i[i] &&
+                   (((ibuf_pcs_i[i] >= 32'hc0803b30) && (ibuf_pcs_i[i] <= 32'hc0803c20)) ||
+                    ((ibuf_pcs_i[i] >= 32'hc0803d50) && (ibuf_pcs_i[i] <= 32'hc0803d72)) ||
+                    ((ibuf_pcs_i[i] >= 32'hc0803d80) && (ibuf_pcs_i[i] <= 32'hc0803dd0)) ||
+                    ((ibuf_pcs_i[i] >= 32'hc080ab50) && (ibuf_pcs_i[i] <= 32'hc080ab90)) ||
+                    ((ibuf_pcs_i[i] >= 32'hc07872b0) && (ibuf_pcs_i[i] <= 32'hc07873f0)) ||
+                    ((ibuf_pcs_i[i] >= 32'hc0097640) && (ibuf_pcs_i[i] <= 32'hc0097670)));
+        if (watch_pc && (dec_pc_dbg_cnt_n < DEC_PC_DBG_BUDGET)) begin
+          $display("[dec-pc] pc=%h instr=%h lo16=%h is_rvc=%0d pred_npc=%h slot=%0d ftq=%0d epoch=%0d",
+                   ibuf_pcs_i[i], ibuf_instrs_i[i], ibuf_instrs_i[i][15:0], ibuf_is_rvc_i[i],
+                   ibuf_pred_npc_i[i], i, ibuf_ftq_id_i[i], ibuf_fetch_epoch_i[i]);
+          dec_pc_dbg_cnt_n = dec_pc_dbg_cnt_n + 32'd1;
+        end
+      end
+      dec_pc_dbg_cnt_q <= dec_pc_dbg_cnt_n;
+    end
+  end
+`endif
 
 endmodule

@@ -39,6 +39,9 @@ void ProfileCollector::on_no_commit_cycle(uint64_t cycles,
               << " fe(v/r/pc)=" << static_cast<int>(top->dbg_fe_valid_o) << "/"
               << static_cast<int>(top->dbg_fe_ready_o) << "/0x" << std::hex
               << top->dbg_fe_pc_o
+              << " fe_inst(0/1)=0x"
+              << static_cast<uint32_t>(top->dbg_fe_instrs_o[0]) << "/0x"
+              << static_cast<uint32_t>(top->dbg_fe_instrs_o[1])
               << " ifu_req(v/r/fire/inflight)=" << std::dec
               << static_cast<int>(top->dbg_ifu_req_valid_o) << "/"
               << static_cast<int>(top->dbg_ifu_req_ready_o) << "/"
@@ -52,6 +55,29 @@ void ProfileCollector::on_no_commit_cycle(uint64_t cycles,
               << static_cast<int>(top->dbg_ifu_fq_full_o) << "/"
               << static_cast<int>(top->dbg_ifu_fq_empty_o) << "/"
               << static_cast<int>(top->dbg_ifu_ibuf_pop_o)
+              << " ifu_gate(reqq_empty/inf_full/block_flush/block_reqq_empty/block_inf_full/block_storage)="
+              << static_cast<int>(top->dbg_ifu_reqq_empty_o) << "/"
+              << static_cast<int>(top->dbg_ifu_inf_full_o) << "/"
+              << static_cast<int>(top->dbg_ifu_block_flush_o) << "/"
+              << static_cast<int>(top->dbg_ifu_block_reqq_empty_o) << "/"
+              << static_cast<int>(top->dbg_ifu_block_inf_full_o) << "/"
+              << static_cast<int>(top->dbg_ifu_block_storage_budget_o)
+              << " ifetch_fault(v/r/pending/csr_en/csr_inject/mmu_st)="
+              << static_cast<int>(top->dbg_ifetch_fault_valid_o) << "/"
+              << static_cast<int>(top->dbg_ifetch_fault_ready_o) << "/"
+              << static_cast<int>(top->dbg_ifu_fault_pending_o) << "/"
+              << static_cast<int>(top->dbg_csr_en_o) << "/"
+              << static_cast<int>(top->dbg_csr_ifetch_fault_inject_o) << "/"
+              << static_cast<uint32_t>(top->dbg_ifu_mmu_state_o)
+              << " ifu_mmu(core_st/pte_req_v/r/pte_rsp_v/pte_upd_v/r/mux_inf/owner)="
+              << static_cast<uint32_t>(top->dbg_ifu_mmu_core_state_o) << "/"
+              << static_cast<int>(top->dbg_ifu_pte_req_valid_o) << "/"
+              << static_cast<int>(top->dbg_ifu_pte_req_ready_o) << "/"
+              << static_cast<int>(top->dbg_ifu_pte_rsp_valid_o) << "/"
+              << static_cast<int>(top->dbg_ifu_pte_upd_valid_o) << "/"
+              << static_cast<int>(top->dbg_ifu_pte_upd_ready_o) << "/"
+              << static_cast<int>(top->dbg_mux_mmu_ld_inflight_o) << "/"
+              << static_cast<int>(top->dbg_mux_mmu_ld_owner_o)
               << " dec(v/r)=" << std::dec << static_cast<int>(top->dbg_dec_valid_o) << "/"
               << static_cast<int>(top->dbg_dec_ready_o)
               << " rob_ready=" << static_cast<int>(top->dbg_rob_ready_o)
@@ -86,6 +112,18 @@ void ProfileCollector::on_no_commit_cycle(uint64_t cycles,
               << " lsu_sm=" << static_cast<uint32_t>(top->dbg_lsu_state_o)
               << " lsu_ld_fire=" << static_cast<int>(top->dbg_lsu_ld_fire_o)
               << " lsu_rsp_fire=" << static_cast<int>(top->dbg_lsu_rsp_fire_o)
+              << " lsu_issue(raw/pick/blk)=("
+              << static_cast<int>(top->dbg_lsu_issue_raw0_o) << ","
+              << static_cast<int>(top->dbg_lsu_issue_raw1_o) << ")/("
+              << static_cast<int>(top->dbg_lsu_issue_pick0_o) << ","
+              << static_cast<int>(top->dbg_lsu_issue_pick1_o) << ")/("
+              << static_cast<int>(top->dbg_lsu_issue_blk0_o) << ","
+              << static_cast<int>(top->dbg_lsu_issue_blk1_o) << ")"
+              << " lsu_sel(pc/ld/st/dst)=0x" << std::hex
+              << top->dbg_lsu_sel_pc_o << std::dec << "/"
+              << static_cast<int>(top->dbg_lsu_sel_is_load_o) << "/"
+              << static_cast<int>(top->dbg_lsu_sel_is_store_o) << "/0x"
+              << std::hex << static_cast<uint32_t>(top->dbg_lsu_sel_dst_o) << std::dec
               << " lsu_inflight(tag/addr)=0x" << std::hex
               << static_cast<uint32_t>(top->dbg_lsu_inflight_tag_o)
               << "/0x" << top->dbg_lsu_inflight_addr_o
@@ -94,6 +132,16 @@ void ProfileCollector::on_no_commit_cycle(uint64_t cycles,
               << std::dec << "/" << static_cast<int>(top->dbg_lsu_grp_alloc_fire_o)
               << "/0x" << std::hex << static_cast<uint32_t>(top->dbg_lsu_grp_alloc_lane_o)
               << "/0x" << static_cast<uint32_t>(top->dbg_lsu_grp_ld_owner_o)
+              << std::dec
+              << " lsug(req(ld/st)/alloc(lq/sq)/pend/mmu/lq/sq)="
+              << static_cast<int>(top->dbg_lsu_load_req_ready_o) << "/"
+              << static_cast<int>(top->dbg_lsu_store_req_ready_o) << "/"
+              << static_cast<int>(top->dbg_lsu_lq_alloc_ready_o) << "/"
+              << static_cast<int>(top->dbg_lsu_sq_alloc_ready_o) << "/"
+              << static_cast<int>(top->dbg_lsu_pend_valid_o) << "/"
+              << static_cast<uint32_t>(top->dbg_lsu_mmu_state_o) << "/"
+              << static_cast<uint32_t>(top->dbg_lsu_lq_count_o) << "/"
+              << static_cast<uint32_t>(top->dbg_lsu_sq_count_o)
               << " lsu_rs(b/r)=0x" << std::hex
               << static_cast<uint32_t>(top->dbg_lsu_rs_busy_o) << "/0x"
               << static_cast<uint32_t>(top->dbg_lsu_rs_ready_o)
@@ -138,6 +186,13 @@ void ProfileCollector::on_no_commit_cycle(uint64_t cycles,
               << static_cast<int>(top->dcache_miss_req_ready_i)
               << " flush=" << static_cast<int>(top->backend_flush_o)
               << " rdir=0x" << std::hex << top->backend_redirect_pc_o
+              << " rf(cause/exp/mp/br/j)=0x"
+              << static_cast<uint32_t>(top->dbg_rob_flush_cause_o) << "/"
+              << std::dec << static_cast<int>(top->dbg_rob_flush_is_exception_o) << "/"
+              << static_cast<int>(top->dbg_rob_flush_is_mispred_o) << "/"
+              << static_cast<int>(top->dbg_rob_flush_is_branch_o) << "/"
+              << static_cast<int>(top->dbg_rob_flush_is_jump_o)
+              << " rf_src_pc=0x" << std::hex << top->dbg_rob_flush_src_pc_o
               << std::dec
               << " rob_head(fu/comp/is_store/pc)=0x" << std::hex
               << static_cast<uint32_t>(top->dbg_rob_head_fu_o)

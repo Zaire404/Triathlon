@@ -20,7 +20,7 @@ BIN = $(BUILD_DIR)/$(TEST_TB_MODULE)
 
 # --- Verilator ---
 VERILATOR = verilator
-VERILATOR_CFLAGS += -cc --exe --build -O3 --x-assign fast --x-initial fast --assert --trace
+VERILATOR_CFLAGS += -cc --exe --build -O3 --x-assign fast --x-initial fast --assert
 VERILATOR_CFLAGS += --Wno-fatal --Wno-WIDTH
 VERILATOR_CFLAGS += -I./vsrc/include -I./vsrc
 VERILATOR_CFLAGS += -I./csrc/include
@@ -83,32 +83,55 @@ ALL_TESTS_ROOT = $(basename $(notdir $(wildcard ./csrc/test_*.cpp)))
 ALL_TESTS_NESTED = $(basename $(notdir $(wildcard ./csrc/test/test_*.cpp)))
 # Deduplicate by test name so the same test can temporarily exist in both paths.
 ALL_TESTS = $(sort $(ALL_TESTS_ROOT) $(ALL_TESTS_NESTED))
+RUN_ALL_JOBS ?= $(shell nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)
+RUN_ALL_STATUS_DIR = ./build/run-all-status
+RUN_ALL_TEST_TARGETS = $(addprefix run-one-,$(ALL_TESTS))
 
 .PHONY: run-all
+
+ifneq ($(strip $(ALL_TESTS)),)
+.PHONY: prepare-run-all
+
+prepare-run-all:
+	@mkdir -p ./build
+	@rm -rf $(RUN_ALL_STATUS_DIR)
+	@mkdir -p $(RUN_ALL_STATUS_DIR)
 
 run-all:
 	@echo "============================================="
 	@echo " Running $(words $(ALL_TESTS)) tests found in ./csrc and ./csrc/test"
+	@echo " Parallel jobs: $(RUN_ALL_JOBS)"
 	@echo "============================================="
-	@mkdir -p ./build
-	@rm -f ./build/run-all.fail
-	@for test in $(ALL_TESTS); do \
-		printf "Test %-25s : " "[$$test]"; \
-		$(MAKE) -s -f Makefile_test TEST=$$test run > ./build/$$test.log 2>&1; \
-		if [ $$? -eq 0 ]; then \
-			printf "\033[32mPASS\033[0m\n"; \
-		else \
-			printf "\033[31mFAIL\033[0m\n"; \
+	@$(MAKE) -s -f Makefile_test --no-print-directory -j $(RUN_ALL_JOBS) $(RUN_ALL_TEST_TARGETS)
+	@failed=0; \
+	for test in $(ALL_TESTS); do \
+		if [ -f $(RUN_ALL_STATUS_DIR)/$$test.fail ]; then \
+			failed=1; \
+			printf "Test %-25s : \033[31mFAIL\033[0m\n" "[$$test]"; \
 			printf "    (See details in ./build/$$test.log)\n"; \
 			tail -n 10 ./build/$$test.log | sed 's/^/    | /'; \
-			touch ./build/run-all.fail; \
+		else \
+			printf "Test %-25s : \033[32mPASS\033[0m\n" "[$$test]"; \
 		fi; \
-	done
-	@echo "============================================="
-	@if [ -f ./build/run-all.fail ]; then \
+	done; \
+	echo "============================================="; \
+	if [ $$failed -ne 0 ]; then \
 		printf "\033[31mSummary: Some tests failed.\033[0m\n"; \
-		rm ./build/run-all.fail; \
 		exit 1; \
 	else \
 		printf "\033[32mSummary: All tests passed!\033[0m\n"; \
 	fi
+
+run-one-%: prepare-run-all
+	@test_name="$*"; \
+	$(MAKE) -s -f Makefile_test --no-print-directory TEST=$$test_name run > ./build/$$test_name.log 2>&1; \
+	if [ $$? -eq 0 ]; then \
+		touch $(RUN_ALL_STATUS_DIR)/$$test_name.pass; \
+	else \
+		touch $(RUN_ALL_STATUS_DIR)/$$test_name.fail; \
+	fi
+
+else
+run-all:
+	@echo "No tests found in ./csrc or ./csrc/test."
+endif

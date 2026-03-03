@@ -64,13 +64,57 @@ module reservation_station #(
     output logic [  DATA_W-1:0] out_v1_3,
     output logic [  DATA_W-1:0] out_v2_3
 );
+`ifndef SYNTHESIS
+  localparam int unsigned RS_TRACE_BUDGET = 512;
+  logic [31:0] rs_trace_cnt_q;
+  logic rs_diag_trace_en_q;
+  logic rs_bsearch_trace_en_q;
+  initial rs_diag_trace_en_q = $test$plusargs("npc_diag_trace");
+  initial rs_bsearch_trace_en_q = $test$plusargs("npc_diag_bsearch");
 
-  function automatic logic cdb_hit(input logic [TAG_W-1:0] tag);
+  function automatic logic watch_bsearch_pc(input logic [Cfg.PLEN-1:0] pc);
+    begin
+      watch_bsearch_pc = (pc == 32'hc0399942) ||  // bsearch: mv s1,a2
+                         (pc == 32'hc039994c) ||  // bsearch: srli s3,s1,1
+                         (pc == 32'hc0399950) ||  // bsearch: mul s2,s4,s3
+                         (pc == 32'hc0399956) ||  // bsearch: addi s1,s1,-1
+                         (pc == 32'hc0399958) ||  // bsearch: add s2,s2,s5
+                         (pc == 32'hc039995a) ||  // bsearch: mv a1,s2
+                         (pc == 32'hc0399964) ||  // bsearch: srli s1,s1,1
+                         (pc == 32'hc0399986);    // bsearch: mv s1,s3
+    end
+  endfunction
+`endif
+
+  function automatic logic [TAG_W-1:0] rob_age(
+      input logic [TAG_W-1:0] idx, input logic [TAG_W-1:0] head);
+    logic [TAG_W-1:0] diff;
+    begin
+      diff = idx - head;
+      return diff;
+    end
+  endfunction
+
+  function automatic logic cdb_can_wakeup(
+      input logic [TAG_W-1:0] cdb_idx,
+      input logic [TAG_W-1:0] consumer_idx
+  );
+    begin
+      // Producer must be older than consumer in current ROB age space.
+      cdb_can_wakeup = (rob_age(cdb_idx, head_tag_i) < rob_age(consumer_idx, head_tag_i));
+    end
+  endfunction
+
+  function automatic logic cdb_hit(
+      input logic [TAG_W-1:0] tag,
+      input logic [TAG_W-1:0] consumer_idx
+  );
     logic hit;
     begin
       hit = 1'b0;
       for (int k = 0; k < CDB_W; k++) begin
-        if (cdb_wakeup_mask[k] && cdb_valid[k] && (tag == cdb_tag[k])) begin
+        if (cdb_wakeup_mask[k] && cdb_valid[k] && (tag == cdb_tag[k]) &&
+            cdb_can_wakeup(cdb_tag[k], consumer_idx)) begin
           hit = 1'b1;
         end
       end
@@ -129,7 +173,8 @@ module reservation_station #(
         // Forwarding Check Src1
         if (!in_r1[i]) begin
           for (int k = 0; k < CDB_W; k++) begin
-            if (cdb_valid[k] && (cdb_tag[k] == in_q1[i])) begin
+            if (cdb_valid[k] && (cdb_tag[k] == in_q1[i]) &&
+                cdb_can_wakeup(cdb_tag[k], in_dst_tag[i])) begin
               v1_arr_d[i] = cdb_value[k];
               r1_arr_d[i] = 1'b1;
             end
@@ -142,7 +187,8 @@ module reservation_station #(
         // Forwarding Check Src2
         if (!in_r2[i]) begin
           for (int k = 0; k < CDB_W; k++) begin
-            if (cdb_valid[k] && (cdb_tag[k] == in_q2[i])) begin
+            if (cdb_valid[k] && (cdb_tag[k] == in_q2[i]) &&
+                cdb_can_wakeup(cdb_tag[k], in_dst_tag[i])) begin
               v2_arr_d[i] = cdb_value[k];
               r2_arr_d[i] = 1'b1;
             end
@@ -151,11 +197,13 @@ module reservation_station #(
       end else if (busy[i]) begin
         for (int k = 0; k < CDB_W; k++) begin
           if (cdb_valid[k]) begin
-            if (!r1_arr[i] && (q1_arr[i] == cdb_tag[k])) begin
+            if (!r1_arr[i] && (q1_arr[i] == cdb_tag[k]) &&
+                cdb_can_wakeup(cdb_tag[k], dst_arr[i])) begin
               v1_arr_d[i] = cdb_value[k];
               r1_arr_d[i] = 1'b1;
             end
-            if (!r2_arr[i] && (q2_arr[i] == cdb_tag[k])) begin
+            if (!r2_arr[i] && (q2_arr[i] == cdb_tag[k]) &&
+                cdb_can_wakeup(cdb_tag[k], dst_arr[i])) begin
               v2_arr_d[i] = cdb_value[k];
               r2_arr_d[i] = 1'b1;
             end
@@ -183,11 +231,62 @@ module reservation_station #(
     end
   end
 
+`ifndef SYNTHESIS
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      rs_trace_cnt_q <= '0;
+    end else if (rs_diag_trace_en_q && rs_bsearch_trace_en_q &&
+                 (rs_trace_cnt_q < RS_TRACE_BUDGET)) begin
+      int trace_inc;
+      trace_inc = 0;
+      for (int i = 0; i < RS_DEPTH; i++) begin
+        logic this_pc_watch;
+        this_pc_watch = watch_bsearch_pc(op_arr[i].pc);
+
+        if ((rs_trace_cnt_q + trace_inc) < RS_TRACE_BUDGET &&
+            entry_wen[i] && watch_bsearch_pc(in_op[i].pc)) begin
+          $display("[rs-alu-enq] idx=%0d pc=%h dst=%0d r1=%0d q1=%0d v1=%h r2=%0d q2=%0d v2=%h",
+                   i, in_op[i].pc, in_dst_tag[i], in_r1[i], in_q1[i], in_v1[i], in_r2[i], in_q2[i], in_v2[i]);
+          trace_inc++;
+        end
+
+        if ((rs_trace_cnt_q + trace_inc) < RS_TRACE_BUDGET &&
+            issue_grant[i] && busy[i] && this_pc_watch) begin
+          $display("[rs-alu-issue] idx=%0d pc=%h dst=%0d r1=%0d q1=%0d v1=%h r2=%0d q2=%0d v2=%h",
+                   i, op_arr[i].pc, dst_arr[i], r1_arr[i], q1_arr[i], v1_arr[i], r2_arr[i], q2_arr[i], v2_arr[i]);
+          trace_inc++;
+        end
+
+        for (int k = 0; k < CDB_W; k++) begin
+          logic src1_tag_hit;
+          logic src2_tag_hit;
+          logic age_ok;
+          src1_tag_hit = !r1_arr[i] && (q1_arr[i] == cdb_tag[k]);
+          src2_tag_hit = !r2_arr[i] && (q2_arr[i] == cdb_tag[k]);
+          age_ok = cdb_can_wakeup(cdb_tag[k], dst_arr[i]);
+          if ((rs_trace_cnt_q + trace_inc) < RS_TRACE_BUDGET &&
+              busy[i] && cdb_valid[k] && cdb_wakeup_mask[k] &&
+              this_pc_watch &&
+              (src1_tag_hit || src2_tag_hit)) begin
+            $display("[rs-alu-wakeup] idx=%0d pc=%h lane=%0d cdb_tag=%0d cdb_val=%h dst=%0d src1_hit=%0d src2_hit=%0d age_ok=%0d head=%0d",
+                     i, op_arr[i].pc, k, cdb_tag[k], cdb_value[k], dst_arr[i], src1_tag_hit, src2_tag_hit, age_ok, head_tag_i);
+            trace_inc++;
+          end
+        end
+      end
+
+      if (trace_inc != 0) begin
+        rs_trace_cnt_q <= rs_trace_cnt_q + trace_inc[31:0];
+      end
+    end
+  end
+`endif
+
   genvar g;
   generate
     for (g = 0; g < RS_DEPTH; g = g + 1) begin : gen_ready
-      wire r1_ready = op_arr[g].has_rs1 ? (r1_arr[g] || (comb_wakeup_en && cdb_hit(q1_arr[g]))) : 1'b1;
-      wire r2_ready = op_arr[g].has_rs2 ? (r2_arr[g] || (comb_wakeup_en && cdb_hit(q2_arr[g]))) : 1'b1;
+      wire r1_ready = op_arr[g].has_rs1 ? (r1_arr[g] || (comb_wakeup_en && cdb_hit(q1_arr[g], dst_arr[g]))) : 1'b1;
+      wire r2_ready = op_arr[g].has_rs2 ? (r2_arr[g] || (comb_wakeup_en && cdb_hit(q2_arr[g], dst_arr[g]))) : 1'b1;
       assign ready_mask[g] = busy[g] && r1_ready && r2_ready &&
           (!head_en_i || (dst_arr[g] == head_tag_i));
     end
@@ -201,7 +300,8 @@ module reservation_station #(
     out_v1_0 = v1_arr[sel_idx_0];
     if (comb_wakeup_en && !r1_arr[sel_idx_0]) begin
       for (int k = 0; k < CDB_W; k++) begin
-        if (cdb_wakeup_mask[k] && cdb_valid[k] && (q1_arr[sel_idx_0] == cdb_tag[k])) out_v1_0 = cdb_value[k];
+        if (cdb_wakeup_mask[k] && cdb_valid[k] && (q1_arr[sel_idx_0] == cdb_tag[k]) &&
+            cdb_can_wakeup(cdb_tag[k], dst_arr[sel_idx_0])) out_v1_0 = cdb_value[k];
       end
     end
   end
@@ -209,7 +309,8 @@ module reservation_station #(
     out_v2_0 = v2_arr[sel_idx_0];
     if (comb_wakeup_en && !r2_arr[sel_idx_0]) begin
       for (int k = 0; k < CDB_W; k++) begin
-        if (cdb_wakeup_mask[k] && cdb_valid[k] && (q2_arr[sel_idx_0] == cdb_tag[k])) out_v2_0 = cdb_value[k];
+        if (cdb_wakeup_mask[k] && cdb_valid[k] && (q2_arr[sel_idx_0] == cdb_tag[k]) &&
+            cdb_can_wakeup(cdb_tag[k], dst_arr[sel_idx_0])) out_v2_0 = cdb_value[k];
       end
     end
   end
@@ -221,7 +322,8 @@ module reservation_station #(
     out_v1_1 = v1_arr[sel_idx_1];
     if (comb_wakeup_en && !r1_arr[sel_idx_1]) begin
       for (int k = 0; k < CDB_W; k++) begin
-        if (cdb_wakeup_mask[k] && cdb_valid[k] && (q1_arr[sel_idx_1] == cdb_tag[k])) out_v1_1 = cdb_value[k];
+        if (cdb_wakeup_mask[k] && cdb_valid[k] && (q1_arr[sel_idx_1] == cdb_tag[k]) &&
+            cdb_can_wakeup(cdb_tag[k], dst_arr[sel_idx_1])) out_v1_1 = cdb_value[k];
       end
     end
   end
@@ -229,7 +331,8 @@ module reservation_station #(
     out_v2_1 = v2_arr[sel_idx_1];
     if (comb_wakeup_en && !r2_arr[sel_idx_1]) begin
       for (int k = 0; k < CDB_W; k++) begin
-        if (cdb_wakeup_mask[k] && cdb_valid[k] && (q2_arr[sel_idx_1] == cdb_tag[k])) out_v2_1 = cdb_value[k];
+        if (cdb_wakeup_mask[k] && cdb_valid[k] && (q2_arr[sel_idx_1] == cdb_tag[k]) &&
+            cdb_can_wakeup(cdb_tag[k], dst_arr[sel_idx_1])) out_v2_1 = cdb_value[k];
       end
     end
   end
@@ -241,7 +344,8 @@ module reservation_station #(
     out_v1_2 = v1_arr[sel_idx_2];
     if (comb_wakeup_en && !r1_arr[sel_idx_2]) begin
       for (int k = 0; k < CDB_W; k++) begin
-        if (cdb_wakeup_mask[k] && cdb_valid[k] && (q1_arr[sel_idx_2] == cdb_tag[k])) out_v1_2 = cdb_value[k];
+        if (cdb_wakeup_mask[k] && cdb_valid[k] && (q1_arr[sel_idx_2] == cdb_tag[k]) &&
+            cdb_can_wakeup(cdb_tag[k], dst_arr[sel_idx_2])) out_v1_2 = cdb_value[k];
       end
     end
   end
@@ -249,7 +353,8 @@ module reservation_station #(
     out_v2_2 = v2_arr[sel_idx_2];
     if (comb_wakeup_en && !r2_arr[sel_idx_2]) begin
       for (int k = 0; k < CDB_W; k++) begin
-        if (cdb_wakeup_mask[k] && cdb_valid[k] && (q2_arr[sel_idx_2] == cdb_tag[k])) out_v2_2 = cdb_value[k];
+        if (cdb_wakeup_mask[k] && cdb_valid[k] && (q2_arr[sel_idx_2] == cdb_tag[k]) &&
+            cdb_can_wakeup(cdb_tag[k], dst_arr[sel_idx_2])) out_v2_2 = cdb_value[k];
       end
     end
   end
@@ -261,7 +366,8 @@ module reservation_station #(
     out_v1_3 = v1_arr[sel_idx_3];
     if (comb_wakeup_en && !r1_arr[sel_idx_3]) begin
       for (int k = 0; k < CDB_W; k++) begin
-        if (cdb_wakeup_mask[k] && cdb_valid[k] && (q1_arr[sel_idx_3] == cdb_tag[k])) out_v1_3 = cdb_value[k];
+        if (cdb_wakeup_mask[k] && cdb_valid[k] && (q1_arr[sel_idx_3] == cdb_tag[k]) &&
+            cdb_can_wakeup(cdb_tag[k], dst_arr[sel_idx_3])) out_v1_3 = cdb_value[k];
       end
     end
   end
@@ -269,7 +375,8 @@ module reservation_station #(
     out_v2_3 = v2_arr[sel_idx_3];
     if (comb_wakeup_en && !r2_arr[sel_idx_3]) begin
       for (int k = 0; k < CDB_W; k++) begin
-        if (cdb_wakeup_mask[k] && cdb_valid[k] && (q2_arr[sel_idx_3] == cdb_tag[k])) out_v2_3 = cdb_value[k];
+        if (cdb_wakeup_mask[k] && cdb_valid[k] && (q2_arr[sel_idx_3] == cdb_tag[k]) &&
+            cdb_can_wakeup(cdb_tag[k], dst_arr[sel_idx_3])) out_v2_3 = cdb_value[k];
       end
     end
   end
