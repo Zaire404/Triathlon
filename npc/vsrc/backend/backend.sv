@@ -233,6 +233,8 @@ module backend #(
   logic [DISPATCH_WIDTH*2-1:0][ROB_IDX_WIDTH-1:0] rob_query_idx;
   logic [DISPATCH_WIDTH*2-1:0]                    rob_query_ready;
   logic [DISPATCH_WIDTH*2-1:0][     Cfg.XLEN-1:0] rob_query_data;
+  logic [DISPATCH_WIDTH*2-1:0][FETCH_EPOCH_W-1:0] rob_query_fetch_epoch;
+  logic [DISPATCH_WIDTH*2-1:0][     Cfg.PLEN-1:0] rob_query_pc;
   logic [   ROB_IDX_WIDTH-1:0]                    rob_head_ptr;
   logic                                           rob_empty;
   logic [        Cfg.PLEN-1:0]                    rob_head_pc;
@@ -326,6 +328,8 @@ module backend #(
       .query_rob_idx_i(rob_query_idx),
       .query_ready_o  (rob_query_ready),
       .query_data_o   (rob_query_data),
+      .query_fetch_epoch_o(rob_query_fetch_epoch),
+      .query_pc_o     (rob_query_pc),
 
       .rob_empty_o(rob_empty),
       .rob_full_o (),
@@ -899,9 +903,15 @@ module backend #(
 
       if (issue_valid[i]) begin
         if (issue_rs1_in_rob[i]) begin
-          if (rob_query_ready[i] && !rs1_tag_allocated[i]) begin
+          if (rob_query_ready[i] && !rs1_tag_allocated[i] &&
+              (rob_query_fetch_epoch[i] == rename_sel_uops[i].fetch_epoch)) begin
             issue_r1[i] = 1'b1;
             issue_v1[i] = rob_query_data[i];
+          end else if (rob_query_ready[i] && !rs1_tag_allocated[i] &&
+                       (rob_query_fetch_epoch[i] != rename_sel_uops[i].fetch_epoch)) begin
+            // Guard against stale ROB-tag aliasing across flush epochs.
+            issue_r1[i] = 1'b1;
+            issue_v1[i] = arf_bypass(issue_rs1_idx[i], arf_rdata[i]);
           end else begin
             issue_r1[i] = 1'b0;
             issue_q1[i] = issue_rs1_rob_idx[i];
@@ -912,9 +922,14 @@ module backend #(
         end
 
         if (issue_rs2_in_rob[i]) begin
-          if (rob_query_ready[i+4] && !rs2_tag_allocated[i]) begin
+          if (rob_query_ready[i+4] && !rs2_tag_allocated[i] &&
+              (rob_query_fetch_epoch[i+4] == rename_sel_uops[i].fetch_epoch)) begin
             issue_r2[i] = 1'b1;
             issue_v2[i] = rob_query_data[i+4];
+          end else if (rob_query_ready[i+4] && !rs2_tag_allocated[i] &&
+                       (rob_query_fetch_epoch[i+4] != rename_sel_uops[i].fetch_epoch)) begin
+            issue_r2[i] = 1'b1;
+            issue_v2[i] = arf_bypass(issue_rs2_idx[i], arf_rdata[i+4]);
           end else begin
             issue_r2[i] = 1'b0;
             issue_q2[i] = issue_rs2_rob_idx[i];
@@ -930,16 +945,23 @@ module backend #(
 `ifndef SYNTHESIS
   function automatic logic watch_be_lsu_pc(input logic [31:0] pc);
     begin
-      watch_be_lsu_pc = ((pc >= 32'hc0803d80) && (pc <= 32'hc0803dd0)) ||
-                        ((pc >= 32'hc080ab50) && (pc <= 32'hc080ab90)) ||
-                        ((pc >= 32'hc07872b0) && (pc <= 32'hc07873f0)) ||
-                        ((pc >= 32'hc0097640) && (pc <= 32'hc0097670));
+      watch_be_lsu_pc = (pc == 32'hc074befe) ||
+                        (pc == 32'hc039996c) ||  // bsearch: lw s1,36(sp)
+                        (pc == 32'hc076a580) ||
+                        (pc == 32'hc076a584);
     end
   endfunction
 
   function automatic logic watch_be_alu_pc(input logic [31:0] pc);
     begin
-      watch_be_alu_pc = ((pc >= 32'hc080ab20) && (pc <= 32'hc080ab44));
+      watch_be_alu_pc = (pc == 32'hc0399942) ||  // bsearch: mv s1,a2
+                        (pc == 32'hc039994c) ||  // bsearch: srli s3,s1,1
+                        (pc == 32'hc0399950) ||  // bsearch: mul s2,s4,s3
+                        (pc == 32'hc0399956) ||  // bsearch: addi s1,s1,-1
+                        (pc == 32'hc0399958) ||  // bsearch: add s2,s2,s5
+                        (pc == 32'hc039995a) ||  // bsearch: mv a1,s2
+                        (pc == 32'hc0399964) ||  // bsearch: srli s1,s1,1
+                        (pc == 32'hc0399986);    // bsearch: mv s1,s3
     end
   endfunction
 
@@ -953,11 +975,11 @@ module backend #(
         if (issue_valid[i] && (rename_sel_uops[i].fu == FU_LSU) &&
             watch_be_lsu_pc(rename_sel_uops[i].pc) &&
             ((be_opr_trace_cnt_q + trace_inc) < BE_OPR_TRACE_BUDGET)) begin
-          $display("[be-opr-lsu] slot=%0d pc=%h rs1=%0d rs2=%0d rs1_in_rob=%0d rs1_idx=%0d rs1_tag=%0d rob_q1_ready=%0d rob_q1_data=%h rs1_tag_alloc=%0d arf_r1=%h issue_r1=%0d issue_v1=%h issue_q1=%0d rs2_in_rob=%0d rs2_idx=%0d rs2_tag=%0d rob_q2_ready=%0d rob_q2_data=%h rs2_tag_alloc=%0d arf_r2=%h issue_r2=%0d issue_v2=%h issue_q2=%0d dst=%0d ftq=%0d epoch=%0d flush=%0d",
+          $display("[be-opr-lsu] slot=%0d pc=%h rs1=%0d rs2=%0d rs1_in_rob=%0d rs1_idx=%0d rs1_tag=%0d rob_q1_ready=%0d rob_q1_data=%h rob_q1_epoch=%0d rob_q1_pc=%h rs1_tag_alloc=%0d arf_r1=%h issue_r1=%0d issue_v1=%h issue_q1=%0d rs2_in_rob=%0d rs2_idx=%0d rs2_tag=%0d rob_q2_ready=%0d rob_q2_data=%h rob_q2_epoch=%0d rob_q2_pc=%h rs2_tag_alloc=%0d arf_r2=%h issue_r2=%0d issue_v2=%h issue_q2=%0d dst=%0d ftq=%0d epoch=%0d flush=%0d",
                    i, rename_sel_uops[i].pc, rename_sel_uops[i].rs1, rename_sel_uops[i].rs2,
-                   issue_rs1_in_rob[i], issue_rs1_idx[i], issue_rs1_rob_idx[i], rob_query_ready[i], rob_query_data[i],
+                   issue_rs1_in_rob[i], issue_rs1_idx[i], issue_rs1_rob_idx[i], rob_query_ready[i], rob_query_data[i], rob_query_fetch_epoch[i], rob_query_pc[i],
                    rs1_tag_allocated[i], arf_rdata[i], issue_r1[i], issue_v1[i], issue_q1[i],
-                   issue_rs2_in_rob[i], issue_rs2_idx[i], issue_rs2_rob_idx[i], rob_query_ready[i+4], rob_query_data[i+4],
+                   issue_rs2_in_rob[i], issue_rs2_idx[i], issue_rs2_rob_idx[i], rob_query_ready[i+4], rob_query_data[i+4], rob_query_fetch_epoch[i+4], rob_query_pc[i+4],
                    rs2_tag_allocated[i], arf_rdata[i+4], issue_r2[i], issue_v2[i], issue_q2[i],
                    issue_rd_rob_idx[i], rename_sel_uops[i].ftq_id, rename_sel_uops[i].fetch_epoch, backend_flush);
           trace_inc++;
@@ -965,11 +987,11 @@ module backend #(
         if (issue_valid[i] && (rename_sel_uops[i].fu == FU_ALU) &&
             watch_be_alu_pc(rename_sel_uops[i].pc) &&
             ((be_opr_trace_cnt_q + trace_inc) < BE_OPR_TRACE_BUDGET)) begin
-          $display("[be-opr-alu] slot=%0d pc=%h rs1=%0d rs2=%0d rs1_in_rob=%0d rs1_idx=%0d rs1_tag=%0d rob_q1_ready=%0d rob_q1_data=%h rs1_tag_alloc=%0d arf_r1=%h issue_r1=%0d issue_v1=%h issue_q1=%0d rs2_in_rob=%0d rs2_idx=%0d rs2_tag=%0d rob_q2_ready=%0d rob_q2_data=%h rs2_tag_alloc=%0d arf_r2=%h issue_r2=%0d issue_v2=%h issue_q2=%0d dst=%0d ftq=%0d epoch=%0d flush=%0d",
+          $display("[be-opr-alu] slot=%0d pc=%h rs1=%0d rs2=%0d rs1_in_rob=%0d rs1_idx=%0d rs1_tag=%0d rob_q1_ready=%0d rob_q1_data=%h rob_q1_epoch=%0d rob_q1_pc=%h rs1_tag_alloc=%0d arf_r1=%h issue_r1=%0d issue_v1=%h issue_q1=%0d rs2_in_rob=%0d rs2_idx=%0d rs2_tag=%0d rob_q2_ready=%0d rob_q2_data=%h rob_q2_epoch=%0d rob_q2_pc=%h rs2_tag_alloc=%0d arf_r2=%h issue_r2=%0d issue_v2=%h issue_q2=%0d dst=%0d ftq=%0d epoch=%0d flush=%0d",
                    i, rename_sel_uops[i].pc, rename_sel_uops[i].rs1, rename_sel_uops[i].rs2,
-                   issue_rs1_in_rob[i], issue_rs1_idx[i], issue_rs1_rob_idx[i], rob_query_ready[i], rob_query_data[i],
+                   issue_rs1_in_rob[i], issue_rs1_idx[i], issue_rs1_rob_idx[i], rob_query_ready[i], rob_query_data[i], rob_query_fetch_epoch[i], rob_query_pc[i],
                    rs1_tag_allocated[i], arf_rdata[i], issue_r1[i], issue_v1[i], issue_q1[i],
-                   issue_rs2_in_rob[i], issue_rs2_idx[i], issue_rs2_rob_idx[i], rob_query_ready[i+4], rob_query_data[i+4],
+                   issue_rs2_in_rob[i], issue_rs2_idx[i], issue_rs2_rob_idx[i], rob_query_ready[i+4], rob_query_data[i+4], rob_query_fetch_epoch[i+4], rob_query_pc[i+4],
                    rs2_tag_allocated[i], arf_rdata[i+4], issue_r2[i], issue_v2[i], issue_q2[i],
                    issue_rd_rob_idx[i], rename_sel_uops[i].ftq_id, rename_sel_uops[i].fetch_epoch, backend_flush);
           trace_inc++;

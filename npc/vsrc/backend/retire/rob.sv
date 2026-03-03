@@ -118,6 +118,8 @@ module rob #(
     input  logic [QUERY_WIDTH-1:0][$clog2(ROB_DEPTH)-1:0] query_rob_idx_i,
     output logic [QUERY_WIDTH-1:0]                        query_ready_o,
     output logic [QUERY_WIDTH-1:0][         Cfg.XLEN-1:0] query_data_o,
+    output logic [QUERY_WIDTH-1:0][decode_pkg::FETCH_EPOCH_W-1:0] query_fetch_epoch_o,
+    output logic [QUERY_WIDTH-1:0][Cfg.PLEN-1:0] query_pc_o,
 
     output logic rob_empty_o,
     output logic rob_full_o,
@@ -131,10 +133,12 @@ module rob #(
   localparam logic [Cfg.PLEN-1:0] DBG_PC_FAULT1 = 32'hc080ab72;
   localparam logic [PTR_WIDTH-1:0] DBG_ROB_TAG0 = PTR_WIDTH'(22);
   localparam logic [PTR_WIDTH-1:0] DBG_ROB_TAG1 = PTR_WIDTH'(44);
-  localparam int unsigned ROB_TAG_TRACE_BUDGET = 1024;
+  localparam int unsigned ROB_TAG_TRACE_BUDGET = 256;
   logic [31:0] rob_tag_trace_cnt_q;
   logic rob_trace_en_q;
+  logic rob_tag_trace_en_q;
   initial rob_trace_en_q = $test$plusargs("npc_diag_trace");
+  initial rob_tag_trace_en_q = $test$plusargs("npc_diag_robtag");
 
   function automatic logic watch_kernel_pc(input logic [Cfg.PLEN-1:0] pc);
     begin
@@ -396,6 +400,8 @@ module rob #(
       query_ready_o[q] = rob_ram[query_rob_idx_i[q]].valid &&
                          rob_ram[query_rob_idx_i[q]].complete;
       query_data_o[q]  = rob_ram[query_rob_idx_i[q]].data;
+      query_fetch_epoch_o[q] = rob_ram[query_rob_idx_i[q]].fetch_epoch;
+      query_pc_o[q] = rob_ram[query_rob_idx_i[q]].pc;
       for (int a = 0; a < DISPATCH_WIDTH; a++) begin
         if (fast_alu_valid_i[a] && (fast_alu_rob_idx_i[a] == query_rob_idx_i[q])) begin
           query_ready_o[q] = 1'b1;
@@ -484,7 +490,7 @@ module rob #(
         trace_inc++;
       end
 
-      if (rob_tag_trace_cnt_q < ROB_TAG_TRACE_BUDGET) begin
+      if (rob_tag_trace_en_q && (rob_tag_trace_cnt_q < ROB_TAG_TRACE_BUDGET)) begin
         for (int i = 0; i < DISPATCH_WIDTH; i++) begin
           if (dispatch_valid_i[i]) begin
             logic [PTR_WIDTH-1:0] w_idx;

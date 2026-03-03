@@ -64,6 +64,27 @@ module reservation_station #(
     output logic [  DATA_W-1:0] out_v1_3,
     output logic [  DATA_W-1:0] out_v2_3
 );
+`ifndef SYNTHESIS
+  localparam int unsigned RS_TRACE_BUDGET = 512;
+  logic [31:0] rs_trace_cnt_q;
+  logic rs_diag_trace_en_q;
+  logic rs_bsearch_trace_en_q;
+  initial rs_diag_trace_en_q = $test$plusargs("npc_diag_trace");
+  initial rs_bsearch_trace_en_q = $test$plusargs("npc_diag_bsearch");
+
+  function automatic logic watch_bsearch_pc(input logic [Cfg.PLEN-1:0] pc);
+    begin
+      watch_bsearch_pc = (pc == 32'hc0399942) ||  // bsearch: mv s1,a2
+                         (pc == 32'hc039994c) ||  // bsearch: srli s3,s1,1
+                         (pc == 32'hc0399950) ||  // bsearch: mul s2,s4,s3
+                         (pc == 32'hc0399956) ||  // bsearch: addi s1,s1,-1
+                         (pc == 32'hc0399958) ||  // bsearch: add s2,s2,s5
+                         (pc == 32'hc039995a) ||  // bsearch: mv a1,s2
+                         (pc == 32'hc0399964) ||  // bsearch: srli s1,s1,1
+                         (pc == 32'hc0399986);    // bsearch: mv s1,s3
+    end
+  endfunction
+`endif
 
   function automatic logic [TAG_W-1:0] rob_age(
       input logic [TAG_W-1:0] idx, input logic [TAG_W-1:0] head);
@@ -209,6 +230,57 @@ module reservation_station #(
       r2_arr <= r2_arr_d;
     end
   end
+
+`ifndef SYNTHESIS
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      rs_trace_cnt_q <= '0;
+    end else if (rs_diag_trace_en_q && rs_bsearch_trace_en_q &&
+                 (rs_trace_cnt_q < RS_TRACE_BUDGET)) begin
+      int trace_inc;
+      trace_inc = 0;
+      for (int i = 0; i < RS_DEPTH; i++) begin
+        logic this_pc_watch;
+        this_pc_watch = watch_bsearch_pc(op_arr[i].pc);
+
+        if ((rs_trace_cnt_q + trace_inc) < RS_TRACE_BUDGET &&
+            entry_wen[i] && watch_bsearch_pc(in_op[i].pc)) begin
+          $display("[rs-alu-enq] idx=%0d pc=%h dst=%0d r1=%0d q1=%0d v1=%h r2=%0d q2=%0d v2=%h",
+                   i, in_op[i].pc, in_dst_tag[i], in_r1[i], in_q1[i], in_v1[i], in_r2[i], in_q2[i], in_v2[i]);
+          trace_inc++;
+        end
+
+        if ((rs_trace_cnt_q + trace_inc) < RS_TRACE_BUDGET &&
+            issue_grant[i] && busy[i] && this_pc_watch) begin
+          $display("[rs-alu-issue] idx=%0d pc=%h dst=%0d r1=%0d q1=%0d v1=%h r2=%0d q2=%0d v2=%h",
+                   i, op_arr[i].pc, dst_arr[i], r1_arr[i], q1_arr[i], v1_arr[i], r2_arr[i], q2_arr[i], v2_arr[i]);
+          trace_inc++;
+        end
+
+        for (int k = 0; k < CDB_W; k++) begin
+          logic src1_tag_hit;
+          logic src2_tag_hit;
+          logic age_ok;
+          src1_tag_hit = !r1_arr[i] && (q1_arr[i] == cdb_tag[k]);
+          src2_tag_hit = !r2_arr[i] && (q2_arr[i] == cdb_tag[k]);
+          age_ok = cdb_can_wakeup(cdb_tag[k], dst_arr[i]);
+          if ((rs_trace_cnt_q + trace_inc) < RS_TRACE_BUDGET &&
+              busy[i] && cdb_valid[k] && cdb_wakeup_mask[k] &&
+              this_pc_watch &&
+              (src1_tag_hit || src2_tag_hit)) begin
+            $display("[rs-alu-wakeup] idx=%0d pc=%h lane=%0d cdb_tag=%0d cdb_val=%h dst=%0d src1_hit=%0d src2_hit=%0d age_ok=%0d head=%0d",
+                     i, op_arr[i].pc, k, cdb_tag[k], cdb_value[k], dst_arr[i], src1_tag_hit, src2_tag_hit, age_ok, head_tag_i);
+            trace_inc++;
+          end
+        end
+      end
+
+      if (trace_inc != 0) begin
+        rs_trace_cnt_q <= rs_trace_cnt_q + trace_inc[31:0];
+      end
+    end
+  end
+`endif
 
   genvar g;
   generate

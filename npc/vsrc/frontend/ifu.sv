@@ -220,6 +220,10 @@ module ifu #(
   logic [31:0] ifu_aa_dbg_cnt_q;
   logic aa_req_watch_w;
   logic aa_inf_watch_w;
+  logic ifu_diag_trace_en_q;
+  logic ifu_bsearch_trace_en_q;
+  initial ifu_diag_trace_en_q = $test$plusargs("npc_diag_trace");
+  initial ifu_bsearch_trace_en_q = $test$plusargs("npc_diag_bsearch");
 `endif
 
   logic fault_pending_q;
@@ -323,8 +327,12 @@ module ifu #(
   assign ifetch_fault_tval_o = fault_tval_q;
   assign ifetch_fault_cause_o = EXC_INST_PAGE_FAULT;
 `ifndef SYNTHESIS
-  assign aa_req_watch_w = (req_head_pc_w >= IFU_AA_WIN_START) && (req_head_pc_w <= IFU_AA_WIN_END);
-  assign aa_inf_watch_w = (inf_head_pc_w >= IFU_AA_WIN_START) && (inf_head_pc_w <= IFU_AA_WIN_END);
+  assign aa_req_watch_w = ifu_bsearch_trace_en_q ?
+      ((req_head_pc_w >= 32'hc0399920) && (req_head_pc_w <= 32'hc03999b0)) :
+      ((req_head_pc_w >= IFU_AA_WIN_START) && (req_head_pc_w <= IFU_AA_WIN_END));
+  assign aa_inf_watch_w = ifu_bsearch_trace_en_q ?
+      ((inf_head_pc_w >= 32'hc0399920) && (inf_head_pc_w <= 32'hc03999b0)) :
+      ((inf_head_pc_w >= IFU_AA_WIN_START) && (inf_head_pc_w <= IFU_AA_WIN_END));
 `endif
 
   // IBuffer dequeue and response push decisions via bundle FIFO.
@@ -621,7 +629,7 @@ module ifu #(
     $display("\n");
 `endif
 `ifndef SYNTHESIS
-    if (req_issue_fire_w && (ifu_pc_dbg_cnt_q < IFU_PC_DBG_BUDGET) && (
+    if (ifu_diag_trace_en_q && req_issue_fire_w && (ifu_pc_dbg_cnt_q < IFU_PC_DBG_BUDGET) && (
         ((req_head_pc_w & 32'hfffff000) == 32'hc0800000) ||
         ((req_head_pc_w & 32'hfffff000) == 32'hc0401000) ||
         ((req_head_pc_w & 32'hfffff000) == 32'hc080a000) ||
@@ -636,7 +644,7 @@ module ifu #(
                mmu_translated_paddr_q, req_head_epoch_w);
       ifu_pc_dbg_cnt_q <= ifu_pc_dbg_cnt_q + 32'd1;
     end
-    if (mmu_resp_fire_w && (ifu_pc_dbg_cnt_q < IFU_PC_DBG_BUDGET) && (
+    if (ifu_diag_trace_en_q && mmu_resp_fire_w && (ifu_pc_dbg_cnt_q < IFU_PC_DBG_BUDGET) && (
         ((req_head_pc_w & 32'hfffff000) == 32'hc0800000) ||
         ((req_head_pc_w & 32'hfffff000) == 32'hc0401000) ||
         ((req_head_pc_w & 32'hfffff000) == 32'hc080a000) ||
@@ -650,7 +658,8 @@ module ifu #(
                mmu_state_q);
       ifu_pc_dbg_cnt_q <= ifu_pc_dbg_cnt_q + 32'd1;
     end
-    if ((flush_i || local_mmu_flush_w) && (ifu_pc_dbg_cnt_q < IFU_PC_DBG_BUDGET) &&
+    if (ifu_diag_trace_en_q && (flush_i || local_mmu_flush_w) &&
+        (ifu_pc_dbg_cnt_q < IFU_PC_DBG_BUDGET) &&
         (((redirect_pc_i & 32'hf0000000) == 32'hc0000000) ||
          ((pc_reg & 32'hf0000000) == 32'hc0000000))) begin
       $display("[ifu-flush] flush_i=%0d local=%0d satp_changed=%0d sfence=%0d redir=%h pc_reg=%h req_cnt=%0d inf_cnt=%0d enq=%0d pred=%h epoch=%0d->%0d",
@@ -659,29 +668,30 @@ module ifu #(
       ifu_pc_dbg_cnt_q <= ifu_pc_dbg_cnt_q + 32'd1;
     end
 
-    if (req_issue_fire_w && aa_req_watch_w && (ifu_aa_dbg_cnt_q < IFU_AA_DBG_BUDGET)) begin
+    if (ifu_diag_trace_en_q && req_issue_fire_w && aa_req_watch_w &&
+        (ifu_aa_dbg_cnt_q < IFU_AA_DBG_BUDGET)) begin
       $display("[ifu-aa-issue] vaddr=%h paddr=%h satp=%h priv=%0d need_mmu=%0d mmu_state=%0d epoch=%0d req_cnt=%0d inf_cnt=%0d",
                req_head_pc_w, issue_paddr_w, mmu_satp_i, mmu_priv_i, issue_need_mmu_w, mmu_state_q,
                req_head_epoch_w, req_count_q, inf_count_q);
       ifu_aa_dbg_cnt_q <= ifu_aa_dbg_cnt_q + 32'd1;
     end
 
-    if (mmu_resp_fire_w && aa_req_watch_w && (ifu_aa_dbg_cnt_q < IFU_AA_DBG_BUDGET)) begin
+    if (ifu_diag_trace_en_q && mmu_resp_fire_w && aa_req_watch_w &&
+        (ifu_aa_dbg_cnt_q < IFU_AA_DBG_BUDGET)) begin
       $display("[ifu-aa-mmu-rsp] vaddr=%h paddr=%h pf=%0d satp=%h priv=%0d mmu_state=%0d",
                req_head_pc_w, mmu_resp_paddr_w, mmu_resp_page_fault_w, mmu_satp_i, mmu_priv_i, mmu_state_q);
       ifu_aa_dbg_cnt_q <= ifu_aa_dbg_cnt_q + 32'd1;
     end
 
-    if (rsp_capture_w && aa_inf_watch_w && (ifu_aa_dbg_cnt_q < IFU_AA_DBG_BUDGET)) begin
+    if (ifu_diag_trace_en_q && rsp_capture_w && aa_inf_watch_w &&
+        (ifu_aa_dbg_cnt_q < IFU_AA_DBG_BUDGET)) begin
       $display("[ifu-aa-rsp] base_vaddr=%h satp=%h epoch=%0d inf_cnt=%0d",
                inf_head_pc_w, mmu_satp_i, inf_head_epoch_w, inf_count_q);
       for (int slot = 0; slot < Cfg.INSTR_PER_FETCH; slot++) begin
         logic [Cfg.PLEN-1:0] slot_vaddr;
         slot_vaddr = inf_head_pc_w + Cfg.PLEN'(INSTR_BYTES * slot);
-        if ((slot_vaddr >= IFU_AA_WIN_START) && (slot_vaddr <= IFU_AA_WIN_END)) begin
-          $display("[ifu-aa-rsp-slot] slot=%0d vaddr=%h inst=%h valid=%0d pred_npc=%h",
-                   slot, slot_vaddr, icache2ifu_rsp_data_i[slot], rsp_slot_valid_w[slot], rsp_pred_npc_w[slot]);
-        end
+        $display("[ifu-aa-rsp-slot] slot=%0d vaddr=%h inst=%h valid=%0d pred_npc=%h",
+                 slot, slot_vaddr, icache2ifu_rsp_data_i[slot], rsp_slot_valid_w[slot], rsp_pred_npc_w[slot]);
       end
       ifu_aa_dbg_cnt_q <= ifu_aa_dbg_cnt_q + 32'd1;
     end

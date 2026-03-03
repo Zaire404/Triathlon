@@ -176,11 +176,29 @@ module tb_triathlon #(
     output logic                               dbg_lsu_issue_valid_o,
     output logic                               dbg_lsu_req_ready_o,
     output logic                               dbg_lsu_issue_ready_o,
+    output logic                               dbg_lsu_issue_raw0_o,
+    output logic                               dbg_lsu_issue_raw1_o,
+    output logic                               dbg_lsu_issue_pick0_o,
+    output logic                               dbg_lsu_issue_pick1_o,
+    output logic                               dbg_lsu_issue_blk0_o,
+    output logic                               dbg_lsu_issue_blk1_o,
+    output logic [Cfg.PLEN-1:0]                dbg_lsu_sel_pc_o,
+    output logic                               dbg_lsu_sel_is_load_o,
+    output logic                               dbg_lsu_sel_is_store_o,
+    output logic [ROB_IDX_W-1:0]               dbg_lsu_sel_dst_o,
     output logic [$clog2(Cfg.RS_DEPTH+1)-1:0]  dbg_lsu_free_count_o,
     output logic [3:0]                         dbg_lsu_grp_lane_busy_o,
     output logic                               dbg_lsu_grp_alloc_fire_o,
     output logic [1:0]                         dbg_lsu_grp_alloc_lane_o,
     output logic [1:0]                         dbg_lsu_grp_ld_owner_o,
+    output logic                               dbg_lsu_pend_valid_o,
+    output logic [1:0]                         dbg_lsu_mmu_state_o,
+    output logic                               dbg_lsu_load_req_ready_o,
+    output logic                               dbg_lsu_store_req_ready_o,
+    output logic                               dbg_lsu_lq_alloc_ready_o,
+    output logic                               dbg_lsu_sq_alloc_ready_o,
+    output logic [7:0]                         dbg_lsu_lq_count_o,
+    output logic [7:0]                         dbg_lsu_sq_count_o,
     output logic [Cfg.RS_DEPTH-1:0]            dbg_lsu_rs_busy_o,
     output logic [Cfg.RS_DEPTH-1:0]            dbg_lsu_rs_ready_o,
     output logic [Cfg.RS_DEPTH-1:0]            dbg_lsu_rs_head_match_o,
@@ -502,11 +520,29 @@ module tb_triathlon #(
   assign dbg_lsu_issue_valid_o  = dut.u_backend.lsu_en;
   assign dbg_lsu_req_ready_o    = dut.u_backend.lsu_req_ready;
   assign dbg_lsu_issue_ready_o  = dut.u_backend.lsu_issue_ready;
+  assign dbg_lsu_issue_raw0_o   = dut.u_backend.u_issue_lsu.issue_valid_raw[0];
+  assign dbg_lsu_issue_raw1_o   = dut.u_backend.u_issue_lsu.issue_valid_raw[1];
+  assign dbg_lsu_issue_pick0_o  = dut.u_backend.u_issue_lsu.issue_pick_0;
+  assign dbg_lsu_issue_pick1_o  = dut.u_backend.u_issue_lsu.issue_pick_1;
+  assign dbg_lsu_issue_blk0_o   = dut.u_backend.u_issue_lsu.issue_blocked_low_addr_spec_0;
+  assign dbg_lsu_issue_blk1_o   = dut.u_backend.u_issue_lsu.issue_blocked_low_addr_spec_1;
+  assign dbg_lsu_sel_pc_o       = dut.u_backend.lsu_uop.pc;
+  assign dbg_lsu_sel_is_load_o  = dut.u_backend.lsu_uop.is_load;
+  assign dbg_lsu_sel_is_store_o = dut.u_backend.lsu_uop.is_store;
+  assign dbg_lsu_sel_dst_o      = dut.u_backend.lsu_dst;
   assign dbg_lsu_free_count_o   = dut.u_backend.lsu_free_count;
   assign dbg_lsu_grp_lane_busy_o = dut.u_backend.u_lsu_group.dbg_lane_busy;
   assign dbg_lsu_grp_alloc_fire_o = dut.u_backend.u_lsu_group.dbg_alloc_fire;
   assign dbg_lsu_grp_alloc_lane_o = dut.u_backend.u_lsu_group.dbg_alloc_lane;
   assign dbg_lsu_grp_ld_owner_o = dut.u_backend.u_lsu_group.dbg_ld_owner;
+  assign dbg_lsu_pend_valid_o = dut.u_backend.u_lsu_group.pend_valid_q;
+  assign dbg_lsu_mmu_state_o = dut.u_backend.u_lsu_group.mmu_state_q;
+  assign dbg_lsu_load_req_ready_o = dut.u_backend.u_lsu_group.load_req_ready;
+  assign dbg_lsu_store_req_ready_o = dut.u_backend.u_lsu_group.store_req_ready;
+  assign dbg_lsu_lq_alloc_ready_o = dut.u_backend.u_lsu_group.lq_alloc_ready;
+  assign dbg_lsu_sq_alloc_ready_o = dut.u_backend.u_lsu_group.sq_alloc_ready;
+  assign dbg_lsu_lq_count_o = dut.u_backend.u_lsu_group.dbg_lq_count_o;
+  assign dbg_lsu_sq_count_o = dut.u_backend.u_lsu_group.dbg_sq_count_o;
   assign dbg_lsu_rs_busy_o      = dut.u_backend.u_issue_lsu.u_rs.busy;
   assign dbg_lsu_rs_ready_o     = dut.u_backend.u_issue_lsu.u_rs.ready_mask;
 

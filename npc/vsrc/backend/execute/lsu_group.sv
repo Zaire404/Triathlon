@@ -115,10 +115,27 @@ module lsu_group #(
 `ifndef SYNTHESIS
   localparam int unsigned LSU_PF_LOG_BUDGET = 128;
   int unsigned lsu_pf_log_cnt_q;
-  localparam int unsigned LSU_TRACE_LOG_BUDGET = 256;
-  int unsigned lsu_trace_log_cnt_q;
+  localparam int unsigned LSU_REQ_TRACE_LOG_BUDGET = 128;
+  localparam int unsigned LSU_MMU_TRACE_LOG_BUDGET = 128;
+  localparam int unsigned LSU_STALL_TRACE_LOG_BUDGET = 256;
+  int unsigned lsu_req_trace_log_cnt_q;
+  int unsigned lsu_mmu_trace_log_cnt_q;
+  int unsigned lsu_stall_trace_log_cnt_q;
+  logic [15:0] lsu_stall_streak_q;
   logic lsu_trace_en_q;
   initial lsu_trace_en_q = $test$plusargs("npc_diag_trace");
+
+  function automatic logic lsu_diag_watch_pc(input logic [31:0] pc);
+    begin
+      // Keep the watch list strict to avoid diag log storms in long runs.
+      lsu_diag_watch_pc = (pc == 32'hc074befe) ||  // cmp_ex_search + 0x8
+                          (pc == 32'hc076a580) ||  // exception pair A
+                          (pc == 32'hc076a584) ||  // adjacent hot load
+                          (pc == 32'hc074c47e) ||  // hang window load (stack restore)
+                          (pc == 32'hc074c480) ||  // hang window load (stack restore)
+                          (pc == 32'hc074cf9e);    // hang window load
+    end
+  endfunction
 `endif
 
   // Keep these debug names for existing testbench hierarchical probes.
@@ -244,6 +261,11 @@ module lsu_group #(
   logic                                                        mmu_pte_upd_valid;
   logic                [             31:0]                    mmu_pte_upd_paddr;
   logic                [             31:0]                    mmu_pte_upd_data;
+`ifndef SYNTHESIS
+  logic                [             31:0]                    lsu_diag_pc_w;
+  logic                                                        lsu_diag_stall_watch_w;
+  logic                                                        lsu_diag_stall_cond_w;
+`endif
 
   logic [STORE_WB_Q_DEPTH-1:0] store_wb_valid_q;
   logic [STORE_WB_Q_DEPTH-1:0][ROB_IDX_WIDTH-1:0] store_wb_rob_idx_q;
@@ -442,6 +464,14 @@ module lsu_group #(
                              !is_load_misaligned(uop_i.lsu_op, req_in_eff_addr);
   assign req_accept_ready = !pend_valid_q && (mmu_state_q == MMU_ST_IDLE);
   assign req_accept_fire = req_valid_i && req_accept_ready && req_need_mmu_walk;
+`ifndef SYNTHESIS
+  assign lsu_diag_pc_w = pend_valid_q ? pend_uop_q.pc : uop_i.pc;
+  assign lsu_diag_stall_watch_w = lsu_diag_watch_pc(lsu_diag_pc_w);
+  assign lsu_diag_stall_cond_w = lsu_diag_stall_watch_w && !flush_i &&
+                                 ((pend_valid_q && (req_is_load || req_is_store) &&
+                                   !load_alloc_fire && !store_req_fire) ||
+                                  (req_valid_i && (uop_i.is_load || uop_i.is_store) && !req_ready_o));
+`endif
 
   assign pte_req_valid_o = mmu_pte_req_valid;
   assign pte_req_paddr_o = mmu_pte_req_paddr;
@@ -771,7 +801,10 @@ module lsu_group #(
       ld_req_rr_q <= '0;
 `ifndef SYNTHESIS
       lsu_pf_log_cnt_q <= '0;
-      lsu_trace_log_cnt_q <= '0;
+      lsu_req_trace_log_cnt_q <= '0;
+      lsu_mmu_trace_log_cnt_q <= '0;
+      lsu_stall_trace_log_cnt_q <= '0;
+      lsu_stall_streak_q <= '0;
 `endif
     end else if (flush_i) begin
       pend_valid_q <= 1'b0;
@@ -805,15 +838,12 @@ module lsu_group #(
       if (req_accept_fire) begin
 `ifndef SYNTHESIS
         if (lsu_trace_en_q &&
-            (lsu_trace_log_cnt_q < LSU_TRACE_LOG_BUDGET) &&
-            (((uop_i.pc >= 32'hc0803d80) && (uop_i.pc <= 32'hc0803dd0)) ||
-             ((uop_i.pc >= 32'hc080ab50) && (uop_i.pc <= 32'hc080ab90)) ||
-             ((uop_i.pc >= 32'hc07872b0) && (uop_i.pc <= 32'hc07873f0)) ||
-             ((uop_i.pc >= 32'hc0097640) && (uop_i.pc <= 32'hc0097670)))) begin
+            (lsu_req_trace_log_cnt_q < LSU_REQ_TRACE_LOG_BUDGET) &&
+            lsu_diag_watch_pc(uop_i.pc)) begin
           $display("[lsu-req] pc=%h rs1=%h rs2=%h imm=%h eff=%h need_mmu=%0d is_ld=%0d is_st=%0d rob=%0d sb=%0d ftq=%0d epoch=%0d",
                    uop_i.pc, rs1_data_i, rs2_data_i, uop_i.imm, req_in_eff_addr, req_need_mmu_walk,
                    uop_i.is_load, uop_i.is_store, rob_tag_i, sb_id_i, uop_i.ftq_id, uop_i.fetch_epoch);
-          lsu_trace_log_cnt_q <= lsu_trace_log_cnt_q + 1'b1;
+          lsu_req_trace_log_cnt_q <= lsu_req_trace_log_cnt_q + 1'b1;
         end
 `endif
         if ((uop_i.is_load || uop_i.is_store) && !req_need_mmu_walk) begin
@@ -871,15 +901,12 @@ module lsu_group #(
         end
 `ifndef SYNTHESIS
         if (lsu_trace_en_q &&
-            (lsu_trace_log_cnt_q < LSU_TRACE_LOG_BUDGET) &&
-            (((mmu_uop_q.pc >= 32'hc0803d80) && (mmu_uop_q.pc <= 32'hc0803dd0)) ||
-             ((mmu_uop_q.pc >= 32'hc080ab50) && (mmu_uop_q.pc <= 32'hc080ab90)) ||
-             ((mmu_uop_q.pc >= 32'hc07872b0) && (mmu_uop_q.pc <= 32'hc07873f0)) ||
-             ((mmu_uop_q.pc >= 32'hc0097640) && (mmu_uop_q.pc <= 32'hc0097670)))) begin
+            (lsu_mmu_trace_log_cnt_q < LSU_MMU_TRACE_LOG_BUDGET) &&
+            lsu_diag_watch_pc(mmu_uop_q.pc)) begin
           $display("[lsu-mmu-rsp] pc=%h vaddr=%h paddr=%h pf=%0d satp=%h priv=%0d rob=%0d sb=%0d epoch=%0d flush=%0d",
                    mmu_uop_q.pc, mmu_vaddr_q, mmu_resp_paddr, mmu_resp_page_fault, mmu_satp_i, mmu_priv_i,
                    mmu_rob_tag_q, mmu_sb_id_q, mmu_uop_q.fetch_epoch, flush_i);
-          lsu_trace_log_cnt_q <= lsu_trace_log_cnt_q + 1'b1;
+          lsu_mmu_trace_log_cnt_q <= lsu_mmu_trace_log_cnt_q + 1'b1;
         end
         if (lsu_trace_en_q && mmu_resp_page_fault) begin
           if (lsu_pf_log_cnt_q < LSU_PF_LOG_BUDGET) begin
@@ -951,6 +978,36 @@ module lsu_group #(
       end
     end
   end
+
+`ifndef SYNTHESIS
+  always_ff @(posedge clk_i or negedge rst_ni) begin
+    logic [15:0] next_streak;
+    logic should_log;
+    if (!rst_ni) begin
+      lsu_stall_streak_q <= '0;
+    end else if (flush_i) begin
+      lsu_stall_streak_q <= '0;
+    end else if (!lsu_trace_en_q) begin
+      lsu_stall_streak_q <= '0;
+    end else if (lsu_diag_stall_cond_w) begin
+      next_streak = (lsu_stall_streak_q == 16'hffff) ? 16'hffff : (lsu_stall_streak_q + 16'd1);
+      should_log = (next_streak == 16'd1) || (next_streak[9:0] == 10'd0);
+      lsu_stall_streak_q <= next_streak;
+      if ((lsu_stall_trace_log_cnt_q < LSU_STALL_TRACE_LOG_BUDGET) && should_log) begin
+        $display("[lsu-stall] pc=%h streak=%0d pend=%0d mmu_state=%0d req(v/r)=%0d/%0d need_mmu=%0d req_is(ld/st)=%0d/%0d load_rdy=%0d store_rdy=%0d lq_alloc=%0d sq_alloc=%0d lq(cnt/full)=%0d/%0d sq(cnt/full)=%0d/%0d wb_cnt=%0d lane_req_ready=0x%h lane_ld_req_valid=0x%h lane_ld_rsp_ready=0x%h ld_rsp(v/r)=%0d/%0d",
+                 lsu_diag_pc_w, next_streak, pend_valid_q, mmu_state_q,
+                 req_valid_i, req_ready_o, req_need_mmu_walk, req_is_load, req_is_store,
+                 load_req_ready, store_req_ready, lq_alloc_ready, sq_alloc_ready,
+                 dbg_lq_count_o, lq_full, dbg_sq_count_o, sq_full, store_wb_count_q,
+                 lane_req_ready, lane_ld_req_valid, lane_ld_rsp_ready,
+                 ld_rsp_valid_i, ld_rsp_ready_o);
+        lsu_stall_trace_log_cnt_q <= lsu_stall_trace_log_cnt_q + 1'b1;
+      end
+    end else begin
+      lsu_stall_streak_q <= '0;
+    end
+  end
+`endif
 
   lq #(
       .ROB_IDX_WIDTH(ROB_IDX_WIDTH),

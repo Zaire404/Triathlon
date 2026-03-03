@@ -145,6 +145,7 @@ int main(int argc, char **argv) {
   uint64_t linux_opensbi_smode_logs = 0;
   uint64_t linux_satp_change_logs = 0;
   uint64_t linux_gp_write_logs = 0;
+  uint64_t linux_exc_pair_step_logs = 0;
   uint64_t last_fw_text_write_count = 0;
   uint32_t last_commit_pc_seen = 0xffffffffu;
   uint32_t last_satp_seen = 0xffffffffu;
@@ -161,6 +162,7 @@ int main(int argc, char **argv) {
   constexpr uint64_t kLinuxOpenSbiSModeLogLimit = 256;
   constexpr uint64_t kLinuxSatpChangeLogLimit = 128;
   constexpr uint64_t kLinuxGpWriteLogLimit = 256;
+  constexpr uint64_t kLinuxExcPairLogLimit = 512;
   constexpr uint64_t kLinuxPtWriteLogLimit = 2048;
   constexpr uint32_t kLinuxRelocPcBegin = 0x80801040u;
   constexpr uint32_t kLinuxRelocPcEnd = 0x808010b0u;
@@ -170,6 +172,8 @@ int main(int argc, char **argv) {
   constexpr uint32_t kLinuxCgroupPcEnd = 0xc0099a40u;
   constexpr uint32_t kLinuxBitopsPcBegin = 0xc03a0320u;
   constexpr uint32_t kLinuxBitopsPcEnd = 0xc03a0388u;
+  constexpr uint32_t kLinuxExcPcA = 0xc076a580u;
+  constexpr uint32_t kLinuxExcPcB = 0xc074befeu;
   constexpr uint32_t kLinuxPtWatchBase = 0x81402000u;
   constexpr uint32_t kLinuxPtWatchEnd = 0x81404000u;
   uint64_t linux_pt_write_logs = 0;
@@ -590,6 +594,37 @@ int main(int argc, char **argv) {
         std::cout.flags(f);
         opensbi_step_logs++;
       }
+      if (args.linux_early_debug &&
+          (pc == kLinuxExcPcA || pc == kLinuxExcPcB) &&
+          linux_exc_pair_step_logs < kLinuxExcPairLogLimit) {
+        std::ios::fmtflags f(std::cout.flags());
+        std::cout << "[debug][linux-exc-pair-step] cycle=" << cycles
+                  << " slot=" << i
+                  << " pc=0x" << std::hex << pc
+                  << " inst=0x" << inst
+                  << " we=" << std::dec << static_cast<uint32_t>(we)
+                  << " rd=x" << static_cast<uint32_t>(rd)
+                  << " wdata=0x" << std::hex << data
+                  << " ra=0x" << rf[1]
+                  << " sp=0x" << rf[2]
+                  << " gp=0x" << rf[3]
+                  << " a0=0x" << rf[10]
+                  << " a1=0x" << rf[11]
+                  << " a2=0x" << rf[12]
+                  << " a3=0x" << rf[13]
+                  << " s0=0x" << rf[8]
+                  << " s1=0x" << rf[9]
+                  << " satp=0x" << top->dbg_csr_satp_o
+                  << " sepc=0x" << top->dbg_csr_sepc_o
+                  << " scause=0x" << top->dbg_csr_scause_o
+                  << " stval=0x" << top->dbg_csr_stval_o
+                  << std::dec
+                  << " priv=" << static_cast<int>(top->dbg_csr_priv_mode_o)
+                  << " flush=" << static_cast<int>(top->backend_flush_o)
+                  << "\n";
+        std::cout.flags(f);
+        linux_exc_pair_step_logs++;
+      }
       if (args.linux_early_debug) {
         bool in_reloc = (pc >= kLinuxRelocPcBegin && pc < kLinuxRelocPcEnd);
         bool in_fsctx = (pc >= kLinuxFsctxPcBegin && pc < kLinuxFsctxPcEnd);
@@ -784,6 +819,18 @@ int main(int argc, char **argv) {
                 << static_cast<int>(top->dbg_lsu_issue_valid_o) << "/"
                 << static_cast<int>(top->dbg_lsu_req_ready_o)
                 << " lsu_issue_ready=" << static_cast<int>(top->dbg_lsu_issue_ready_o)
+                << " lsu_issue(raw/pick/blk)=("
+                << static_cast<int>(top->dbg_lsu_issue_raw0_o) << ","
+                << static_cast<int>(top->dbg_lsu_issue_raw1_o) << ")/("
+                << static_cast<int>(top->dbg_lsu_issue_pick0_o) << ","
+                << static_cast<int>(top->dbg_lsu_issue_pick1_o) << ")/("
+                << static_cast<int>(top->dbg_lsu_issue_blk0_o) << ","
+                << static_cast<int>(top->dbg_lsu_issue_blk1_o) << ")"
+                << " lsu_sel(pc/ld/st/dst)=0x" << std::hex
+                << top->dbg_lsu_sel_pc_o << std::dec << "/"
+                << static_cast<int>(top->dbg_lsu_sel_is_load_o) << "/"
+                << static_cast<int>(top->dbg_lsu_sel_is_store_o) << "/0x"
+                << std::hex << static_cast<uint32_t>(top->dbg_lsu_sel_dst_o) << std::dec
                 << " lsu_free=" << static_cast<uint32_t>(top->dbg_lsu_free_count_o)
                 << " lsu_rs(b/r)=0x" << std::hex
                 << static_cast<uint32_t>(top->dbg_lsu_rs_busy_o) << "/0x"
@@ -808,6 +855,15 @@ int main(int argc, char **argv) {
                 << static_cast<int>(top->dbg_lsu_ld_req_valid_o) << "/"
                 << static_cast<int>(top->dbg_lsu_ld_req_ready_o) << "/"
                 << static_cast<int>(top->dbg_lsu_ld_rsp_valid_o)
+                << " lsu_grp(req(ld/st)/alloc(lq/sq)/pend/mmu/lq/sq)="
+                << static_cast<int>(top->dbg_lsu_load_req_ready_o) << "/"
+                << static_cast<int>(top->dbg_lsu_store_req_ready_o) << "/"
+                << static_cast<int>(top->dbg_lsu_lq_alloc_ready_o) << "/"
+                << static_cast<int>(top->dbg_lsu_sq_alloc_ready_o) << "/"
+                << static_cast<int>(top->dbg_lsu_pend_valid_o) << "/"
+                << static_cast<uint32_t>(top->dbg_lsu_mmu_state_o) << "/"
+                << static_cast<uint32_t>(top->dbg_lsu_lq_count_o) << "/"
+                << static_cast<uint32_t>(top->dbg_lsu_sq_count_o)
                 << " flush=" << static_cast<int>(top->backend_flush_o)
                 << " dc_miss(v/r)="
                 << static_cast<int>(top->dcache_miss_req_valid_o) << "/"

@@ -240,10 +240,9 @@ module reservation_station_lsu #(
 `ifndef SYNTHESIS
   function automatic logic watch_lsu_pc(input logic [31:0] pc);
     begin
-      watch_lsu_pc = ((pc >= 32'hc0803d80) && (pc <= 32'hc0803dd0)) ||
-                     ((pc >= 32'hc080ab50) && (pc <= 32'hc080ab90)) ||
-                     ((pc >= 32'hc07872b0) && (pc <= 32'hc07873f0)) ||
-                     ((pc >= 32'hc0097640) && (pc <= 32'hc0097670));
+      watch_lsu_pc = (pc == 32'hc074befe) ||
+                     (pc == 32'hc076a580) ||
+                     (pc == 32'hc076a584);
     end
   endfunction
 

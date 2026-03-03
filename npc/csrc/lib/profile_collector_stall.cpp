@@ -112,6 +112,18 @@ void ProfileCollector::on_no_commit_cycle(uint64_t cycles,
               << " lsu_sm=" << static_cast<uint32_t>(top->dbg_lsu_state_o)
               << " lsu_ld_fire=" << static_cast<int>(top->dbg_lsu_ld_fire_o)
               << " lsu_rsp_fire=" << static_cast<int>(top->dbg_lsu_rsp_fire_o)
+              << " lsu_issue(raw/pick/blk)=("
+              << static_cast<int>(top->dbg_lsu_issue_raw0_o) << ","
+              << static_cast<int>(top->dbg_lsu_issue_raw1_o) << ")/("
+              << static_cast<int>(top->dbg_lsu_issue_pick0_o) << ","
+              << static_cast<int>(top->dbg_lsu_issue_pick1_o) << ")/("
+              << static_cast<int>(top->dbg_lsu_issue_blk0_o) << ","
+              << static_cast<int>(top->dbg_lsu_issue_blk1_o) << ")"
+              << " lsu_sel(pc/ld/st/dst)=0x" << std::hex
+              << top->dbg_lsu_sel_pc_o << std::dec << "/"
+              << static_cast<int>(top->dbg_lsu_sel_is_load_o) << "/"
+              << static_cast<int>(top->dbg_lsu_sel_is_store_o) << "/0x"
+              << std::hex << static_cast<uint32_t>(top->dbg_lsu_sel_dst_o) << std::dec
               << " lsu_inflight(tag/addr)=0x" << std::hex
               << static_cast<uint32_t>(top->dbg_lsu_inflight_tag_o)
               << "/0x" << top->dbg_lsu_inflight_addr_o
@@ -120,6 +132,16 @@ void ProfileCollector::on_no_commit_cycle(uint64_t cycles,
               << std::dec << "/" << static_cast<int>(top->dbg_lsu_grp_alloc_fire_o)
               << "/0x" << std::hex << static_cast<uint32_t>(top->dbg_lsu_grp_alloc_lane_o)
               << "/0x" << static_cast<uint32_t>(top->dbg_lsu_grp_ld_owner_o)
+              << std::dec
+              << " lsug(req(ld/st)/alloc(lq/sq)/pend/mmu/lq/sq)="
+              << static_cast<int>(top->dbg_lsu_load_req_ready_o) << "/"
+              << static_cast<int>(top->dbg_lsu_store_req_ready_o) << "/"
+              << static_cast<int>(top->dbg_lsu_lq_alloc_ready_o) << "/"
+              << static_cast<int>(top->dbg_lsu_sq_alloc_ready_o) << "/"
+              << static_cast<int>(top->dbg_lsu_pend_valid_o) << "/"
+              << static_cast<uint32_t>(top->dbg_lsu_mmu_state_o) << "/"
+              << static_cast<uint32_t>(top->dbg_lsu_lq_count_o) << "/"
+              << static_cast<uint32_t>(top->dbg_lsu_sq_count_o)
               << " lsu_rs(b/r)=0x" << std::hex
               << static_cast<uint32_t>(top->dbg_lsu_rs_busy_o) << "/0x"
               << static_cast<uint32_t>(top->dbg_lsu_rs_ready_o)

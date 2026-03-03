@@ -90,8 +90,8 @@ module issue_lsu #(
   logic [31:0] lsu_issue_trace_cnt_q;
   localparam int unsigned LSU_BLOCK_TRACE_BUDGET = 512;
   logic [31:0] lsu_block_trace_cnt_q;
-  localparam logic [31:0] LSU_BLOCK_WIN_START = 32'hc080aa80;
-  localparam logic [31:0] LSU_BLOCK_WIN_END = 32'hc080add0;
+  localparam int unsigned LSU_STALL_TRACE_BUDGET = 512;
+  logic [31:0] lsu_stall_trace_cnt_q;
   logic lsu_trace_en_q;
   initial lsu_trace_en_q = $test$plusargs("npc_diag_trace");
 `endif
@@ -101,6 +101,19 @@ module issue_lsu #(
       is_spec_low_addr = ((addr[DATA_W-1:12] == '0) || (&addr[DATA_W-1:12]));
     end
   endfunction
+
+`ifndef SYNTHESIS
+  function automatic logic watch_lsu_pc(input logic [31:0] pc);
+    begin
+      watch_lsu_pc = (pc == 32'hc074befe) ||
+                     (pc == 32'hc076a580) ||
+                     (pc == 32'hc076a584) ||
+                     (pc == 32'hc074c47e) ||
+                     (pc == 32'hc074c480) ||
+                     (pc == 32'hc074cf9e);
+    end
+  endfunction
+`endif
 
   assign issue_effective_addr_0 = issue_v1_0 + issue_uop_0.imm;
   assign issue_effective_addr_1 = issue_v1_1 + issue_uop_1.imm;
@@ -253,17 +266,19 @@ module issue_lsu #(
 `ifndef SYNTHESIS
   always_ff @(posedge clk or negedge rst_n) begin
     logic watch_pc;
+    logic watch_issue_slots;
     logic [31:0] issue_trace_inc;
     logic [31:0] block_trace_inc;
-    watch_pc = ((lsu_uop.pc >= 32'hc0803d80) && (lsu_uop.pc <= 32'hc0803dd0)) ||
-               ((lsu_uop.pc >= 32'hc080ab50) && (lsu_uop.pc <= 32'hc080ab90)) ||
-               ((lsu_uop.pc >= 32'hc07872b0) && (lsu_uop.pc <= 32'hc07873f0)) ||
-               ((lsu_uop.pc >= 32'hc0097640) && (lsu_uop.pc <= 32'hc0097670));
+    logic [31:0] stall_trace_inc;
+    watch_pc = watch_lsu_pc(lsu_uop.pc);
+    watch_issue_slots = watch_lsu_pc(issue_uop_0.pc) || watch_lsu_pc(issue_uop_1.pc);
     issue_trace_inc = '0;
     block_trace_inc = '0;
+    stall_trace_inc = '0;
     if (!rst_n) begin
       lsu_issue_trace_cnt_q <= '0;
       lsu_block_trace_cnt_q <= '0;
+      lsu_stall_trace_cnt_q <= '0;
     end else if (lsu_trace_en_q) begin
       if (lsu_en && watch_pc &&
           ((lsu_issue_trace_cnt_q + issue_trace_inc) < LSU_ISSUE_TRACE_BUDGET)) begin
@@ -280,15 +295,8 @@ module issue_lsu #(
           issue_trace_inc = issue_trace_inc + 32'd1;
         end
       end
-      if (flush_i && (issue_valid_raw[0] || issue_valid_raw[1]) && !watch_pc &&
-          ((lsu_issue_trace_cnt_q + issue_trace_inc) < LSU_ISSUE_TRACE_BUDGET)) begin
-        $display("[issue-lsu-on-flush] pc=%h rs1=%h rs2=%h dst=%0d sb=%0d ftq=%0d epoch=%0d",
-                 lsu_uop.pc, lsu_v1, lsu_v2, lsu_dst, lsu_sb_id, lsu_uop.ftq_id, lsu_uop.fetch_epoch);
-        issue_trace_inc = issue_trace_inc + 32'd1;
-      end
-
       if (issue_valid_raw[0] && issue_blocked_low_addr_spec_0 &&
-          (issue_uop_0.pc >= LSU_BLOCK_WIN_START) && (issue_uop_0.pc <= LSU_BLOCK_WIN_END) &&
+          watch_lsu_pc(issue_uop_0.pc) &&
           ((lsu_block_trace_cnt_q + block_trace_inc) < LSU_BLOCK_TRACE_BUDGET)) begin
         $display("[issue-lsu-blocked] slot=0 pc=%h dst=%0d rob_head=%0d vaddr=%h flush=%0d mispred=%0d spec_low=%0d fu_ready=%0d issue_raw=%0d pick0=%0d pick1=%0d",
                  issue_uop_0.pc, issue_dst_0, rob_head_i, issue_effective_addr_0, flush_i, mispred_block_i,
@@ -296,18 +304,38 @@ module issue_lsu #(
         block_trace_inc = block_trace_inc + 32'd1;
       end
       if (issue_valid_raw[1] && issue_blocked_low_addr_spec_1 &&
-          (issue_uop_1.pc >= LSU_BLOCK_WIN_START) && (issue_uop_1.pc <= LSU_BLOCK_WIN_END) &&
+          watch_lsu_pc(issue_uop_1.pc) &&
           ((lsu_block_trace_cnt_q + block_trace_inc) < LSU_BLOCK_TRACE_BUDGET)) begin
         $display("[issue-lsu-blocked] slot=1 pc=%h dst=%0d rob_head=%0d vaddr=%h flush=%0d mispred=%0d spec_low=%0d fu_ready=%0d issue_raw=%0d pick0=%0d pick1=%0d",
                  issue_uop_1.pc, issue_dst_1, rob_head_i, issue_effective_addr_1, flush_i, mispred_block_i,
                  issue_blocked_low_addr_spec_1, fu_ready_i, issue_valid_raw[1], issue_pick_0, issue_pick_1);
         block_trace_inc = block_trace_inc + 32'd1;
       end
+      if (watch_issue_slots && (|rs_ready_wires) && !issue_pick_any &&
+          ((lsu_stall_trace_cnt_q + stall_trace_inc) < LSU_STALL_TRACE_BUDGET)) begin
+        $display("[issue-lsu-stall] rs_ready=0x%h issue_raw=%0d/%0d idx=%0d/%0d pc=%h/%h dst=%0d/%0d blk=%0d/%0d rob_head=%0d spec_low_en=%0d fu_ready=%0d mispred=%0d flush=%0d",
+                 rs_ready_wires, issue_valid_raw[0], issue_valid_raw[1], issue_rs_idx_raw[0], issue_rs_idx_raw[1],
+                 issue_uop_0.pc, issue_uop_1.pc, issue_dst_0, issue_dst_1,
+                 issue_blocked_low_addr_spec_0, issue_blocked_low_addr_spec_1,
+                 rob_head_i, spec_low_addr_block_en_i, fu_ready_i, mispred_block_i, flush_i);
+        stall_trace_inc = stall_trace_inc + 32'd1;
+      end
+      if (watch_issue_slots && issue_pick_any && !issue_base_allow &&
+          ((lsu_stall_trace_cnt_q + stall_trace_inc) < LSU_STALL_TRACE_BUDGET)) begin
+        $display("[issue-lsu-backpressure] pick=%0d/%0d raw=%0d/%0d pc=%h/%h dst=%0d/%0d fu_ready=%0d mispred=%0d flush=%0d rs_ready=0x%h",
+                 issue_pick_0, issue_pick_1, issue_valid_raw[0], issue_valid_raw[1],
+                 issue_uop_0.pc, issue_uop_1.pc, issue_dst_0, issue_dst_1,
+                 fu_ready_i, mispred_block_i, flush_i, rs_ready_wires);
+        stall_trace_inc = stall_trace_inc + 32'd1;
+      end
       if (issue_trace_inc != 0) begin
         lsu_issue_trace_cnt_q <= lsu_issue_trace_cnt_q + issue_trace_inc;
       end
       if (block_trace_inc != 0) begin
         lsu_block_trace_cnt_q <= lsu_block_trace_cnt_q + block_trace_inc;
+      end
+      if (stall_trace_inc != 0) begin
+        lsu_stall_trace_cnt_q <= lsu_stall_trace_cnt_q + stall_trace_inc;
       end
     end
   end

@@ -149,6 +149,7 @@ module execute_csr #(
   logic [1:0] mret_target_priv;
   logic [1:0] sret_target_priv;
   logic csr_illegal_exception;
+  logic decode_illegal_exception;
   logic interrupt_pending;
   logic interrupt_ext_pending;
   logic interrupt_timer_pending;
@@ -357,15 +358,18 @@ module execute_csr #(
   assign interrupt_cause = interrupt_ext_pending ? EXC_M_EXT : EXC_M_TIMER;
   assign interrupt_take = csr_valid_i && interrupt_inject_i && interrupt_pending;
   assign async_exception_take = csr_valid_i && async_exception_inject_i;
+  assign decode_illegal_exception = csr_valid_i && uop_i.illegal;
   assign csr_illegal_exception = csr_valid_i && uop_i.is_csr && !csr_addr_valid;
   assign system_take_exception = csr_valid_i && sys_op_valid && sys_exception;
-  assign trap_take = csr_illegal_exception || system_take_exception || interrupt_take ||
+  assign trap_take = decode_illegal_exception || csr_illegal_exception ||
+                     system_take_exception || interrupt_take ||
                      async_exception_take;
   assign trap_delegate_to_s = csr_medeleg[trap_ecause] ||
                               (trap_ecause == EXC_LD_ADDR_MISALIGNED) ||
                               (trap_ecause == EXC_ST_ADDR_MISALIGNED);
   assign trap_to_s_mode = (current_priv != PRIV_LVL_M) &&
-                          (csr_illegal_exception || system_take_exception ||
+                          (decode_illegal_exception || csr_illegal_exception ||
+                           system_take_exception ||
                            async_exception_take) &&
                           trap_delegate_to_s;
   assign satp_write_flush = csr_valid_i && uop_i.is_csr && csr_write_en &&
@@ -379,7 +383,7 @@ module execute_csr #(
     trap_pc = trap_pc_i;
     trap_redirect_pc = csr_mtvec[Cfg.PLEN-1:0];
 
-    if (csr_illegal_exception) begin
+    if (decode_illegal_exception || csr_illegal_exception) begin
       trap_ecause = EXC_ILLEGAL_INSTR;
       trap_mcause = XLEN'(EXC_ILLEGAL_INSTR);
       trap_scause = XLEN'(EXC_ILLEGAL_INSTR);
@@ -507,7 +511,7 @@ module execute_csr #(
     end
   end
 
-  assign regular_valid = csr_valid_i && (uop_i.is_csr || sys_op_valid);
+  assign regular_valid = csr_valid_i && (uop_i.illegal || uop_i.is_csr || sys_op_valid);
   assign csr_valid_o = regular_valid;
   assign csr_rob_tag_o = rob_tag_i;
   assign csr_result_o = (csr_valid_i && uop_i.is_csr) ? csr_read_val : '0;
@@ -533,13 +537,16 @@ module execute_csr #(
   assign sfence_vma_flush_o = csr_valid_i && sys_op_valid && uop_i.is_sfence_vma && !trap_take;
 
 `ifndef SYNTHESIS
+  logic csr_diag_trace_en_q;
+  initial csr_diag_trace_en_q = $test$plusargs("npc_diag_trace");
+
   always_ff @(posedge clk_i) begin
     if (csr_valid_i && uop_i.is_csr && csr_write_en && (uop_i.csr_addr == CSR_SATP)) begin
       $display("[csr-satp-wr] pc=%h op=%0d csr=%h rs1_idx=%0d rs1_val=%h imm=%h write=%h priv=%0d trap_take=%0d trap_to_s=%0d",
                uop_i.pc, uop_i.csr_op, uop_i.csr_addr, uop_i.rs1, rs1_data_i, uop_i.imm, csr_write_val,
                current_priv, trap_take, trap_to_s_mode);
     end
-    if (csr_valid_i && uop_i.is_csr &&
+    if (csr_diag_trace_en_q && csr_valid_i && uop_i.is_csr &&
         ((uop_i.csr_addr == CSR_SCOUNTEREN) || (uop_i.csr_addr == CSR_MSCRATCH))) begin
       $display("[csrdbg] pc=%h csr=%h op=%0d priv=%0d known=%0d valid=%0d illegal=%0d trap_take=%0d trap_to_s=%0d",
                uop_i.pc, uop_i.csr_addr, uop_i.csr_op, current_priv, csr_addr_known,

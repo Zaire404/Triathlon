@@ -33,6 +33,12 @@ module execute_alu #(
 `ifndef SYNTHESIS
   localparam int unsigned ALU_TRACE_BUDGET = 256;
   logic [31:0] alu_trace_cnt_q;
+  logic alu_diag_trace_en_q;
+  logic alu_legacy_trace_en_q;
+  logic alu_bsearch_trace_en_q;
+  initial alu_diag_trace_en_q = $test$plusargs("npc_diag_trace");
+  initial alu_legacy_trace_en_q = $test$plusargs("npc_diag_alu_legacy");
+  initial alu_bsearch_trace_en_q = $test$plusargs("npc_diag_bsearch");
 `endif
 
   // --- 1. 操作数准备 ---
@@ -210,14 +216,30 @@ module execute_alu #(
 `ifndef SYNTHESIS
   always_ff @(posedge clk_i or negedge rst_ni) begin
     logic watch_pc;
-    watch_pc = ((uop_i.pc >= 32'hc0803d80) && (uop_i.pc <= 32'hc0803dd0)) ||
-               ((uop_i.pc >= 32'hc080ab50) && (uop_i.pc <= 32'hc080ab90)) ||
-               ((uop_i.pc >= 32'hc080ab20) && (uop_i.pc <= 32'hc080ab44)) ||
-               ((uop_i.pc >= 32'hc0803b30) && (uop_i.pc <= 32'hc0803c20)) ||
-               ((uop_i.pc >= 32'hc0803d50) && (uop_i.pc <= 32'hc0803d72));
+    watch_pc = 1'b0;
+    if (alu_bsearch_trace_en_q) begin
+      watch_pc = watch_pc ||
+                 (uop_i.pc == 32'hc0399942) ||  // bsearch: mv s1,a2
+                 (uop_i.pc == 32'hc039994c) ||  // bsearch: srli s3,s1,1
+                 (uop_i.pc == 32'hc0399950) ||  // bsearch: mul s2,s4,s3
+                 (uop_i.pc == 32'hc0399956) ||  // bsearch: addi s1,s1,-1
+                 (uop_i.pc == 32'hc0399958) ||  // bsearch: add s2,s2,s5
+                 (uop_i.pc == 32'hc039995a) ||  // bsearch: mv a1,s2
+                 (uop_i.pc == 32'hc0399964) ||  // bsearch: srli s1,s1,1
+                 (uop_i.pc == 32'hc0399986);    // bsearch: mv s1,s3
+    end
+    if (alu_legacy_trace_en_q) begin
+      watch_pc = watch_pc ||
+                 ((uop_i.pc >= 32'hc0803d80) && (uop_i.pc <= 32'hc0803dd0)) ||
+                 ((uop_i.pc >= 32'hc080ab50) && (uop_i.pc <= 32'hc080ab90)) ||
+                 ((uop_i.pc >= 32'hc080ab20) && (uop_i.pc <= 32'hc080ab44)) ||
+                 ((uop_i.pc >= 32'hc0803b30) && (uop_i.pc <= 32'hc0803c20)) ||
+                 ((uop_i.pc >= 32'hc0803d50) && (uop_i.pc <= 32'hc0803d72));
+    end
     if (!rst_ni) begin
       alu_trace_cnt_q <= '0;
-    end else if (alu_valid_i && watch_pc && (alu_trace_cnt_q < ALU_TRACE_BUDGET)) begin
+    end else if (alu_diag_trace_en_q && alu_valid_i && watch_pc &&
+                 (alu_trace_cnt_q < ALU_TRACE_BUDGET)) begin
       $display("[alu-trace] pc=%h alu_op=%0d br_op=%0d is_word=%0d is_j=%0d is_b=%0d rs1=%h rs2=%h imm=%h op_a=%h op_b=%h res=%h pred_npc=%h mispred=%0d redir=%h rob=%0d ftq=%0d epoch=%0d rvc=%0d",
                uop_i.pc, uop_i.alu_op, uop_i.br_op, uop_i.is_word_op, uop_i.is_jump, uop_i.is_branch,
                rs1_data_i, rs2_data_i, uop_i.imm,

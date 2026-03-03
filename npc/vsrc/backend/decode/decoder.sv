@@ -36,6 +36,8 @@ module decoder #(
 `ifndef SYNTHESIS
   localparam int unsigned DEC_PC_DBG_BUDGET = 1024;
   logic [31:0] dec_pc_dbg_cnt_q;
+  logic dec_diag_trace_en_q;
+  initial dec_diag_trace_en_q = $test$plusargs("npc_diag_trace");
 `endif
 
   // ----------------------------------------------------------------------
@@ -628,6 +630,35 @@ module decoder #(
         end
       endcase
 
+      // Narrow guard: only reroute illegal uops that would otherwise enter LSU issue.
+      // This prevents FU_LSU non-load/store entries from deadlocking the backend.
+      if (uop_decoded.illegal && (uop_decoded.fu == FU_LSU)) begin
+        uop_decoded.fu      = FU_CSR;
+        uop_decoded.alu_op  = ALU_NOP;
+        uop_decoded.is_load = 1'b0;
+        uop_decoded.is_store = 1'b0;
+        uop_decoded.is_branch = 1'b0;
+        uop_decoded.is_jump   = 1'b0;
+        uop_decoded.is_fence  = 1'b0;
+        uop_decoded.is_word_op = 1'b0;
+        uop_decoded.is_csr   = 1'b0;
+        uop_decoded.is_ecall = 1'b0;
+        uop_decoded.is_ebreak = 1'b0;
+        uop_decoded.is_mret  = 1'b0;
+        uop_decoded.is_sret  = 1'b0;
+        uop_decoded.is_wfi   = 1'b0;
+        uop_decoded.is_sfence_vma = 1'b0;
+        uop_decoded.has_rs1  = 1'b0;
+        uop_decoded.has_rs2  = 1'b0;
+        uop_decoded.has_rd   = 1'b0;
+        uop_decoded.rs1      = '0;
+        uop_decoded.rs2      = '0;
+        uop_decoded.rd       = '0;
+        uop_decoded.imm      = '0;
+        uop_decoded.csr_addr = 12'h000;
+        uop_decoded.csr_op   = CSR_RW;
+      end
+
       decode_one_instruction = uop_decoded;
     end
   endfunction
@@ -652,7 +683,7 @@ module decoder #(
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (!rst_ni) begin
       dec_pc_dbg_cnt_q <= '0;
-    end else if (ibuf2dec_valid_i && backend2dec_ready_i) begin
+    end else if (dec_diag_trace_en_q && ibuf2dec_valid_i && backend2dec_ready_i) begin
       logic [31:0] dec_pc_dbg_cnt_n;
       dec_pc_dbg_cnt_n = dec_pc_dbg_cnt_q;
       for (int i = 0; i < DECODE_WIDTH; i++) begin

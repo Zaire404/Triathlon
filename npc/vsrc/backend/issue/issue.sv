@@ -60,6 +60,28 @@ module issue #(
     output wire              [DATA_W-1:0] alu3_v2,
     output wire              [ TAG_W-1:0] alu3_dst
 );
+`ifndef SYNTHESIS
+  localparam int unsigned ISSUE_TRACE_BUDGET = 256;
+  logic [31:0] issue_trace_cnt_q;
+  logic issue_diag_trace_en_q;
+  logic issue_bsearch_trace_en_q;
+  initial issue_diag_trace_en_q = $test$plusargs("npc_diag_trace");
+  initial issue_bsearch_trace_en_q = $test$plusargs("npc_diag_bsearch");
+
+  function automatic logic watch_bsearch_pc(input logic [Cfg.PLEN-1:0] pc);
+    begin
+      watch_bsearch_pc = (pc == 32'hc0399942) ||  // bsearch: mv s1,a2
+                         (pc == 32'hc039994c) ||  // bsearch: srli s3,s1,1
+                         (pc == 32'hc0399950) ||  // bsearch: mul s2,s4,s3
+                         (pc == 32'hc0399956) ||  // bsearch: addi s1,s1,-1
+                         (pc == 32'hc0399958) ||  // bsearch: add s2,s2,s5
+                         (pc == 32'hc039995a) ||  // bsearch: mv a1,s2
+                         (pc == 32'hc0399964) ||  // bsearch: srli s1,s1,1
+                         (pc == 32'hc0399986);    // bsearch: mv s1,s3
+    end
+  endfunction
+`endif
+
   wire full_stall;
   assign issue_ready = ~full_stall;
   // A. Allocator <-> RS 之间的控制线
@@ -281,6 +303,55 @@ module issue #(
       rr_base_q <= rr_base_d;
     end
   end
+
+`ifndef SYNTHESIS
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      issue_trace_cnt_q <= '0;
+    end else if (issue_diag_trace_en_q && issue_bsearch_trace_en_q &&
+                 (issue_trace_cnt_q < ISSUE_TRACE_BUDGET)) begin
+      int trace_inc;
+      trace_inc = 0;
+      for (int j = 0; j < ISSUE_WIDTH; j++) begin
+        logic [RS_IDX_W-1:0] idx;
+        logic [Cfg.PLEN-1:0] pc;
+        logic [TAG_W-1:0] dst;
+        logic [DATA_W-1:0] v1;
+        logic [DATA_W-1:0] v2;
+        idx = issue_rs_idx[j];
+        pc  = alu0_uop.pc;
+        dst = alu0_dst;
+        v1  = alu0_v1;
+        v2  = alu0_v2;
+        if (j == 1) begin
+          pc  = alu1_uop.pc;
+          dst = alu1_dst;
+          v1  = alu1_v1;
+          v2  = alu1_v2;
+        end else if (j == 2) begin
+          pc  = alu2_uop.pc;
+          dst = alu2_dst;
+          v1  = alu2_v1;
+          v2  = alu2_v2;
+        end else if (j == 3) begin
+          pc  = alu3_uop.pc;
+          dst = alu3_dst;
+          v1  = alu3_v1;
+          v2  = alu3_v2;
+        end
+        if ((issue_trace_cnt_q + trace_inc) < ISSUE_TRACE_BUDGET &&
+            issue_valid[j] && watch_bsearch_pc(pc)) begin
+          $display("[issue-alu-pick] slot=%0d idx=%0d pc=%h dst=%0d v1=%h v2=%h rr_base=%0d ready=%b grant=%b",
+                   j, idx, pc, dst, v1, v2, rr_base_q, rs_ready_wires, grant_mask_wires);
+          trace_inc++;
+        end
+      end
+      if (trace_inc != 0) begin
+        issue_trace_cnt_q <= issue_trace_cnt_q + trace_inc[31:0];
+      end
+    end
+  end
+`endif
 
   // Free count for backpressure
   always_comb begin

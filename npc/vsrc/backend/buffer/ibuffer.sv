@@ -133,6 +133,10 @@ module ibuffer #(
     logic [15:0] half1;
     logic [31:0] instr32;
     logic [Cfg.PLEN-1:0] pc_cur;
+    logic [Cfg.PLEN-1:0] pred_npc_slot;
+    logic [Cfg.PLEN-1:0] fallthrough_npc;
+    logic is_low_half;
+    logic stop_after_this;
 
     wr_idx = 0;
     hw_count = 0;
@@ -143,6 +147,10 @@ module ibuffer #(
     half1 = '0;
     instr32 = '0;
     pc_cur = '0;
+    pred_npc_slot = '0;
+    fallthrough_npc = '0;
+    is_low_half = 1'b0;
+    stop_after_this = 1'b0;
     fe_valid_entry_count_w = '0;
     carry_valid_next_w = carry_valid_q;
     carry_half_next_w = carry_half_q;
@@ -224,30 +232,50 @@ module ibuffer #(
           half0 = hw_data[hw_idx];
           pc_cur = hw_pc_arr[hw_idx];
           slot_idx = hw_slot_arr[hw_idx];
+          pred_npc_slot = fe_pred_npc_i[slot_idx];
+          is_low_half = !hw_raw_idx_arr[hw_idx][0];
           if (half0[1:0] != 2'b11) begin
             instr32 = fe_hw_decoded_w[hw_raw_idx_arr[hw_idx]];
+            fallthrough_npc = pc_cur + Cfg.PLEN'(2);
+            stop_after_this = is_low_half && (pred_npc_slot != fallthrough_npc);
             fe_valid_entries_w[wr_idx].instr = instr32;
             fe_valid_entries_w[wr_idx].pc = pc_cur;
             fe_valid_entries_w[wr_idx].slot_valid = 1'b1;
-            fe_valid_entries_w[wr_idx].pred_npc = pc_cur + Cfg.PLEN'(2);
+            fe_valid_entries_w[wr_idx].pred_npc = is_low_half ? pred_npc_slot : fallthrough_npc;
             fe_valid_entries_w[wr_idx].is_rvc = 1'b1;
             fe_valid_entries_w[wr_idx].ftq_id = fe_ftq_id_i[slot_idx];
             fe_valid_entries_w[wr_idx].fetch_epoch = fe_fetch_epoch_i[slot_idx];
             wr_idx++;
             hw_idx++;
+            if (stop_after_this) begin
+              // Predicted taken control in low halfword: drop following halfwords in this fetch group.
+              hw_idx = hw_count;
+              carry_valid_next_w = 1'b0;
+              carry_half_next_w = '0;
+              carry_pc_next_w = '0;
+            end
           end else begin
             if (hw_idx + 1 < hw_count) begin
               half1 = hw_data[hw_idx + 1];
               instr32 = {half1, half0};
+              fallthrough_npc = pc_cur + Cfg.PLEN'(4);
+              stop_after_this = is_low_half && (pred_npc_slot != fallthrough_npc);
               fe_valid_entries_w[wr_idx].instr = instr32;
               fe_valid_entries_w[wr_idx].pc = pc_cur;
               fe_valid_entries_w[wr_idx].slot_valid = 1'b1;
-              fe_valid_entries_w[wr_idx].pred_npc = pc_cur + Cfg.PLEN'(4);
+              fe_valid_entries_w[wr_idx].pred_npc = is_low_half ? pred_npc_slot : fallthrough_npc;
               fe_valid_entries_w[wr_idx].is_rvc = 1'b0;
               fe_valid_entries_w[wr_idx].ftq_id = fe_ftq_id_i[slot_idx];
               fe_valid_entries_w[wr_idx].fetch_epoch = fe_fetch_epoch_i[slot_idx];
               wr_idx++;
               hw_idx += 2;
+              if (stop_after_this) begin
+                // Predicted taken control in low halfword: drop following halfwords in this fetch group.
+                hw_idx = hw_count;
+                carry_valid_next_w = 1'b0;
+                carry_half_next_w = '0;
+                carry_pc_next_w = '0;
+              end
             end else begin
               carry_valid_next_w = 1'b1;
               carry_half_next_w = half0;
