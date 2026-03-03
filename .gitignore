@@ -14,3 +14,6 @@
 !/am-kernels/*
 .vscode
 .worktrees/
+
+# Build outputs (keep local, do not track)
+**/build/
