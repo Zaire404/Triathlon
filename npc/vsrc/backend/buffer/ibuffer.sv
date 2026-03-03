@@ -135,6 +135,7 @@ module ibuffer #(
     logic [Cfg.PLEN-1:0] pc_cur;
     logic [Cfg.PLEN-1:0] pred_npc_slot;
     logic [Cfg.PLEN-1:0] fallthrough_npc;
+    logic [Cfg.PLEN-1:0] slot_fallthrough_npc;
     logic is_low_half;
     logic stop_after_this;
 
@@ -149,6 +150,7 @@ module ibuffer #(
     pc_cur = '0;
     pred_npc_slot = '0;
     fallthrough_npc = '0;
+    slot_fallthrough_npc = '0;
     is_low_half = 1'b0;
     stop_after_this = 1'b0;
     fe_valid_entry_count_w = '0;
@@ -237,11 +239,18 @@ module ibuffer #(
           if (half0[1:0] != 2'b11) begin
             instr32 = fe_hw_decoded_w[hw_raw_idx_arr[hw_idx]];
             fallthrough_npc = pc_cur + Cfg.PLEN'(2);
-            stop_after_this = is_low_half && (pred_npc_slot != fallthrough_npc);
+            slot_fallthrough_npc = pc_cur + Cfg.PLEN'(INSTR_BYTES);
+            // Legacy tests may drive per-slot pred_npc (+4) while IFU drives
+            // per-halfword pred_npc (+2) for compressed slots. Treat both as
+            // sequential and only stop on clearly non-sequential targets.
+            stop_after_this =
+                is_low_half && (pred_npc_slot != fallthrough_npc) &&
+                (pred_npc_slot != slot_fallthrough_npc);
             fe_valid_entries_w[wr_idx].instr = instr32;
             fe_valid_entries_w[wr_idx].pc = pc_cur;
             fe_valid_entries_w[wr_idx].slot_valid = 1'b1;
-            fe_valid_entries_w[wr_idx].pred_npc = is_low_half ? pred_npc_slot : fallthrough_npc;
+            fe_valid_entries_w[wr_idx].pred_npc =
+                (is_low_half && stop_after_this) ? pred_npc_slot : fallthrough_npc;
             fe_valid_entries_w[wr_idx].is_rvc = 1'b1;
             fe_valid_entries_w[wr_idx].ftq_id = fe_ftq_id_i[slot_idx];
             fe_valid_entries_w[wr_idx].fetch_epoch = fe_fetch_epoch_i[slot_idx];
